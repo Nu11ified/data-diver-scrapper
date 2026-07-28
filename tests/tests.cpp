@@ -642,6 +642,28 @@ TEST(model_serialize_roundtrip) {
     CHECK_NEAR(before[0].probability, after[0].probability, 1e-12);
 }
 
+TEST(model_alpha_shapes_posterior_and_survives_roundtrip) {
+    dd::model::NaiveBayes sharp;
+    sharp.set_alpha(0.1);
+    dd::model::NaiveBayes smooth;
+    smooth.set_alpha(5.0);
+    for (dd::model::NaiveBayes* nb : {&sharp, &smooth}) {
+        nb->add_example("fruit", {{"apple", 3}, {"orchard", 1}});
+        nb->add_example("marine", {{"boat", 3}, {"harbor", 1}});
+    }
+    const dd::features::Bag probe{{"apple", 2}};
+    const auto sharp_scored = sharp.predict(probe);
+    const auto smooth_scored = smooth.predict(probe);
+    CHECK_EQ(sharp_scored[0].label, "fruit");
+    CHECK_EQ(smooth_scored[0].label, "fruit");
+    // Less smoothing means the observed token dominates harder.
+    CHECK(sharp_scored[0].probability > smooth_scored[0].probability);
+
+    const dd::model::NaiveBayes loaded = dd::model::NaiveBayes::deserialize(sharp.serialize());
+    CHECK_NEAR(loaded.predict(probe)[0].probability, sharp_scored[0].probability, 1e-12);
+    CHECK_THROWS(sharp.set_alpha(0.0));
+}
+
 TEST(model_rejects_bad_serialization) {
     CHECK_THROWS(dd::model::NaiveBayes::deserialize("{\"kind\":\"other\"}"));
     CHECK_THROWS(dd::model::NaiveBayes::deserialize(
@@ -1509,6 +1531,92 @@ TEST(schema_is_configuration_not_code) {
     CHECK_NEAR(result.rate, 1.0, 1e-9);
     CHECK_EQ(result.records[0].values.at("annual_fee"), "250.00");
     CHECK_EQ(result.records[1].values.at("expires"), "2027-03-15");
+}
+
+TEST(schema_coerces_embedded_values) {
+    const dd::schema::FieldDef& parcel = *test_registry().find("parcel_id");
+    const dd::schema::FieldDef& money = *test_registry().find("amount_due");
+    const dd::schema::FieldDef& date = *test_registry().find("event_date");
+    const dd::schema::FieldDef& owner = *test_registry().find("owner");
+
+    // Direct values pass untouched.
+    const dd::schema::Coercion direct = dd::schema::coerce(parcel, "123-456-789");
+    CHECK(direct.ok);
+    CHECK(!direct.reformatted);
+    CHECK_EQ(direct.value, "123-456-789");
+
+    // Composite values yield the validating token, marked as reformatted.
+    const dd::schema::Coercion acct = dd::schema::coerce(parcel, "Account: 123-456");
+    CHECK(acct.ok);
+    CHECK(acct.reformatted);
+    CHECK_EQ(acct.value, "123-456");
+
+    const dd::schema::Coercion due = dd::schema::coerce(money, "$1,204.77 past due");
+    CHECK(due.ok);
+    CHECK(due.reformatted);
+    CHECK_EQ(due.value, "1204.77");
+
+    const dd::schema::Coercion filed = dd::schema::coerce(date, "Filed 07/28/2026 by clerk");
+    CHECK(filed.ok);
+    CHECK(filed.reformatted);
+    CHECK_EQ(filed.value, "2026-07-28");
+
+    // Weak kinds never coerce: extracting a "name" out of arbitrary text
+    // would be a guess, not a validation.
+    CHECK(!dd::schema::coerce(owner, "c/o agent for JANE SMITH et al 12345678901234567890"
+                                     "12345678901234567890123456789012345678901234567890").ok);
+    CHECK(!dd::schema::coerce(parcel, "no digits here at all").ok);
+}
+
+TEST(schema_maps_composite_columns_through_coercion) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv",
+        "Parcel Number,Owner Name,Amount Due\n"
+        "Account No: 111-22-001,\"Smith, Jane\",$100.00 due\n"
+        "Account No: 111-22-002,\"Ray, Bob\",$250.50 due\n"
+        "Account No: 111-22-003,\"Lee, Ann\",$75.25 due\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
+    const dd::schema::FieldMapping* parcel = mapping.find("parcel_id");
+    CHECK(parcel != nullptr);
+    CHECK(parcel->reformatted);
+    CHECK_NEAR(parcel->value_pass_rate, 1.0, 1e-9);
+    const dd::schema::FieldMapping* amount = mapping.find("amount_due");
+    CHECK(amount != nullptr);
+    CHECK(amount->reformatted);
+
+    const dd::schema::ExtractionResult result =
+        dd::schema::apply_mapping(test_registry(), mapping, m);
+    CHECK_EQ(result.records[0].values.at("parcel_id"), "111-22-001");
+    CHECK_EQ(result.records[1].values.at("amount_due"), "250.50");
+    CHECK_NEAR(result.rate, 1.0, 1e-9);
+
+    // The mapping remembers that these columns need extraction.
+    const dd::schema::Mapping loaded = dd::schema::Mapping::deserialize(mapping.serialize());
+    CHECK(loaded.find("parcel_id")->reformatted);
+}
+
+TEST(schema_candidates_surface_near_misses_for_review) {
+    // street_name must NOT be auto-accepted as owner, but it must appear as
+    // a reviewable candidate a human can refuse.
+    const dd::doc::Model m = dd::doc::build_auto(
+        "application/json",
+        R"([{"address": "12 Pier St", "street_name": "OGDEN", "violation_date": "2026-01-05"},
+            {"address": "9 Dock Rd", "street_name": "CANAL", "violation_date": "2026-01-06"},
+            {"address": "4 Quay Ln", "street_name": "WHARF", "violation_date": "2026-01-07"}])");
+    const std::vector<dd::schema::Candidate> candidates =
+        dd::schema::score_candidates(test_registry(), m, 0.45);
+
+    const dd::schema::Candidate* street_as_owner = nullptr;
+    const dd::schema::Candidate* address_direct = nullptr;
+    for (const dd::schema::Candidate& c : candidates) {
+        if (c.field == "owner" && c.source_label == "street_name") street_as_owner = &c;
+        if (c.field == "address" && c.source_label == "address") address_direct = &c;
+    }
+    CHECK(address_direct != nullptr);
+    CHECK(address_direct->accepted);
+    CHECK(street_as_owner != nullptr);
+    CHECK(!street_as_owner->accepted); // held back by the weak-validator floor
+    CHECK(street_as_owner->confidence >= 0.45);
 }
 
 TEST(schema_registry_rejects_bad_files) {

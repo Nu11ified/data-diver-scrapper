@@ -35,7 +35,11 @@ public:
     // corpus_dir contains one subdirectory per label, each holding example
     // documents in any supported format. Throws dd::Error when the corpus is
     // missing or too small to train on.
-    static Classifier train_from_corpus(const std::string& corpus_dir, TrainReport* report);
+    // alpha is the naive Bayes smoothing strength used for both the
+    // leave-one-out folds and the final fit, so the reported accuracy is the
+    // accuracy of the model that ships.
+    static Classifier train_from_corpus(const std::string& corpus_dir, TrainReport* report,
+                                        double alpha = 1.0);
 
     static Classifier load(const std::string& model_path);
     void save(const std::string& model_path) const;

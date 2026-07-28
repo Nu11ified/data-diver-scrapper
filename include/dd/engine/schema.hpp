@@ -61,6 +61,19 @@ std::string normalize(const FieldDef& field, std::string_view value);
 std::optional<double> parse_money(std::string_view value);
 std::optional<std::string> parse_date(std::string_view value);
 
+// Smart reformatting. When a raw value fails its kind validator outright,
+// decisive kinds (id, money, date) scan the value for an embedded token that
+// does validate: "Account: 123-456" yields a parcel, "Filed 07/28/2026 by
+// clerk" yields a date, "$1,204.77 past due" yields an amount. The result is
+// still validator-approved, never guessed; `reformatted` records that the
+// value needed extraction. Weak kinds never coerce.
+struct Coercion {
+    bool ok = false;
+    std::string value;       // normalized canonical form when ok
+    bool reformatted = false;
+};
+Coercion coerce(const FieldDef& field, std::string_view raw);
+
 // How one source dialect maps onto one canonical field.
 struct FieldMapping {
     std::string field;              // canonical field name
@@ -68,6 +81,7 @@ struct FieldMapping {
     double label_similarity = 0.0;  // lexicon similarity, [0,1]
     double value_pass_rate = 0.0;   // measured over sampled values, [0,1]
     double confidence = 0.0;        // combined; never a constant
+    bool reformatted = false;       // values need extraction, not direct use
 };
 
 struct Mapping {
@@ -88,6 +102,22 @@ Mapping infer_mapping(const Registry& registry, const doc::Model& model);
 // Lexicon similarity of one (field, label) pair, in [0,1]: the same scorer
 // infer_mapping uses.
 double score_label(const FieldDef& field, const std::string& label);
+
+// Every (field, label) pairing whose combined evidence clears `floor`,
+// including the ones infer_mapping rejects. This is what an operator reviews:
+// near-misses come with their measured scores and the caller shows sample
+// values so a human can confirm or refuse.
+struct Candidate {
+    std::string field;
+    std::string source_label;
+    double label_similarity = 0.0;
+    double value_pass_rate = 0.0;
+    double confidence = 0.0;
+    bool reformatted = false;
+    bool accepted = false; // part of what infer_mapping would keep
+};
+std::vector<Candidate> score_candidates(const Registry& registry, const doc::Model& model,
+                                        double floor);
 
 // Applies operator overrides (canonical field name -> source label; empty
 // label = force-unmap) on top of an inferred or healed mapping. An

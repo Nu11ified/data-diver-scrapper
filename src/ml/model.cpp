@@ -16,6 +16,11 @@ NaiveBayes::Class& NaiveBayes::class_for(const std::string& label) {
     return classes_.back();
 }
 
+void NaiveBayes::set_alpha(double alpha) {
+    if (alpha <= 0.0) throw Error("model: smoothing alpha must be positive");
+    alpha_ = alpha;
+}
+
 void NaiveBayes::add_example(const std::string& label, const features::Bag& bag) {
     Class& c = class_for(label);
     ++c.documents;
@@ -38,12 +43,12 @@ std::vector<Scored> NaiveBayes::predict(const features::Bag& bag) const {
     for (const Class& c : classes_) {
         double score = std::log(static_cast<double>(c.documents) /
                                 static_cast<double>(examples_));
-        const double denom = static_cast<double>(c.tokens) + vocab;
+        const double denom = static_cast<double>(c.tokens) + alpha_ * vocab;
         for (const auto& [token, count] : bag) {
             if (vocabulary_.find(token) == vocabulary_.end()) continue;
             const auto it = c.counts.find(token);
             const double hits = it == c.counts.end() ? 0.0 : static_cast<double>(it->second);
-            score += static_cast<double>(count) * std::log((hits + 1.0) / denom);
+            score += static_cast<double>(count) * std::log((hits + alpha_) / denom);
         }
         log_scores.push_back(score);
     }
@@ -116,6 +121,7 @@ std::string NaiveBayes::serialize() const {
     w.begin_object();
     w.field("kind", "naive_bayes_multinomial");
     w.field("version", 1);
+    w.field("alpha", alpha_);
     w.field("examples", static_cast<std::int64_t>(examples_));
     w.key("classes");
     w.begin_array();
@@ -142,6 +148,8 @@ NaiveBayes NaiveBayes::deserialize(const std::string& text) {
         throw Error("model: unrecognized serialization kind");
     }
     NaiveBayes nb;
+    const json::Value* alpha = root.find("alpha");
+    if (alpha != nullptr && alpha->as_number() > 0.0) nb.alpha_ = alpha->as_number();
     const json::Value* examples = root.find("examples");
     nb.examples_ = examples == nullptr ? 0 : static_cast<std::size_t>(examples->as_number());
     const json::Value* classes = root.find("classes");

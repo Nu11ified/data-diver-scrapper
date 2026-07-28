@@ -34,11 +34,12 @@ std::vector<Example> load_corpus(const std::string& corpus_dir) {
     return examples;
 }
 
-std::vector<LooPrediction> leave_one_out(const std::vector<Example>& examples) {
+std::vector<LooPrediction> leave_one_out(const std::vector<Example>& examples, double alpha) {
     std::vector<LooPrediction> out;
     out.reserve(examples.size());
     for (std::size_t held = 0; held < examples.size(); ++held) {
         model::NaiveBayes bayes;
+        bayes.set_alpha(alpha);
         for (std::size_t i = 0; i < examples.size(); ++i) {
             if (i != held) bayes.add_example(examples[i].label, examples[i].bag);
         }
@@ -60,7 +61,8 @@ double accuracy_of(const std::vector<LooPrediction>& predictions) {
 
 } // namespace
 
-Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainReport* report) {
+Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainReport* report,
+                                         double alpha) {
     const std::vector<Example> examples = load_corpus(corpus_dir);
     if (examples.size() < 8) {
         throw Error("classify: corpus too small to train on (" +
@@ -68,7 +70,8 @@ Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainRep
     }
 
     Classifier out;
-    std::vector<LooPrediction> predictions = leave_one_out(examples);
+    out.bayes_.set_alpha(alpha);
+    std::vector<LooPrediction> predictions = leave_one_out(examples, alpha);
     out.trained_accuracy_ = accuracy_of(predictions);
     for (const Example& example : examples) {
         out.bayes_.add_example(example.label, example.bag);

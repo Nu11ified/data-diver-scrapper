@@ -48,6 +48,12 @@ public:
 
     std::vector<ClassSummary> summarize(std::size_t top_n) const;
 
+    // Lidstone smoothing strength. 1.0 is Laplace; smaller values trust the
+    // observed counts more. Tunable because its effect on held-out accuracy
+    // is measurable, and measured is how it should be chosen.
+    void set_alpha(double alpha);
+    double alpha() const noexcept { return alpha_; }
+
     std::string serialize() const;
     static NaiveBayes deserialize(const std::string& text);
 
@@ -64,6 +70,7 @@ private:
     std::vector<Class> classes_;
     std::map<std::string, bool> vocabulary_;
     std::size_t examples_ = 0;
+    double alpha_ = 1.0;
 };
 
 } // namespace dd::model

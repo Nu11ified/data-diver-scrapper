@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstring>
 
 namespace dd::schema {
 namespace {
@@ -94,20 +95,35 @@ bool validator_is_weak(Kind k) {
 }
 constexpr double kWeakValidatorLabelFloor = 0.70;
 
-// Fraction of sampled values under `label` that validate for `field`,
-// measured on the actual document the mapping will run against.
-double measured_pass_rate(const FieldDef& field, const std::string& label,
-                          const doc::Model& model) {
+// Pass statistics of sampled values under `label` for `field`, measured on
+// the actual document the mapping will run against. Coercion counts as a
+// pass; `reformatted` reports when most passing values needed extraction.
+struct PassStats {
+    double rate = 0.0;
+    bool reformatted = false;
+};
+
+PassStats measured_pass(const FieldDef& field, const std::string& label,
+                        const doc::Model& model) {
     std::size_t sampled = 0;
     std::size_t good = 0;
+    std::size_t extracted = 0;
     for (const doc::RawRecord& record : model.records) {
         if (sampled >= kSampleLimit) break;
         const doc::Cell* cell = record.find(label);
         if (cell == nullptr || cell->value.empty()) continue;
         ++sampled;
-        if (validate(field, cell->value)) ++good;
+        const Coercion c = coerce(field, cell->value);
+        if (c.ok) {
+            ++good;
+            if (c.reformatted) ++extracted;
+        }
     }
-    return sampled == 0 ? 0.0 : static_cast<double>(good) / static_cast<double>(sampled);
+    PassStats out;
+    if (sampled == 0) return out;
+    out.rate = static_cast<double>(good) / static_cast<double>(sampled);
+    out.reformatted = extracted * 2 > good;
+    return out;
 }
 
 // Registry order decides the display order of mapping fields.
@@ -362,6 +378,43 @@ std::string normalize(const FieldDef& field, std::string_view raw) {
     return value;
 }
 
+namespace {
+
+// Candidate substrings inside a composite value: whitespace tokens with edge
+// punctuation stripped, plus the remainder after a label-style colon.
+std::vector<std::string> embedded_candidates(std::string_view raw) {
+    std::vector<std::string> out;
+    const std::string value = str::trim(raw);
+    const std::size_t colon = value.find(':');
+    if (colon != std::string::npos && colon + 1 < value.size()) {
+        out.push_back(str::trim(value.substr(colon + 1)));
+    }
+    for (const std::string& token : str::split(value, ' ')) {
+        std::string t = token;
+        while (!t.empty() && std::strchr(":;,#()[]", t.front()) != nullptr) t.erase(0, 1);
+        while (!t.empty() && std::strchr(":;,#()[]", t.back()) != nullptr) t.pop_back();
+        if (!t.empty()) out.push_back(t);
+    }
+    return out;
+}
+
+bool kind_coercible(Kind k) { return k == Kind::Id || k == Kind::Money || k == Kind::Date; }
+
+} // namespace
+
+Coercion coerce(const FieldDef& field, std::string_view raw) {
+    if (validate(field, raw)) {
+        return Coercion{true, normalize(field, raw), false};
+    }
+    if (!kind_coercible(field.kind)) return {};
+    for (const std::string& candidate : embedded_candidates(raw)) {
+        if (validate(field, candidate)) {
+            return Coercion{true, normalize(field, candidate), true};
+        }
+    }
+    return {};
+}
+
 // ------------------------------------------------------------- mapping -----
 
 double score_label(const FieldDef& field, const std::string& label) {
@@ -395,6 +448,7 @@ std::string Mapping::serialize() const {
         w.field("label_similarity", fm.label_similarity);
         w.field("value_pass_rate", fm.value_pass_rate);
         w.field("confidence", fm.confidence);
+        w.field("reformatted", fm.reformatted);
         w.end_object();
     }
     w.end_array();
@@ -424,61 +478,68 @@ Mapping Mapping::deserialize(const std::string& text) {
         if (rate != nullptr) fm.value_pass_rate = rate->as_number();
         const json::Value* conf = entry.find("confidence");
         if (conf != nullptr) fm.confidence = conf->as_number();
+        const json::Value* ref = entry.find("reformatted");
+        if (ref != nullptr) fm.reformatted = ref->as_bool();
         out.fields.push_back(std::move(fm));
     }
     return out;
 }
 
-Mapping infer_mapping(const Registry& registry, const doc::Model& model) {
-    struct Candidate {
-        const FieldDef* field;
-        std::string label;
-        double label_sim;
-        double pass_rate;
-        double combined;
-    };
+std::vector<Candidate> score_candidates(const Registry& registry, const doc::Model& model,
+                                        double floor) {
     std::vector<Candidate> candidates;
-
     for (const std::string& label : model.labels) {
-        // Sample values under this label.
-        std::vector<std::string> samples;
-        for (const doc::RawRecord& record : model.records) {
-            if (samples.size() >= kSampleLimit) break;
-            const doc::Cell* cell = record.find(label);
-            if (cell != nullptr && !cell->value.empty()) samples.push_back(cell->value);
-        }
         for (const FieldDef& field : registry.fields()) {
             const double sim = score_label(field, label);
-            double pass = 0.0;
-            if (!samples.empty()) {
-                std::size_t good = 0;
-                for (const std::string& sample : samples) {
-                    if (validate(field, sample)) ++good;
-                }
-                pass = static_cast<double>(good) / static_cast<double>(samples.size());
-            }
-            if (validator_is_weak(field.kind) && sim < kWeakValidatorLabelFloor) continue;
-            const double combined = kLabelWeight * sim + kValueWeight * pass;
-            if (combined >= kAcceptThreshold && pass > 0.0) {
-                candidates.push_back(Candidate{&field, label, sim, pass, combined});
-            }
+            const PassStats pass = measured_pass(field, label, model);
+            const double combined = kLabelWeight * sim + kValueWeight * pass.rate;
+            if (pass.rate <= 0.0 || combined < floor) continue;
+            Candidate c;
+            c.field = field.name;
+            c.source_label = label;
+            c.label_similarity = sim;
+            c.value_pass_rate = pass.rate;
+            c.confidence = combined;
+            c.reformatted = pass.reformatted;
+            candidates.push_back(std::move(c));
         }
     }
-
-    // Greedy assignment, best score first; each field and each label used at
-    // most once. Stable so equal scores resolve deterministically.
     std::stable_sort(candidates.begin(), candidates.end(),
-                     [](const Candidate& a, const Candidate& b) { return a.combined > b.combined; });
-    Mapping mapping;
+                     [](const Candidate& a, const Candidate& b) {
+                         return a.confidence > b.confidence;
+                     });
+
+    // Mark what automatic assignment keeps: the auto rules (threshold plus
+    // the weak-validator label floor), greedy, one field per label.
+    std::vector<std::string> used_fields;
     std::vector<std::string> used_labels;
-    for (const Candidate& c : candidates) {
-        if (mapping.find(c.field->name) != nullptr) continue;
-        if (std::find(used_labels.begin(), used_labels.end(), c.label) != used_labels.end()) {
+    for (Candidate& c : candidates) {
+        if (c.confidence < kAcceptThreshold) continue;
+        const FieldDef* field = registry.find(c.field);
+        if (field == nullptr) continue;
+        if (validator_is_weak(field->kind) && c.label_similarity < kWeakValidatorLabelFloor) {
             continue;
         }
-        mapping.fields.push_back(
-            FieldMapping{c.field->name, c.label, c.label_sim, c.pass_rate, c.combined});
-        used_labels.push_back(c.label);
+        if (std::find(used_fields.begin(), used_fields.end(), c.field) != used_fields.end()) {
+            continue;
+        }
+        if (std::find(used_labels.begin(), used_labels.end(), c.source_label) !=
+            used_labels.end()) {
+            continue;
+        }
+        c.accepted = true;
+        used_fields.push_back(c.field);
+        used_labels.push_back(c.source_label);
+    }
+    return candidates;
+}
+
+Mapping infer_mapping(const Registry& registry, const doc::Model& model) {
+    Mapping mapping;
+    for (const Candidate& c : score_candidates(registry, model, kAcceptThreshold)) {
+        if (!c.accepted) continue;
+        mapping.fields.push_back(FieldMapping{c.field, c.source_label, c.label_similarity,
+                                              c.value_pass_rate, c.confidence, c.reformatted});
     }
     sort_by_schema_order(registry, mapping.fields);
 
@@ -488,8 +549,6 @@ Mapping infer_mapping(const Registry& registry, const doc::Model& model) {
             return def != nullptr && def->identity;
         });
     if (!has_identity) {
-        // Without an identity field records cannot be resolved to properties;
-        // report that as an unusable mapping rather than a half-working one.
         mapping.fields.clear();
         mapping.confidence = 0.0;
         return mapping;
@@ -514,12 +573,14 @@ Mapping apply_overrides(const Registry& registry, const Mapping& mapping,
         // The override owns its label: no other field may keep it.
         std::erase_if(out.fields,
                       [&](const FieldMapping& fm) { return fm.source_label == label; });
+        const PassStats pass = measured_pass(*field, label, model);
         FieldMapping fm;
         fm.field = name;
         fm.source_label = label;
         fm.label_similarity = score_label(*field, label);
-        fm.value_pass_rate = measured_pass_rate(*field, label, model);
+        fm.value_pass_rate = pass.rate;
         fm.confidence = kLabelWeight * fm.label_similarity + kValueWeight * fm.value_pass_rate;
+        fm.reformatted = pass.reformatted;
         out.fields.push_back(std::move(fm));
     }
     sort_by_schema_order(registry, out.fields);
@@ -547,8 +608,9 @@ ExtractionResult apply_mapping(const Registry& registry, const Mapping& mapping,
             if (field == nullptr) continue; // mapping from another schema version
             const doc::Cell* cell = record.find(fm.source_label);
             if (cell == nullptr) continue;
-            if (!validate(*field, cell->value)) continue;
-            canonical.values[fm.field] = normalize(*field, cell->value);
+            const Coercion coerced = coerce(*field, cell->value);
+            if (!coerced.ok) continue;
+            canonical.values[fm.field] = coerced.value;
             ++field_hits[fm.field];
             ++valid;
         }
