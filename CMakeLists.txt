@@ -19,7 +19,6 @@ add_library(dd_engine STATIC
   src/parse/pdf.cpp
   src/parse/document.cpp
   src/net/fetch.cpp
-  src/net/server.cpp
   src/ml/features.cpp
   src/ml/model.cpp
   src/ml/classify.cpp

@@ -18,7 +18,6 @@
 #include "dd/parse/pdf.hpp"
 #include "dd/engine/pipeline.hpp"
 #include "dd/engine/schema.hpp"
-#include "dd/net/server.hpp"
 #include "dd/engine/store.hpp"
 
 #include <arpa/inet.h>
@@ -1222,128 +1221,6 @@ TEST(heal_assessment_ignores_healthy_updates) {
     CHECK(verdict.fingerprint_changed);
 }
 
-// -------------------------------------------------------------- server -----
-
-struct HttpReply {
-    int status = 0;
-    std::string body;
-};
-
-// Server options for tests: an ephemeral port on localhost.
-dd::server::Options test_options() {
-    dd::server::Options options;
-    options.port = 0;
-    return options;
-}
-
-// Minimal real HTTP client over a socket so the tests exercise the server's
-// actual request parsing, including POST bodies.
-HttpReply http_request(int port, const std::string& method, const std::string& target,
-                       const std::string& body = "") {
-    HttpReply reply;
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return reply;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<std::uint16_t>(port));
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd);
-        return reply;
-    }
-    std::string request = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
-    if (!body.empty()) {
-        request += "Content-Type: application/json\r\nContent-Length: " +
-                   std::to_string(body.size()) + "\r\n";
-    }
-    request += "Connection: close\r\n\r\n" + body;
-    ::send(fd, request.data(), request.size(), 0);
-
-    std::string raw;
-    char buffer[8192];
-    ssize_t n = 0;
-    while ((n = ::recv(fd, buffer, sizeof(buffer), 0)) > 0) {
-        raw.append(buffer, static_cast<std::size_t>(n));
-    }
-    ::close(fd);
-
-    const std::size_t space = raw.find(' ');
-    if (space != std::string::npos) reply.status = std::atoi(raw.c_str() + space + 1);
-    const std::size_t split = raw.find("\r\n\r\n");
-    if (split != std::string::npos) reply.body = raw.substr(split + 4);
-    return reply;
-}
-
-TEST(server_full_flow_over_real_http) {
-    const std::string root = fresh_dir("server_flow");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-    CHECK(server.port() > 0);
-
-    // The root is a JSON service descriptor, not a UI.
-    const HttpReply root_reply = http_request(server.port(), "GET", "/");
-    CHECK_EQ(root_reply.status, 200);
-    const dd::json::Value descriptor = dd::json::parse(root_reply.body);
-    CHECK_EQ(descriptor.find("service")->as_string(), "datadiver-engine");
-    CHECK(!descriptor.find("version")->as_string().empty());
-    CHECK(descriptor.find("endpoints")->items().size() >= 15);
-
-    // Empty overview.
-    const HttpReply overview0 = http_request(server.port(), "GET", "/api/overview");
-    CHECK_EQ(overview0.status, 200);
-    const dd::json::Value parsed0 = dd::json::parse(overview0.body);
-    CHECK_NEAR(parsed0.find("totals")->find("sources")->as_number(), 0.0, 1e-9);
-    CHECK(parsed0.find("engine")->find("rss_bytes")->as_number() > 1e6);
-    CHECK(parsed0.find("engine")->find("benchmark_replays_cache")->as_bool());
-    CHECK_NEAR(parsed0.find("engine")->find("auto_refresh_seconds")->as_number(), 0.0, 1e-9);
-
-    // Add a site through the API.
-    const HttpReply added = http_request(
-        server.port(), "POST", "/api/sources",
-        R"({"name": "Crestline Auctions", "url": "data/fixtures/crestline_auctions.csv", "jurisdiction": "Crestline County"})");
-    CHECK_EQ(added.status, 200);
-    const std::string source_id = dd::json::parse(added.body).find("id")->as_string();
-    CHECK(!source_id.empty());
-
-    // Bad add is rejected.
-    CHECK_EQ(http_request(server.port(), "POST", "/api/sources", R"({"name": "x"})").status, 400);
-
-    // Run it.
-    const HttpReply ran = http_request(server.port(), "POST", "/api/run?source=" + source_id);
-    CHECK_EQ(ran.status, 200);
-    const dd::json::Value run = dd::json::parse(ran.body);
-    CHECK(run.find("ok")->as_bool());
-    CHECK_EQ(run.find("classification")->as_string(), "trustee_auction");
-
-    // Everything is visible through the API afterwards.
-    const dd::json::Value runs =
-        dd::json::parse(http_request(server.port(), "GET", "/api/runs?limit=5").body);
-    CHECK_EQ(runs.items().size(), std::size_t{1});
-
-    const dd::json::Value props =
-        dd::json::parse(http_request(server.port(), "GET", "/api/properties").body);
-    CHECK_EQ(props.items().size(), std::size_t{4});
-    const std::string key = props.items()[0].find("key")->as_string();
-
-    const HttpReply prop = http_request(
-        server.port(), "GET", "/api/property?key=" + key);
-    CHECK_EQ(prop.status, 200);
-    CHECK(dd::json::parse(prop.body).find("events")->items().size() >= 1);
-
-    const dd::json::Value records = dd::json::parse(
-        http_request(server.port(), "GET", "/api/records?source=" + source_id).body);
-    CHECK_EQ(records.items().size(), std::size_t{4});
-
-    // Unknowns are 404s, not lies.
-    CHECK_EQ(http_request(server.port(), "GET", "/api/nope").status, 404);
-    CHECK_EQ(http_request(server.port(), "POST", "/api/run?source=missing").status, 404);
-    CHECK_EQ(http_request(server.port(), "GET", "/api/property?key=zzz").status, 404);
-
-    server.stop();
-}
-
 TEST(model_summaries_surface_discriminative_vocabulary) {
     const dd::classify::Classifier classifier = test_classifier();
     const std::vector<dd::model::ClassSummary> classes = classifier.bayes().summarize(10);
@@ -1388,74 +1265,6 @@ TEST(pipeline_resolves_across_sources) {
         // The assessment is evidence only: the distress state stays put.
         CHECK(dd::events::reduce(evs).state == dd::events::State::TaxDelinquent);
     }
-}
-
-TEST(server_schema_model_benchmark_endpoints) {
-    const std::string root = fresh_dir("server_v2");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-
-    // Model introspection.
-    const dd::json::Value model =
-        dd::json::parse(http_request(server.port(), "GET", "/api/model").body);
-    CHECK_EQ(model.find("classes")->items().size(), std::size_t{8});
-    CHECK(model.find("vocabulary")->as_number() > 100);
-    CHECK(model.find("classes")->items()[0].find("top_tokens")->items().size() >= 1);
-
-    // Schema before any run: null snapshot, not an invented one.
-    const HttpReply added = http_request(
-        server.port(), "POST", "/api/sources",
-        R"({"name": "Millbrook", "url": "data/fixtures/millbrook_tax.html", "jurisdiction": "Millbrook County"})");
-    const std::string sid = dd::json::parse(added.body).find("id")->as_string();
-    const dd::json::Value empty_schema = dd::json::parse(
-        http_request(server.port(), "GET", "/api/schema?source=" + sid).body);
-    CHECK(empty_schema.find("snapshot")->is_null());
-    CHECK_EQ(http_request(server.port(), "GET", "/api/schema?source=zzz").status, 404);
-
-    // After a run the schema view carries the dialect and the evidence.
-    http_request(server.port(), "POST", "/api/run?source=" + sid);
-    const dd::json::Value schema = dd::json::parse(
-        http_request(server.port(), "GET", "/api/schema?source=" + sid).body);
-    const dd::json::Value* snapshot = schema.find("snapshot");
-    CHECK(snapshot->is_object());
-    CHECK_EQ(snapshot->find("format")->as_string(), "html");
-    CHECK(snapshot->find("labels")->items().size() >= 5);
-    CHECK_EQ(snapshot->find("classification")->find("label")->as_string(), "tax_delinquency");
-    CHECK_EQ(snapshot->find("classification")->find("distribution")->items().size(),
-             std::size_t{8});
-    const dd::json::Value* fields = snapshot->find("mapping")->find("fields");
-    CHECK(fields->items().size() >= 4);
-    const dd::json::Value& first_field = fields->items()[0];
-    CHECK(first_field.find("label_similarity")->as_number() > 0.0);
-    CHECK(first_field.find("value_pass_rate")->as_number() > 0.0);
-    CHECK(snapshot->find("field_rates")->is_object());
-
-    // Records endpoint still returns just the records array.
-    const dd::json::Value records = dd::json::parse(
-        http_request(server.port(), "GET", "/api/records?source=" + sid).body);
-    CHECK_EQ(records.items().size(), std::size_t{6});
-
-    // Benchmark: real cache-replay runs, measured. The run above cached the
-    // fetched bytes, so nothing is skipped.
-    const dd::json::Value bench = dd::json::parse(
-        http_request(server.port(), "POST", "/api/benchmark?rounds=3").body);
-    CHECK_NEAR(bench.find("rounds")->as_number(), 3.0, 1e-9);
-    CHECK_NEAR(bench.find("skipped")->as_number(), 0.0, 1e-9);
-    CHECK_NEAR(bench.find("runs")->as_number(), 3.0, 1e-9); // one source, three rounds
-    CHECK_NEAR(bench.find("ok_runs")->as_number(), 3.0, 1e-9);
-    CHECK_NEAR(bench.find("records_processed")->as_number(), 18.0, 1e-9);
-    CHECK_NEAR(bench.find("events_new")->as_number(), 0.0, 1e-9); // dedup absorbs reruns
-    CHECK(bench.find("total_ms")->as_number() > 0.0);
-    CHECK(bench.find("records_per_sec")->as_number() > 0.0);
-
-    // Those benchmark runs are real run records.
-    const dd::json::Value runs =
-        dd::json::parse(http_request(server.port(), "GET", "/api/runs?limit=100").body);
-    CHECK_EQ(runs.items().size(), std::size_t{4});
-
-    server.stop();
 }
 
 TEST(fetch_encodes_spaces_in_urls) {
@@ -1585,358 +1394,71 @@ TEST(store_resolve_repair_applies_mapping) {
     CHECK_THROWS(store.resolve_repair("no_such_repair", true));
 }
 
-TEST(server_source_update_and_delete_endpoints) {
-    const std::string root = fresh_dir("server_update");
+TEST(pipeline_applies_operator_overrides) {
+    const std::string root = fresh_dir("pipe_overrides");
     dd::store::Store store{root};
     dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-
-    const HttpReply added = http_request(
-        server.port(), "POST", "/api/sources",
-        R"({"name": "Crestline", "url": "data/fixtures/crestline_auctions.csv", "jurisdiction": "Crestline County"})");
-    const std::string sid = dd::json::parse(added.body).find("id")->as_string();
-
-    // Partial update over the API.
-    const HttpReply updated = http_request(
-        server.port(), "POST", "/api/sources/update",
-        R"({"id": ")" + sid + R"(", "name": "Crestline Trustee Sales", "enabled": false})");
-    CHECK_EQ(updated.status, 200);
-    const dd::json::Value uv = dd::json::parse(updated.body);
-    CHECK_EQ(uv.find("name")->as_string(), "Crestline Trustee Sales");
-    CHECK_EQ(uv.find("enabled")->as_bool(), false);
-    CHECK_EQ(uv.find("url")->as_string(), "data/fixtures/crestline_auctions.csv");
-
-    // Guard rails.
-    CHECK_EQ(http_request(server.port(), "POST", "/api/sources/update",
-                          R"({"id": "zzz", "name": "x"})")
-                 .status,
-             404);
-    CHECK_EQ(http_request(server.port(), "POST", "/api/sources/update",
-                          R"({"id": ")" + sid + R"(", "url": " "})")
-                 .status,
-             400);
-    CHECK_EQ(http_request(server.port(), "POST", "/api/sources/delete", R"({"id": "zzz"})").status,
-             404);
-
-    // Delete removes the source but keeps history.
-    http_request(server.port(), "POST", "/api/sources/update",
-                 R"({"id": ")" + sid + R"(", "enabled": true})");
-    http_request(server.port(), "POST", "/api/run?source=" + sid);
-    const HttpReply deleted =
-        http_request(server.port(), "POST", "/api/sources/delete", R"({"id": ")" + sid + R"("})");
-    CHECK_EQ(deleted.status, 200);
-    CHECK(dd::json::parse(deleted.body).find("ok")->as_bool());
-    const dd::json::Value sources =
-        dd::json::parse(http_request(server.port(), "GET", "/api/sources").body);
-    CHECK(sources.items().empty());
-    const dd::json::Value runs =
-        dd::json::parse(http_request(server.port(), "GET", "/api/runs?limit=10").body);
-    CHECK_EQ(runs.items().size(), std::size_t{1});
-    server.stop();
-}
-
-TEST(server_mapping_overrides_endpoint) {
-    const std::string root = fresh_dir("server_overrides");
-    {
-        dd::store::Store store{root};
-        dd::pipeline::Pipeline pipeline{store, test_classifier()};
-        dd::server::Server server{store, pipeline, test_options()};
-        server.start();
-
-        const HttpReply added = http_request(
-            server.port(), "POST", "/api/sources",
-            R"({"name": "Millbrook Tax", "url": "data/fixtures/millbrook_tax.html", "jurisdiction": "Millbrook County"})");
-        const std::string sid = dd::json::parse(added.body).find("id")->as_string();
-        http_request(server.port(), "POST", "/api/run?source=" + sid);
-
-        // Inference mapped amount_due and left "Tax Year" unclaimed. The
-        // operator force-unmaps amount_due and pins description to Tax Year.
-        const HttpReply mapped = http_request(
-            server.port(), "POST", "/api/mapping",
-            R"({"source": ")" + sid +
-                R"(", "overrides": {"amount_due": "", "description": "Tax Year"}})");
-        CHECK_EQ(mapped.status, 200);
-        const dd::json::Value run = dd::json::parse(mapped.body);
-        CHECK(run.find("ok")->as_bool());
-
-        // The applied mapping obeys both overrides, with measured evidence.
-        const dd::store::SourceState state = store.source_state(sid);
-        CHECK(state.mapping.find(dd::schema::Field::AmountDue) == nullptr);
-        const dd::schema::FieldMapping* description =
-            state.mapping.find(dd::schema::Field::Description);
-        CHECK(description != nullptr);
-        CHECK_EQ(description->source_label, "Tax Year");
-        CHECK_NEAR(description->value_pass_rate, 1.0, 1e-9);
-        CHECK_EQ(state.overrides.at("amount_due"), "");
-        CHECK_EQ(state.overrides.at("description"), "Tax Year");
-
-        // Extracted records obey too: no amount_due, description carries the
-        // pinned column's values.
-        const dd::json::Value records = dd::json::parse(
-            http_request(server.port(), "GET", "/api/records?source=" + sid).body);
-        CHECK(records.items()[0].find("amount_due") == nullptr);
-        CHECK_EQ(records.items()[0].find("description")->as_string(), "2025");
-
-        // A typo'd canonical field is a 400, and unknown sources are 404s.
-        CHECK_EQ(http_request(server.port(), "POST", "/api/mapping",
-                              R"({"source": ")" + sid + R"(", "overrides": {"ownerz": "x"}})")
-                     .status,
-                 400);
-        CHECK_EQ(http_request(server.port(), "POST", "/api/mapping",
-                              R"({"source": "zzz", "overrides": {}})")
-                     .status,
-                 404);
-        server.stop();
-    }
-
-    // Overrides persist across a reopened store and keep constraining runs.
-    dd::store::Store reopened{root};
-    const dd::store::Source source = reopened.sources().front();
-    CHECK_EQ(reopened.source_state(source.id).overrides.size(), std::size_t{2});
-    dd::pipeline::Pipeline pipeline{reopened, test_classifier()};
-    CHECK(pipeline.run_source(source).ok);
-    const dd::store::SourceState state = reopened.source_state(source.id);
-    CHECK(state.mapping.find(dd::schema::Field::AmountDue) == nullptr);
-    CHECK(state.mapping.find(dd::schema::Field::Description) != nullptr);
-}
-
-TEST(server_repair_resolve_endpoint) {
-    const std::string root = fresh_dir("server_resolve");
-    dd::store::Store store{root};
     const dd::store::Source source =
-        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+        store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
     CHECK(pipeline.run_source(source).ok);
 
-    const dd::doc::Model v2 = dd::doc::build_auto(
-        "text/html", dd::fileio::read_file("data/fixtures/millbrook_tax_v2.html"));
-    const dd::schema::Mapping v2_mapping = dd::schema::infer_mapping(v2);
-    for (const char* id : {"pend_a", "pend_b"}) {
-        dd::store::RepairRecord pending;
-        pending.id = id;
-        pending.source_id = source.id;
-        pending.at = "2026-07-01T00:00:00Z";
-        pending.reason = "queued for review";
-        pending.after_mapping_json = v2_mapping.serialize();
-        pending.resolution = "pending";
-        store.add_repair(pending);
-    }
+    // The operator unmaps auction_date and pins owner to the address column
+    // (a deliberate correction the scorer would never make on its own).
+    dd::store::SourceState state = store.source_state(source.id);
+    state.overrides["auction_date"] = "";
+    state.overrides["owner"] = "Property Address";
+    store.save_source_state(state);
 
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-
-    // The repairs listing carries the resolution.
-    const dd::json::Value listed = dd::json::parse(
-        http_request(server.port(), "GET", "/api/repairs?source=" + source.id).body);
-    CHECK_EQ(listed.items().size(), std::size_t{2});
-    CHECK_EQ(listed.items()[0].find("resolution")->as_string(), "pending");
-
-    // Reject: the record resolves, the mapping stays put.
-    const HttpReply rejected = http_request(server.port(), "POST", "/api/repairs/resolve",
-                                            R"({"id": "pend_a", "approve": false})");
-    CHECK_EQ(rejected.status, 200);
-    CHECK_EQ(dd::json::parse(rejected.body).find("resolution")->as_string(), "rejected");
-    CHECK_EQ(store.source_state(source.id).mapping.find(dd::schema::Field::Owner)->source_label,
-             "Owner Name");
-
-    // Approve: the after_mapping becomes the accepted one.
-    const HttpReply approved = http_request(server.port(), "POST", "/api/repairs/resolve",
-                                            R"({"id": "pend_b", "approve": true})");
-    CHECK_EQ(approved.status, 200);
-    CHECK_EQ(dd::json::parse(approved.body).find("resolution")->as_string(), "approved");
-    const dd::store::SourceState state = store.source_state(source.id);
-    CHECK_EQ(state.mapping.find(dd::schema::Field::Owner)->source_label, "taxpayer");
-    CHECK_EQ(state.good_runs, 0);
-
-    // Re-resolving and unknown ids refuse honestly.
-    CHECK_EQ(http_request(server.port(), "POST", "/api/repairs/resolve",
-                          R"({"id": "pend_b", "approve": false})")
-                 .status,
-             400);
-    CHECK_EQ(http_request(server.port(), "POST", "/api/repairs/resolve",
-                          R"({"id": "zzz", "approve": true})")
-                 .status,
-             404);
-    server.stop();
-}
-
-TEST(server_export_endpoint) {
-    const std::string root = fresh_dir("server_export");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    const dd::store::Source tax =
-        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
-    const dd::store::Source auctions = store.add_source(
-        "Crestline Auctions", "data/fixtures/crestline_auctions.csv", "Crestline County");
-    CHECK(pipeline.run_source(tax).ok);
-    CHECK(pipeline.run_source(auctions).ok);
-
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-    const HttpReply reply = http_request(server.port(), "GET", "/api/export");
-    CHECK_EQ(reply.status, 200);
-    const dd::json::Value ex = dd::json::parse(reply.body);
-
-    CHECK_EQ(ex.find("sources")->items().size(), std::size_t{2});
-    CHECK(ex.find("sources")->items()[0].find("mapping")->is_object());
-    CHECK_EQ(ex.find("runs")->items().size(), std::size_t{2});
-    CHECK_EQ(ex.find("events")->items().size(), store.all_events().size());
-    CHECK(ex.find("repairs")->items().empty());
-    CHECK_EQ(ex.find("counties")->items().size(), std::size_t{2});
-
-    const std::vector<dd::json::Value>& properties = ex.find("properties")->items();
-    CHECK_EQ(properties.size(), store.property_keys().size());
-    for (const dd::json::Value& p : properties) {
-        const std::string key = p.find("key")->as_string();
-        const std::string slug = p.find("jurisdiction_slug")->as_string();
-        CHECK_EQ(key.rfind(slug + "|", 0), std::size_t{0});
-        CHECK(!p.find("state")->as_string().empty());
-        CHECK(p.find("transitions")->is_array());
-        CHECK(p.find("sources")->items().size() >= 1);
-    }
-    server.stop();
-}
-
-TEST(server_train_endpoint_and_report) {
-    const std::string root = fresh_dir("server_train");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Options options = test_options();
-    options.model_path = root + "/model_out.json";
-    dd::server::Server server{store, pipeline, options};
-    server.start();
-
-    // No report before the first training run.
-    CHECK_EQ(http_request(server.port(), "GET", "/api/train/report").status, 404);
-
-    const std::string trained_at_before = pipeline.classifier().trained_at();
-    const HttpReply trained = http_request(server.port(), "POST", "/api/train");
-    CHECK_EQ(trained.status, 200);
-    const dd::json::Value train_json = dd::json::parse(trained.body);
-    const double accuracy = train_json.find("accuracy")->as_number();
-    CHECK(accuracy >= 0.0);
-    CHECK(accuracy <= 1.0);
-    CHECK(train_json.find("duration_ms")->as_number() > 0.0);
-    const auto examples = static_cast<std::int64_t>(train_json.find("examples")->as_number());
-    CHECK(examples >= 40);
-
-    // Per-class examples partition the corpus; correct counts never exceed
-    // their class.
-    std::int64_t example_sum = 0;
-    std::int64_t correct_sum = 0;
-    const std::vector<dd::json::Value>& per_class = train_json.find("per_class")->items();
-    CHECK_EQ(per_class.size(),
-             static_cast<std::size_t>(train_json.find("classes")->as_number()));
-    for (const dd::json::Value& c : per_class) {
-        const auto class_examples = static_cast<std::int64_t>(c.find("examples")->as_number());
-        const auto correct = static_cast<std::int64_t>(c.find("correct")->as_number());
-        CHECK(correct <= class_examples);
-        example_sum += class_examples;
-        correct_sum += correct;
-    }
-    CHECK_EQ(example_sum, examples);
-    CHECK_NEAR(accuracy, static_cast<double>(correct_sum) / static_cast<double>(examples), 1e-9);
-
-    // Confusion: the diagonal is exactly the correct counts, and every listed
-    // cell sums back to the corpus size.
-    std::int64_t confusion_sum = 0;
-    for (const dd::json::Value& cell : train_json.find("confusion")->items()) {
-        const std::string actual = cell.find("actual")->as_string();
-        const std::string predicted = cell.find("predicted")->as_string();
-        const auto count = static_cast<std::int64_t>(cell.find("count")->as_number());
-        confusion_sum += count;
-        if (actual == predicted) {
-            for (const dd::json::Value& c : per_class) {
-                if (c.find("name")->as_string() == actual) {
-                    CHECK_NEAR(c.find("correct")->as_number(), static_cast<double>(count), 1e-9);
-                }
-            }
-        } else {
-            CHECK(count > 0); // off-diagonal zeros are not listed
+    const dd::store::RunRecord run = pipeline.run_source(source);
+    CHECK(run.ok);
+    const dd::json::Value snap = dd::json::parse(store.latest_records(source.id));
+    const dd::json::Value* fields = snap.find("mapping")->find("fields");
+    bool has_auction = false;
+    std::string owner_label;
+    for (const dd::json::Value& f : fields->items()) {
+        if (f.find("field")->as_string() == "auction_date") has_auction = true;
+        if (f.find("field")->as_string() == "owner") {
+            owner_label = f.find("source_label")->as_string();
         }
     }
-    CHECK_EQ(confusion_sum, examples);
+    CHECK(!has_auction);
+    CHECK_EQ(owner_label, "Property Address");
 
-    // The model was saved, the live classifier hot-swapped, and the report
-    // persisted for later GETs.
-    CHECK(dd::fileio::exists(options.model_path));
-    CHECK(pipeline.classifier().trained_at() != trained_at_before);
-    CHECK_NEAR(pipeline.classifier().trained_accuracy(), accuracy, 1e-12);
-    const HttpReply saved = http_request(server.port(), "GET", "/api/train/report");
-    CHECK_EQ(saved.status, 200);
-    CHECK_NEAR(dd::json::parse(saved.body).find("accuracy")->as_number(), accuracy, 1e-12);
-    server.stop();
+    // Overrides persist across a store reopen.
+    dd::store::Store reopened{root};
+    CHECK_EQ(reopened.source_state(source.id).overrides.at("owner"), "Property Address");
 }
 
-TEST(server_benchmark_replays_cache) {
-    const std::string root = fresh_dir("server_bench_cache");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-
-    // The source's bytes live in a working copy we can delete later.
-    const std::string site = root + "/local/auctions.csv";
-    dd::fileio::write_file_atomic(site,
-                                  dd::fileio::read_file("data/fixtures/crestline_auctions.csv"));
-    const HttpReply added = http_request(
-        server.port(), "POST", "/api/sources",
-        R"({"name": "Crestline", "url": ")" + site + R"(", "jurisdiction": "Crestline County"})");
-    const std::string sid = dd::json::parse(added.body).find("id")->as_string();
-
-    // Nothing fetched yet: nothing to replay.
-    const dd::json::Value empty_bench = dd::json::parse(
-        http_request(server.port(), "POST", "/api/benchmark?rounds=2").body);
-    CHECK_NEAR(empty_bench.find("runs")->as_number(), 0.0, 1e-9);
-    CHECK_NEAR(empty_bench.find("skipped")->as_number(), 1.0, 1e-9);
-
-    // One real run caches the fetched bytes and their content type.
-    CHECK(dd::json::parse(http_request(server.port(), "POST", "/api/run?source=" + sid).body)
-              .find("ok")
-              ->as_bool());
-    CHECK(store.has_fetch_cache(sid));
-
-    // Deleting the origin proves the benchmark replays the cache instead of
-    // fetching: runs still succeed while a normal run now fails.
-    std::filesystem::remove(site);
-    const dd::json::Value bench = dd::json::parse(
-        http_request(server.port(), "POST", "/api/benchmark?rounds=2").body);
-    CHECK_NEAR(bench.find("skipped")->as_number(), 0.0, 1e-9);
-    CHECK_NEAR(bench.find("runs")->as_number(), 2.0, 1e-9);
-    CHECK_NEAR(bench.find("ok_runs")->as_number(), 2.0, 1e-9);
-    CHECK_NEAR(bench.find("records_processed")->as_number(), 8.0, 1e-9);
-    CHECK(bench.find("bytes_processed")->as_number() > 0.0);
-    const dd::json::Value failed =
-        dd::json::parse(http_request(server.port(), "POST", "/api/run?source=" + sid).body);
-    CHECK(!failed.find("ok")->as_bool());
-    CHECK_EQ(failed.find("stage")->as_string(), "fetch");
-    server.stop();
-}
-
-TEST(server_auto_refresh_runs_sources) {
-    const std::string root = fresh_dir("server_refresh");
-    dd::store::Store store{root};
-    const dd::store::Source source =
-        store.add_source("Crestline", "data/fixtures/crestline_auctions.csv", "Crestline County");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    dd::server::Options options = test_options();
-    options.auto_refresh_seconds = 1;
-    dd::server::Server server{store, pipeline, options};
-    server.start();
-
-    const dd::json::Value overview =
-        dd::json::parse(http_request(server.port(), "GET", "/api/overview").body);
-    CHECK_NEAR(overview.find("engine")->find("auto_refresh_seconds")->as_number(), 1.0, 1e-9);
-
-    // Within a few intervals the source runs without any /api/run call.
-    bool ran = false;
-    for (int i = 0; i < 100 && !ran; ++i) {
-        ::usleep(100 * 1000);
-        ran = !store.runs(1, source.id).empty();
+TEST(classify_detailed_training_report) {
+    dd::classify::TrainReport train_report;
+    const dd::classify::Classifier trained =
+        dd::classify::Classifier::train_from_corpus("data/corpus", &train_report);
+    const std::vector<dd::classify::LooPrediction>& predictions = train_report.predictions;
+    CHECK_EQ(predictions.size(), train_report.examples);
+    std::size_t correct = 0;
+    for (const dd::classify::LooPrediction& p : predictions) {
+        CHECK(!p.actual.empty());
+        CHECK(!p.predicted.empty());
+        if (p.actual == p.predicted) ++correct;
     }
-    CHECK(ran);
-    server.stop();
+    CHECK_NEAR(static_cast<double>(correct) / static_cast<double>(predictions.size()),
+               train_report.leave_one_out_accuracy, 1e-9);
+}
+
+TEST(pipeline_replays_cached_fetch) {
+    const std::string root = fresh_dir("pipe_replay");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    const dd::store::Source source =
+        store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
+    CHECK(pipeline.run_source(source).ok);
+    CHECK(store.has_fetch_cache(source.id));
+
+    // Replays run the full pipeline on the cached bytes without refetching.
+    const dd::store::RunRecord replay = pipeline.run_cached(source);
+    CHECK(replay.ok);
+    CHECK_EQ(replay.records_extracted, std::int64_t{6});
+    CHECK_EQ(replay.events_new, std::int64_t{0}); // dedup absorbs the rerun
 }
 
 TEST(document_survives_bespoke_legacy_markup) {
@@ -1951,40 +1473,6 @@ TEST(document_survives_bespoke_legacy_markup) {
     const dd::doc::Cell* case_no = m.records[0].find("Case No");
     CHECK(case_no != nullptr);
     CHECK_EQ(case_no->value, "CE-26-0771");
-}
-
-TEST(server_counties_aggregate_cross_references) {
-    const std::string root = fresh_dir("server_counties");
-    dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
-    const dd::store::Source tax =
-        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
-    const dd::store::Source assessor = store.add_source(
-        "Millbrook Assessor", "data/fixtures/millbrook_assessor.html", "Millbrook County");
-    const dd::store::Source code = store.add_source(
-        "Millbrook Code", "data/fixtures/millbrook_code_enforcement.html", "Millbrook County");
-    const dd::store::Source other = store.add_source(
-        "Crestline", "data/fixtures/crestline_auctions.csv", "Crestline County");
-    for (const auto& s : {tax, assessor, code, other}) CHECK(pipeline.run_source(s).ok);
-
-    dd::server::Server server{store, pipeline, test_options()};
-    server.start();
-    const dd::json::Value counties =
-        dd::json::parse(http_request(server.port(), "GET", "/api/counties").body);
-    CHECK_EQ(counties.items().size(), std::size_t{2});
-    const dd::json::Value* millbrook = nullptr;
-    for (const dd::json::Value& c : counties.items()) {
-        if (c.find("jurisdiction")->as_string() == "Millbrook County") millbrook = &c;
-    }
-    CHECK(millbrook != nullptr);
-    CHECK_NEAR(millbrook->find("sources")->as_number(), 3.0, 1e-9);
-    CHECK_NEAR(millbrook->find("ok_sources")->as_number(), 3.0, 1e-9);
-    CHECK_NEAR(millbrook->find("properties")->as_number(), 6.0, 1e-9);
-    // All six parcels appear in tax and assessor; three also in code cases.
-    CHECK_NEAR(millbrook->find("corroborated")->as_number(), 6.0, 1e-9);
-    CHECK_NEAR(millbrook->find("events")->as_number(), 15.0, 1e-9);
-    CHECK(millbrook->find("avg_extraction")->as_number() > 0.9);
-    server.stop();
 }
 
 // Real government open-data endpoints. Needs a network; when the fetch fails

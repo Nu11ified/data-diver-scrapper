@@ -1,15 +1,12 @@
 // datadiver: the engine's front door.
 //
-//   datadiver serve   [--port N] [--refresh SECONDS] [--state DIR] [--model FILE] [--seeds FILE]
 //   datadiver ingest  (--all | SOURCE_ID) [--state DIR] [--model FILE] [--seeds FILE]
 //   datadiver sources [--state DIR] [--seeds FILE]
 
 #include "dd/ml/classify.hpp"
 #include "dd/engine/pipeline.hpp"
-#include "dd/net/server.hpp"
 #include "dd/engine/store.hpp"
 
-#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -17,9 +14,6 @@
 #include <vector>
 
 namespace {
-
-volatile std::sig_atomic_t g_stop = 0;
-void handle_signal(int) { g_stop = 1; }
 
 struct Args {
     std::string command;
@@ -63,7 +57,6 @@ void print_run(const dd::store::RunRecord& run) {
 int usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  datadiver serve   [--port N] [--refresh SECONDS] [--state DIR] [--model FILE] [--seeds FILE]\n"
                  "  datadiver ingest  (--all | SOURCE_ID) [--state DIR] [--model FILE] [--seeds FILE]\n"
                  "  datadiver sources [--state DIR] [--seeds FILE]\n");
     return 2;
@@ -78,31 +71,6 @@ int main(int argc, char** argv) {
     const std::string seeds_path = flag(args, "seeds", "data/sources.json");
 
     try {
-        if (args.command == "serve") {
-            dd::store::Store store{state_dir};
-            store.seed(seeds_path);
-            dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path)};
-
-            dd::server::Options options;
-            options.port = std::atoi(flag(args, "port", "8080").c_str());
-            options.model_path = model_path;
-            options.auto_refresh_seconds = std::atoi(flag(args, "refresh", "0").c_str());
-            dd::server::Server server{store, pipeline, options};
-            server.start();
-            std::printf("Data Diver serving on http://127.0.0.1:%d (state: %s)\n",
-                        server.port(), state_dir.c_str());
-
-            std::signal(SIGINT, handle_signal);
-            std::signal(SIGTERM, handle_signal);
-            while (g_stop == 0) {
-                struct timespec ts {0, 200000000};
-                nanosleep(&ts, nullptr);
-            }
-            std::printf("shutting down\n");
-            server.stop();
-            return 0;
-        }
-
         if (args.command == "ingest") {
             dd::store::Store store{state_dir};
             store.seed(seeds_path);
