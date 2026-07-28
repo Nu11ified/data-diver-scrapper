@@ -152,6 +152,10 @@ Pipeline::Pipeline(store::Store& store, classify::Classifier classifier,
                    schema::Registry registry)
     : store_{store}, classifier_{std::move(classifier)}, registry_{std::move(registry)} {}
 
+void Pipeline::set_column_model(columns::ColumnModel model) {
+    column_model_ = std::move(model);
+}
+
 void Pipeline::set_classifier(classify::Classifier classifier) {
     classifier_ = std::move(classifier);
 }
@@ -276,7 +280,7 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
         if (verdict.drift) {
             run.repair_attempted = true;
             const heal::Proposal proposal =
-                heal::propose(registry_, model, state.mapping, state.baseline_rate);
+                heal::propose(registry_, model, state.mapping, state.baseline_rate, column_model());
 
             store::RepairRecord repair;
             repair.id = new_run_id(source.id + "|repair");
@@ -311,7 +315,7 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
             mapping = state.mapping;
         }
     } else {
-        mapping = schema::infer_mapping(registry_, model);
+        mapping = schema::infer_mapping(registry_, model, column_model());
         if (!mapping.fields.empty()) {
             state.good_runs = 0;
             logging::info("pipeline: learned initial mapping for " + source.id);

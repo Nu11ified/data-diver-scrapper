@@ -61,6 +61,11 @@ another URL, or:
 - `add "County" "Name" URL` - onboard a new source from inside the shell.
 - `model` - classifier status: algorithm, alpha, corpus size, leave-one-out
   accuracy, and each class's most discriminative vocabulary by lift.
+- `harvest [N]` - build the column-classifier corpus from live government
+  portals (Socrata discovery API): thousands of real columns with sample
+  values, weak-labeled by exact lexicon hits.
+- `train columns [EPOCHS]` - train the column transformer on the harvested
+  corpus, validated on portals held out by domain.
 - `bench` - score the engine against the hand-verified answer key
   (see "Proving it").
 - `train [ALPHA|sweep]` - retrain at one smoothing alpha or sweep a grid,
@@ -90,6 +95,28 @@ event building (parcel, address, owner, status, event_date, fallback_date,
 amount) without fixing their names. Pass `--schema other.json` and the same
 engine fills a completely different schema - the test suite proves it with a
 business-license schema defined inline.
+
+## The models
+
+Two learned models, both implemented in this repository with no ML
+dependencies, both validated on data they never saw:
+
+- Document classifier: multinomial naive Bayes with tunable Lidstone
+  smoothing decides what kind of record a document carries (tax sale,
+  code violation, deed...). Small, fast, and validated with leave-one-out
+  cross-validation.
+- Column transformer: a byte-level transformer encoder (learned token and
+  position embeddings, pre-LayerNorm multi-head self-attention blocks,
+  ReLU MLP, classification head; Adam, hand-derived backprop verified
+  against finite differences in the test suite). It reads a column's name
+  and a few sample values and predicts the canonical field the column
+  carries, so it recognises a parcel column whose header appears in no
+  lexicon. Its training data is real: `harvest` walks the Socrata
+  discovery API - the same infrastructure behind most US government open
+  data portals - and collects thousands of live columns with values.
+  Labels are exact-lexicon hits only (high precision); everything else is
+  "none", and validation holds out entire portals so the reported accuracy
+  is generalisation, not memorisation.
 
 ## How matching works
 

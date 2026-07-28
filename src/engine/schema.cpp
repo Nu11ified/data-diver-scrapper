@@ -486,18 +486,35 @@ Mapping Mapping::deserialize(const std::string& text) {
 }
 
 std::vector<Candidate> score_candidates(const Registry& registry, const doc::Model& model,
-                                        double floor) {
+                                        double floor, const columns::ColumnModel* neural) {
     std::vector<Candidate> candidates;
     for (const std::string& label : model.labels) {
+        // Name evidence comes from two independent sources: the lexicon and,
+        // when a trained column model is on hand, its posterior over fields
+        // for this column's name and sample values. The stronger one counts.
+        std::map<std::string, double> posterior;
+        if (neural != nullptr && neural->trained()) {
+            std::vector<std::string> samples;
+            for (const doc::RawRecord& record : model.records) {
+                if (samples.size() >= 3) break;
+                const doc::Cell* cell = record.find(label);
+                if (cell != nullptr && !cell->value.empty()) samples.push_back(cell->value);
+            }
+            posterior = neural->predict(label, samples).distribution;
+        }
         for (const FieldDef& field : registry.fields()) {
             const double sim = score_label(field, label);
+            const auto nn_it = posterior.find(field.name);
+            const double nn = nn_it == posterior.end() ? 0.0 : nn_it->second;
+            const double name_evidence = std::max(sim, nn);
             const PassStats pass = measured_pass(field, label, model);
-            const double combined = kLabelWeight * sim + kValueWeight * pass.rate;
+            const double combined = kLabelWeight * name_evidence + kValueWeight * pass.rate;
             if (pass.rate <= 0.0 || combined < floor) continue;
             Candidate c;
             c.field = field.name;
             c.source_label = label;
             c.label_similarity = sim;
+            c.neural = nn;
             c.value_pass_rate = pass.rate;
             c.confidence = combined;
             c.reformatted = pass.reformatted;
@@ -517,6 +534,9 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
         if (c.confidence < kAcceptThreshold) continue;
         const FieldDef* field = registry.find(c.field);
         if (field == nullptr) continue;
+        // Text validators pass anything, so only lexicon evidence can clear
+        // the weak-validator floor; the transformer's posterior counts as
+        // name evidence only where values can veto it.
         if (validator_is_weak(field->kind) && c.label_similarity < kWeakValidatorLabelFloor) {
             continue;
         }
@@ -534,9 +554,10 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
     return candidates;
 }
 
-Mapping infer_mapping(const Registry& registry, const doc::Model& model) {
+Mapping infer_mapping(const Registry& registry, const doc::Model& model,
+                      const columns::ColumnModel* neural) {
     Mapping mapping;
-    for (const Candidate& c : score_candidates(registry, model, kAcceptThreshold)) {
+    for (const Candidate& c : score_candidates(registry, model, kAcceptThreshold, neural)) {
         if (!c.accepted) continue;
         mapping.fields.push_back(FieldMapping{c.field, c.source_label, c.label_similarity,
                                               c.value_pass_rate, c.confidence, c.reformatted});

@@ -4,6 +4,7 @@
 
 #include "dd/core/core.hpp"
 #include "dd/engine/bench.hpp"
+#include "dd/engine/harvest.hpp"
 #include "dd/engine/events.hpp"
 #include "dd/parse/document.hpp"
 
@@ -218,7 +219,8 @@ void review(store::Store& store, pipeline::Pipeline& pipeline, const std::string
     }
     store::SourceState state = store.source_state(source_id);
     const std::vector<schema::Candidate> candidates =
-        schema::score_candidates(pipeline.registry(), *model, 0.50);
+        schema::score_candidates(pipeline.registry(), *model, 0.50,
+                                 pipeline.column_model());
 
     section("Review " + source_id);
     std::size_t decisions = 0;
@@ -265,7 +267,8 @@ void review(store::Store& store, pipeline::Pipeline& pipeline, const std::string
     }
 }
 
-void model_status(const classify::Classifier& classifier) {
+void model_status(const classify::Classifier& classifier,
+                  const columns::ColumnModel* column_model) {
     section("Model");
     char alpha[16];
     std::snprintf(alpha, sizeof(alpha), "%.2f", classifier.bayes().alpha());
@@ -285,6 +288,23 @@ void model_status(const classify::Classifier& classifier) {
         rows.push_back({c.name, std::to_string(c.documents), str::join(tokens, ", ")});
     }
     render::table({"class", "examples", "top vocabulary by lift"}, rows);
+
+    section("Column transformer");
+    if (column_model == nullptr) {
+        std::printf("  not loaded; harvest then 'train columns' to build one\n");
+        return;
+    }
+    const columns::Hyper& h = column_model->hyper();
+    char arch[96];
+    std::snprintf(arch, sizeof(arch), "%d layers, d_model %d, %d heads, ffn %d, seq %d",
+                  h.layers, h.d_model, h.heads, h.d_ffn, h.seq_len);
+    render::kv({
+        {"algorithm", "byte-level transformer encoder (in-repo, no deps)"},
+        {"architecture", arch},
+        {"parameters", std::to_string(column_model->parameter_count())},
+        {"classes", std::to_string(column_model->classes().size()) +
+                        " canonical fields + none"},
+    });
 }
 
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
@@ -385,6 +405,92 @@ void print_totals(const char* who, const BenchTotals& t, const std::string& cost
 
 } // namespace
 
+int harvest(const schema::Registry& registry, const std::string& corpus_path,
+            std::size_t datasets_per_query) {
+    harvest::Options options = harvest::default_options();
+    if (datasets_per_query > 0) options.datasets_per_query = datasets_per_query;
+    section("Harvesting real government columns (Socrata discovery API)");
+    harvest::Stats stats;
+    const std::vector<columns::Example> examples = harvest::run(
+        registry, options,
+        [](const std::string& line) { std::printf("  %s\n", line.c_str()); }, &stats);
+    if (examples.empty()) {
+        std::printf("  %s nothing harvested\n", stamp("failed").c_str());
+        return 1;
+    }
+    std::remove(corpus_path.c_str());
+    columns::append_corpus(corpus_path, examples);
+    render::kv({
+        {"datasets sampled", std::to_string(stats.datasets_sampled) + " of " +
+                                 std::to_string(stats.datasets_seen) + " seen"},
+        {"portals", std::to_string(stats.domains)},
+        {"columns", std::to_string(examples.size())},
+        {"lexicon-labeled", std::to_string(stats.labeled)},
+        {"none", std::to_string(stats.none)},
+        {"corpus", corpus_path},
+    });
+    std::printf("  %s\n", paint("dim", "labels are exact lexicon hits only; the model must "
+                                        "generalise to everything else").c_str());
+    return 0;
+}
+
+int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
+                  const std::string& model_path, int epochs) {
+    const std::vector<columns::Example> corpus = columns::load_corpus(corpus_path);
+    if (corpus.empty()) {
+        std::printf("  no corpus at %s; run harvest first\n", corpus_path.c_str());
+        return 1;
+    }
+    std::vector<columns::Example> train_set;
+    std::vector<columns::Example> holdout;
+    columns::split_by_domain(corpus, 5, &train_set, &holdout);
+
+    columns::ColumnModel model{columns::Hyper{}};
+    columns::TrainConfig config;
+    config.epochs = epochs;
+    section("Training the column transformer");
+    render::kv({
+        {"train", std::to_string(train_set.size()) + " columns"},
+        {"holdout", std::to_string(holdout.size()) + " columns (unseen portals)"},
+        {"epochs", std::to_string(config.epochs)},
+    });
+    const Stopwatch watch;
+    const columns::TrainReport report = model.train(train_set, holdout, config);
+    std::printf("  %zu parameters, %.1f s\n", report.parameters, watch.elapsed_ms() / 1000.0);
+    for (std::size_t i = 0; i < report.epoch_loss.size(); ++i) {
+        std::printf("  epoch %zu  loss %.4f\n", i + 1, report.epoch_loss[i]);
+    }
+
+    section("Holdout results (portals the model never saw)");
+    std::vector<std::vector<std::string>> rows;
+    std::vector<columns::ClassResult> per_class = report.per_class;
+    std::sort(per_class.begin(), per_class.end(),
+              [](const columns::ClassResult& a, const columns::ClassResult& b) {
+                  return a.label < b.label;
+              });
+    for (const columns::ClassResult& r : per_class) {
+        rows.push_back({r.label, std::to_string(r.correct) + "/" + std::to_string(r.total),
+                        meter(r.total == 0 ? 0.0
+                                           : static_cast<double>(r.correct) /
+                                                 static_cast<double>(r.total))});
+    }
+    render::table({"class", "correct", "accuracy"}, rows);
+    std::printf("  overall %s on %zu held-out columns\n",
+                pct(report.holdout_accuracy).c_str(), report.holdout_examples);
+
+    if (report.holdout_accuracy < 0.75) {
+        std::printf("  %s below 0.75: not saved\n", stamp("failed").c_str());
+        return 1;
+    }
+    model.save(model_path);
+    std::printf("  %s saved to %s\n", stamp("ok").c_str(), model_path.c_str());
+    if (pipeline != nullptr) {
+        pipeline->set_column_model(std::move(model));
+        std::printf("  %s\n", paint("dim", "live matcher now uses this model").c_str());
+    }
+    return 0;
+}
+
 int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& golden_path) {
     const std::vector<bench::Golden> golden = bench::load_golden(golden_path);
 
@@ -404,7 +510,8 @@ int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& 
 
         const Stopwatch watch;
         const classify::Prediction prediction = pipeline.classifier().classify(model, url);
-        const schema::Mapping mapping = schema::infer_mapping(pipeline.registry(), model);
+        const schema::Mapping mapping =
+            schema::infer_mapping(pipeline.registry(), model, pipeline.column_model());
         const double elapsed = watch.elapsed_ms();
 
         const bool cls_ok = bench::classification_ok(g, prediction.label);

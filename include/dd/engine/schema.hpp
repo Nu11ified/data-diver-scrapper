@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dd/ml/columns.hpp"
 #include "dd/parse/document.hpp"
 
 #include <map>
@@ -97,7 +98,8 @@ struct Mapping {
 // are scored against each field's synonyms with fuzzy token matching, values
 // against the kind validator; a field is accepted when the combined score
 // clears the threshold. Each source label maps to at most one field.
-Mapping infer_mapping(const Registry& registry, const doc::Model& model);
+Mapping infer_mapping(const Registry& registry, const doc::Model& model,
+                      const columns::ColumnModel* neural = nullptr);
 
 // Lexicon similarity of one (field, label) pair, in [0,1]: the same scorer
 // infer_mapping uses.
@@ -114,10 +116,12 @@ struct Candidate {
     double value_pass_rate = 0.0;
     double confidence = 0.0;
     bool reformatted = false;
+    double neural = 0.0;   // column transformer posterior for this pair
     bool accepted = false; // part of what infer_mapping would keep
 };
 std::vector<Candidate> score_candidates(const Registry& registry, const doc::Model& model,
-                                        double floor);
+                                        double floor,
+                                        const columns::ColumnModel* neural = nullptr);
 
 // Applies operator overrides (canonical field name -> source label; empty
 // label = force-unmap) on top of an inferred or healed mapping. An

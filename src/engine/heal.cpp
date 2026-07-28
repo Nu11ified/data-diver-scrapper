@@ -54,9 +54,10 @@ Assessment assess(const store::SourceState& state, const doc::Model& model,
 }
 
 Proposal propose(const schema::Registry& registry, const doc::Model& model,
-                 const schema::Mapping& previous, double baseline_rate) {
+                 const schema::Mapping& previous, double baseline_rate,
+                 const columns::ColumnModel* neural) {
     Proposal out;
-    out.candidate = schema::infer_mapping(registry, model);
+    out.candidate = schema::infer_mapping(registry, model, neural);
     out.result = schema::apply_mapping(registry, out.candidate, model);
 
     if (out.candidate.fields.empty()) {

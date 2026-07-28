@@ -2,6 +2,7 @@
 
 #include "dd/core/core.hpp"
 #include "dd/ml/classify.hpp"
+#include "dd/ml/columns.hpp"
 #include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
 
@@ -36,6 +37,13 @@ public:
     // Hot-swaps the live classifier. Callers serialize this with runs.
     void set_classifier(classify::Classifier classifier);
 
+    // Installs (or replaces) the column transformer used as name evidence
+    // during mapping. Callers serialize this with runs.
+    void set_column_model(columns::ColumnModel model);
+    const columns::ColumnModel* column_model() const noexcept {
+        return column_model_.trained() ? &column_model_ : nullptr;
+    }
+
 private:
     store::RunRecord ingest(const store::Source& source, store::RunRecord run,
                             const Stopwatch& total_watch, double cpu_before,
@@ -44,6 +52,7 @@ private:
     store::Store& store_;
     classify::Classifier classifier_;
     schema::Registry registry_;
+    columns::ColumnModel column_model_;
 };
 
 } // namespace dd::pipeline

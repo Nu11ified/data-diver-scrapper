@@ -24,7 +24,8 @@ void show_mapping(store::Store& store, pipeline::Pipeline& pipeline, const std::
 void review(store::Store& store, pipeline::Pipeline& pipeline, const std::string& source_id,
             std::istream& in);
 
-void model_status(const classify::Classifier& classifier);
+void model_status(const classify::Classifier& classifier,
+                  const columns::ColumnModel* column_model);
 
 // Trains at one alpha, or sweeps a small grid when sweep=true, printing
 // per-class results and the confusion pairs from leave-one-out. Saves the
@@ -32,6 +33,17 @@ void model_status(const classify::Classifier& classifier);
 // pipeline's classifier when one is given.
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
           const std::string& model_path, double alpha, bool sweep);
+
+// Harvests the column corpus from live Socrata portals into corpus_path
+// (overwriting), then reports what was gathered.
+int harvest(const schema::Registry& registry, const std::string& corpus_path,
+            std::size_t datasets_per_query);
+
+// Trains the column transformer on the harvested corpus with a by-domain
+// holdout, prints per-class results, saves to model_path when the holdout
+// accuracy clears 0.75.
+int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
+                  const std::string& model_path, int epochs);
 
 // The validity benchmark: scores the engine's classification and mapping on
 // every golden source against the hand-verified answer key, from cached

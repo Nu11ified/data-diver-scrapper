@@ -28,6 +28,7 @@ add_library(dd_engine STATIC
   src/engine/entity.cpp
   src/engine/events.cpp
   src/engine/store.cpp
+  src/engine/harvest.cpp
   src/engine/heal.cpp
   src/engine/pipeline.cpp
 )

@@ -104,6 +104,7 @@ struct Alignment {
 
 Alignment align_document(const dd::schema::Registry& registry,
                          const dd::classify::Classifier& classifier,
+                         const dd::columns::ColumnModel* column_model,
                          const std::string& url, const std::string& content_type,
                          const std::string& body) {
     Alignment out;
@@ -116,7 +117,7 @@ Alignment align_document(const dd::schema::Registry& registry,
     out.classify_ms = classify_watch.elapsed_ms();
 
     const dd::Stopwatch map_watch;
-    out.mapping = dd::schema::infer_mapping(registry, out.model);
+    out.mapping = dd::schema::infer_mapping(registry, out.model, column_model);
     out.extraction = dd::schema::apply_mapping(registry, out.mapping, out.model);
     out.map_ms = map_watch.elapsed_ms();
     return out;
@@ -207,6 +208,7 @@ void print_alignment(const dd::fetch::Result& fetched, const Alignment& a) {
 
 // Fetch and align one URL, printing the full report.
 std::optional<Alignment> run_align(const dd::schema::Registry& registry,
+                                   const dd::columns::ColumnModel* column_model,
                                    const dd::classify::Classifier& classifier,
                                    const std::string& url) {
     const dd::fetch::Result fetched = dd::fetch::get(url);
@@ -216,7 +218,8 @@ std::optional<Alignment> run_align(const dd::schema::Registry& registry,
     }
     try {
         Alignment a =
-            align_document(registry, classifier, url, fetched.content_type, fetched.body);
+            align_document(registry, classifier, column_model, url, fetched.content_type,
+                           fetched.body);
         print_alignment(fetched, a);
         return a;
     } catch (const dd::Error& e) {
@@ -238,6 +241,7 @@ std::string now_clock() {
 // when the page changes shape run the healer against the previous mapping
 // and show the repair live.
 int watch_url(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier,
+              const dd::columns::ColumnModel* column_model,
               const std::string& url, int interval_seconds) {
     std::printf("watching %s every %ds; ctrl-c to stop\n", url.c_str(), interval_seconds);
 
@@ -259,7 +263,7 @@ int watch_url(const dd::schema::Registry& registry, const dd::classify::Classifi
                             fmt_ms(fetched.total_ms).c_str());
             } else {
                 try {
-                    Alignment current = align_document(registry, classifier, url,
+                    Alignment current = align_document(registry, classifier, column_model, url,
                                                        fetched.content_type, fetched.body);
                     if (!previous.has_value()) {
                         std::printf("[%s] first fetch, learning the mapping\n",
@@ -346,12 +350,20 @@ std::vector<std::string> shell_tokens(const std::string& input) {
 
 void print_run(const dd::store::RunRecord& run);
 
+// The column transformer is optional equipment: absent file means the
+// lexicon and validators carry matching alone.
+std::optional<dd::columns::ColumnModel> load_column_model(const std::string& path) {
+    if (!dd::fileio::exists(path)) return std::nullopt;
+    return dd::columns::ColumnModel::load(path);
+}
+
 // Store-backed state, built on first use so pasting a URL stays instant.
 struct ShellState {
     std::string state_dir;
     std::string seeds_path;
     std::string model_path;
     std::string schema_path;
+    std::string columns_model_path;
     std::optional<dd::store::Store> store;
     std::optional<dd::pipeline::Pipeline> pipeline;
 
@@ -361,6 +373,10 @@ struct ShellState {
             store->seed(seeds_path);
             pipeline.emplace(*store, dd::classify::Classifier::load(model_path),
                              dd::schema::Registry::load(schema_path));
+            if (std::optional<dd::columns::ColumnModel> nn = load_column_model(columns_model_path);
+                nn.has_value()) {
+                pipeline->set_column_model(std::move(*nn));
+            }
         }
         return *pipeline;
     }
@@ -368,6 +384,10 @@ struct ShellState {
 
 int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier,
           ShellState& state) {
+    const std::optional<dd::columns::ColumnModel> column_model =
+        load_column_model(state.columns_model_path);
+    const dd::columns::ColumnModel* nn =
+        column_model.has_value() ? &*column_model : nullptr;
     std::printf("%s\n", paint("bold", "Data Diver").c_str());
     std::printf("%s\n",
                 paint("dim", "paste a URL to align it; 'help' lists commands.").c_str());
@@ -390,6 +410,8 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  run (all | SOURCE_ID)  ingest into the store\n"
                         "  map SOURCE_ID          learned mapping with sample values\n"
                         "  review SOURCE_ID       confirm or refuse uncertain matches\n"
+                        "  harvest [N]            build the column corpus from live portals\n"
+                        "  train columns [EPOCHS] train the column transformer, validate by domain\n"
                         "  bench                  score against the hand-verified answer key\n"
                         "  model                  classifier status\n"
                         "  train [ALPHA|sweep]    retrain with validation breakdown\n"
@@ -453,14 +475,32 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             dd::cli::review(*state.store, pipeline, dd::str::trim(input.substr(7)), std::cin);
             continue;
         }
+        if (input.rfind("harvest", 0) == 0 && (input == "harvest" || input[7] == ' ')) {
+            const std::vector<std::string> parts = shell_tokens(input);
+            const std::size_t per_query =
+                parts.size() >= 2 ? static_cast<std::size_t>(std::atoi(parts[1].c_str())) : 0;
+            dd::cli::harvest(registry, "data/columns/corpus.jsonl", per_query);
+            continue;
+        }
+        if (input.rfind("train columns", 0) == 0) {
+            const std::vector<std::string> parts = shell_tokens(input);
+            const int epochs = parts.size() >= 3 ? std::max(1, std::atoi(parts[2].c_str())) : 6;
+            dd::cli::train_columns(state.pipeline.has_value() ? &*state.pipeline : nullptr,
+                                   "data/columns/corpus.jsonl", state.columns_model_path,
+                                   epochs);
+            continue;
+        }
         if (input == "bench") {
             dd::pipeline::Pipeline& pipeline = state.ensure();
             dd::cli::bench(*state.store, pipeline, "data/golden/golden.json");
             continue;
         }
         if (input == "model") {
-            if (state.pipeline.has_value()) dd::cli::model_status(state.pipeline->classifier());
-            else dd::cli::model_status(classifier);
+            const dd::classify::Classifier& live =
+                state.pipeline.has_value() ? state.pipeline->classifier() : classifier;
+            dd::cli::model_status(live, state.pipeline.has_value()
+                                            ? state.pipeline->column_model()
+                                            : nn);
             continue;
         }
         if (input.rfind("train", 0) == 0 && (input == "train" || input[5] == ' ')) {
@@ -484,11 +524,11 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             }
             const int seconds =
                 parts.size() >= 3 ? std::max(1, std::atoi(parts[2].c_str())) : 15;
-            watch_url(registry, classifier, parts[1], seconds);
+            watch_url(registry, classifier, nn, parts[1], seconds);
             continue;
         }
         const dd::Stopwatch total;
-        run_align(registry, classifier, input);
+        run_align(registry, nn, classifier, input);
         std::printf("\n%s\n",
                     paint("dim", "total " + fmt_ms(total.elapsed_ms()) + " end to end").c_str());
     }
@@ -519,6 +559,8 @@ int usage() {
         "  datadiver review SOURCE_ID         confirm or refuse uncertain matches\n"
         "  datadiver model                    classifier status\n"
         "  datadiver bench                    score the engine against the answer key\n"
+        "  datadiver harvest [--datasets N]   build the column corpus from live portals\n"
+        "  datadiver train-columns [--epochs N] train the column transformer\n"
         "  datadiver train [--alpha A|--sweep] retrain with validation breakdown\n"
         "flags: --schema FILE  --model FILE  --state DIR  --seeds FILE\n");
     return 2;
@@ -532,6 +574,8 @@ int main(int argc, char** argv) {
     const std::string model_path = flag(args, "model", "data/model/source_classifier.json");
     const std::string seeds_path = flag(args, "seeds", "data/sources.json");
     const std::string schema_path = flag(args, "schema", "data/schema.json");
+    const std::string columns_model_path =
+        flag(args, "columns-model", "data/model/column_model.json");
 
     try {
         if (args.command.empty() || args.command == "shell") {
@@ -540,6 +584,7 @@ int main(int argc, char** argv) {
             state.seeds_path = seeds_path;
             state.model_path = model_path;
             state.schema_path = schema_path;
+            state.columns_model_path = columns_model_path;
             return shell(dd::schema::Registry::load(schema_path),
                          dd::classify::Classifier::load(model_path), state);
         }
@@ -550,8 +595,11 @@ int main(int argc, char** argv) {
             const dd::classify::Classifier classifier =
                 dd::classify::Classifier::load(model_path);
             const dd::Stopwatch total;
+            const std::optional<dd::columns::ColumnModel> nn =
+                load_column_model(columns_model_path);
             const std::optional<Alignment> result =
-                run_align(registry, classifier, args.positional[0]);
+                run_align(registry, nn.has_value() ? &*nn : nullptr, classifier,
+                          args.positional[0]);
             if (result.has_value()) {
                 std::printf("\n%s\n",
                             paint("dim", "total " + fmt_ms(total.elapsed_ms()) + " end to end")
@@ -563,9 +611,11 @@ int main(int argc, char** argv) {
         if (args.command == "watch") {
             if (args.positional.empty()) return usage();
             const int interval = std::max(1, std::atoi(flag(args, "interval", "15").c_str()));
+            const std::optional<dd::columns::ColumnModel> nn =
+                load_column_model(columns_model_path);
             return watch_url(dd::schema::Registry::load(schema_path),
-                             dd::classify::Classifier::load(model_path), args.positional[0],
-                             interval);
+                             dd::classify::Classifier::load(model_path),
+                             nn.has_value() ? &*nn : nullptr, args.positional[0], interval);
         }
 
         if (args.command == "ingest") {
@@ -573,6 +623,10 @@ int main(int argc, char** argv) {
             store.seed(seeds_path);
             dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path),
                                             dd::schema::Registry::load(schema_path)};
+            if (std::optional<dd::columns::ColumnModel> nn = load_column_model(columns_model_path);
+                nn.has_value()) {
+                pipeline.set_column_model(std::move(*nn));
+            }
             bool any_failed = false;
             if (args.flags.count("all") != 0) {
                 for (const dd::store::Source& s : store.sources()) {
@@ -600,6 +654,20 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (args.command == "harvest") {
+            return dd::cli::harvest(dd::schema::Registry::load(schema_path),
+                                    flag(args, "corpus", "data/columns/corpus.jsonl"),
+                                    static_cast<std::size_t>(
+                                        std::atoi(flag(args, "datasets", "0").c_str())));
+        }
+
+        if (args.command == "train-columns") {
+            return dd::cli::train_columns(nullptr,
+                                          flag(args, "corpus", "data/columns/corpus.jsonl"),
+                                          columns_model_path,
+                                          std::max(1, std::atoi(flag(args, "epochs", "6").c_str())));
+        }
+
         if (args.command == "train") {
             const double alpha = std::atof(flag(args, "alpha", "1.0").c_str());
             return dd::cli::train(nullptr, flag(args, "corpus", "data/corpus"), model_path,
@@ -612,12 +680,16 @@ int main(int argc, char** argv) {
             store.seed(seeds_path);
             dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path),
                                             dd::schema::Registry::load(schema_path)};
+            if (std::optional<dd::columns::ColumnModel> nn = load_column_model(columns_model_path);
+                nn.has_value()) {
+                pipeline.set_column_model(std::move(*nn));
+            }
             if (args.command == "counties") {
                 dd::cli::counties(store);
                 return 0;
             }
             if (args.command == "model") {
-                dd::cli::model_status(pipeline.classifier());
+                dd::cli::model_status(pipeline.classifier(), pipeline.column_model());
                 return 0;
             }
             if (args.command == "bench") {
