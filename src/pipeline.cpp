@@ -60,8 +60,44 @@ std::vector<events::PropertyEvent> to_events(const store::Source& source,
     return out;
 }
 
-std::string records_to_json(const schema::ExtractionResult& extraction) {
+// The full extraction picture for one source, kept for the schema view: the
+// dialect's own labels, the classifier's posterior, the mapping with its per
+// field evidence, the measured per-field rates, and the records themselves.
+std::string extraction_snapshot(const store::RunRecord& run, const doc::Model& model,
+                                const classify::Prediction& prediction,
+                                const schema::Mapping& mapping,
+                                const schema::ExtractionResult& extraction) {
     json::Writer w;
+    w.begin_object();
+    w.field("at", run.started_at);
+    w.field("run_id", run.id);
+    w.field("format", std::string{doc::format_name(model.format)});
+    w.field("container", model.container_signature);
+    w.field("fingerprint", model.structure_fingerprint());
+    w.key("labels");
+    w.begin_array();
+    for (const std::string& label : model.labels) w.string_value(label);
+    w.end_array();
+    w.key("classification");
+    w.begin_object();
+    w.field("label", prediction.label);
+    w.field("confidence", prediction.confidence);
+    w.key("distribution");
+    w.begin_array();
+    for (const model::Scored& s : prediction.distribution) {
+        w.begin_object();
+        w.field("label", s.label);
+        w.field("probability", s.probability);
+        w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+    w.field_raw("mapping", mapping.serialize());
+    w.key("field_rates");
+    w.begin_object();
+    for (const auto& [field, rate] : extraction.field_rates) w.field(field, rate);
+    w.end_object();
+    w.key("records");
     w.begin_array();
     for (const schema::CanonicalRecord& record : extraction.records) {
         w.begin_object();
@@ -70,6 +106,7 @@ std::string records_to_json(const schema::ExtractionResult& extraction) {
         w.end_object();
     }
     w.end_array();
+    w.end_object();
     return w.take();
 }
 
@@ -225,7 +262,8 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     const std::vector<events::PropertyEvent> batch =
         to_events(source, run, prediction.label, prediction.confidence, extraction);
     run.events_new = static_cast<std::int64_t>(store_.add_events(batch));
-    store_.save_latest_records(source.id, records_to_json(extraction));
+    store_.save_latest_records(source.id,
+                               extraction_snapshot(run, model, prediction, mapping, extraction));
 
     // ------------------------------------------------------ update state ---
     state.source_id = source.id;

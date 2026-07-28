@@ -1332,6 +1332,118 @@ TEST(server_full_flow_over_real_http) {
     server.stop();
 }
 
+TEST(model_summaries_surface_discriminative_vocabulary) {
+    const dd::classify::Classifier classifier = test_classifier();
+    const std::vector<dd::model::ClassSummary> classes = classifier.bayes().summarize(10);
+    CHECK_EQ(classes.size(), std::size_t{8});
+    bool tax_has_delinquent = false;
+    for (const dd::model::ClassSummary& c : classes) {
+        CHECK(c.documents >= 5);
+        CHECK(!c.top_tokens.empty());
+        if (c.name == "tax_delinquency") {
+            for (const dd::model::TokenWeight& t : c.top_tokens) {
+                if (dd::str::contains(t.token, "delinquen")) tax_has_delinquent = true;
+                CHECK(t.lift > 1.0); // above corpus-average frequency by definition
+            }
+        }
+    }
+    CHECK(tax_has_delinquent);
+}
+
+TEST(pipeline_resolves_across_sources) {
+    // Two different Millbrook sources describe the same parcels: the tax roll
+    // and the assessment roll. Records must land on the same properties.
+    const std::string root = fresh_dir("pipe_relations");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+
+    const dd::store::Source tax =
+        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
+    const dd::store::Source assessor = store.add_source(
+        "Millbrook Assessor", "data/fixtures/millbrook_assessor.html", "Millbrook County");
+    CHECK(pipeline.run_source(tax).ok);
+    const dd::store::RunRecord second = pipeline.run_source(assessor);
+    CHECK(second.ok);
+    CHECK_EQ(second.classification, "assessor_roll");
+
+    // Still six properties, each now carrying evidence from both sources.
+    const std::vector<std::string> keys = store.property_keys();
+    CHECK_EQ(keys.size(), std::size_t{6});
+    for (const std::string& key : keys) {
+        const std::vector<dd::events::PropertyEvent> evs = store.events_for(key);
+        CHECK_EQ(evs.size(), std::size_t{2});
+        CHECK(evs[0].source_id != evs[1].source_id);
+        // The assessment is evidence only: the distress state stays put.
+        CHECK(dd::events::reduce(evs).state == dd::events::State::TaxDelinquent);
+    }
+}
+
+TEST(server_schema_model_benchmark_endpoints) {
+    const std::string root = fresh_dir("server_v2");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::server::Server server{store, pipeline, dd::server::Options{"127.0.0.1", 0, "web"}};
+    server.start();
+
+    // Model introspection.
+    const dd::json::Value model =
+        dd::json::parse(http_request(server.port(), "GET", "/api/model").body);
+    CHECK_EQ(model.find("classes")->items().size(), std::size_t{8});
+    CHECK(model.find("vocabulary")->as_number() > 100);
+    CHECK(model.find("classes")->items()[0].find("top_tokens")->items().size() >= 1);
+
+    // Schema before any run: null snapshot, not an invented one.
+    const HttpReply added = http_request(
+        server.port(), "POST", "/api/sources",
+        R"({"name": "Millbrook", "url": "data/fixtures/millbrook_tax.html", "jurisdiction": "Millbrook County"})");
+    const std::string sid = dd::json::parse(added.body).find("id")->as_string();
+    const dd::json::Value empty_schema = dd::json::parse(
+        http_request(server.port(), "GET", "/api/schema?source=" + sid).body);
+    CHECK(empty_schema.find("snapshot")->is_null());
+    CHECK_EQ(http_request(server.port(), "GET", "/api/schema?source=zzz").status, 404);
+
+    // After a run the schema view carries the dialect and the evidence.
+    http_request(server.port(), "POST", "/api/run?source=" + sid);
+    const dd::json::Value schema = dd::json::parse(
+        http_request(server.port(), "GET", "/api/schema?source=" + sid).body);
+    const dd::json::Value* snapshot = schema.find("snapshot");
+    CHECK(snapshot->is_object());
+    CHECK_EQ(snapshot->find("format")->as_string(), "html");
+    CHECK(snapshot->find("labels")->items().size() >= 5);
+    CHECK_EQ(snapshot->find("classification")->find("label")->as_string(), "tax_delinquency");
+    CHECK_EQ(snapshot->find("classification")->find("distribution")->items().size(),
+             std::size_t{8});
+    const dd::json::Value* fields = snapshot->find("mapping")->find("fields");
+    CHECK(fields->items().size() >= 4);
+    const dd::json::Value& first_field = fields->items()[0];
+    CHECK(first_field.find("label_similarity")->as_number() > 0.0);
+    CHECK(first_field.find("value_pass_rate")->as_number() > 0.0);
+    CHECK(snapshot->find("field_rates")->is_object());
+
+    // Records endpoint still returns just the records array.
+    const dd::json::Value records = dd::json::parse(
+        http_request(server.port(), "GET", "/api/records?source=" + sid).body);
+    CHECK_EQ(records.items().size(), std::size_t{6});
+
+    // Benchmark: real runs, measured.
+    const dd::json::Value bench = dd::json::parse(
+        http_request(server.port(), "POST", "/api/benchmark?rounds=3").body);
+    CHECK_NEAR(bench.find("rounds")->as_number(), 3.0, 1e-9);
+    CHECK_NEAR(bench.find("runs")->as_number(), 3.0, 1e-9); // one source, three rounds
+    CHECK_NEAR(bench.find("ok_runs")->as_number(), 3.0, 1e-9);
+    CHECK_NEAR(bench.find("records_processed")->as_number(), 18.0, 1e-9);
+    CHECK_NEAR(bench.find("events_new")->as_number(), 0.0, 1e-9); // dedup absorbs reruns
+    CHECK(bench.find("total_ms")->as_number() > 0.0);
+    CHECK(bench.find("records_per_sec")->as_number() > 0.0);
+
+    // Those benchmark runs are real run records.
+    const dd::json::Value runs =
+        dd::json::parse(http_request(server.port(), "GET", "/api/runs?limit=100").body);
+    CHECK_EQ(runs.items().size(), std::size_t{4});
+
+    server.stop();
+}
+
 } // namespace
 
 int main() {

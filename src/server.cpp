@@ -357,6 +357,122 @@ void Server::handle_connection(int client_fd) {
         return;
     }
 
+    if (req.path == "/api/model" && req.method == "GET") {
+        const classify::Classifier& classifier = pipeline_.classifier();
+        json::Writer w;
+        w.begin_object();
+        w.field("trained_at", classifier.trained_at());
+        w.field("leave_one_out_accuracy", classifier.trained_accuracy());
+        w.field("examples", static_cast<std::int64_t>(classifier.example_count()));
+        w.field("vocabulary", static_cast<std::int64_t>(classifier.bayes().vocabulary_size()));
+        w.field("kind", "multinomial naive Bayes, Laplace smoothing");
+        w.key("classes");
+        w.begin_array();
+        for (const model::ClassSummary& c : classifier.bayes().summarize(10)) {
+            w.begin_object();
+            w.field("name", c.name);
+            w.field("documents", c.documents);
+            w.field("tokens", c.tokens);
+            w.key("top_tokens");
+            w.begin_array();
+            for (const model::TokenWeight& t : c.top_tokens) {
+                w.begin_object();
+                w.field("token", t.token);
+                w.field("count", t.count);
+                w.field("lift", t.lift);
+                w.end_object();
+            }
+            w.end_array();
+            w.end_object();
+        }
+        w.end_array();
+        w.end_object();
+        respond_json(client_fd, 200, w.str());
+        return;
+    }
+
+    if (req.path == "/api/schema" && req.method == "GET") {
+        const auto it = req.query.find("source");
+        if (it == req.query.end()) {
+            respond_error(client_fd, 400, "source query parameter required");
+            return;
+        }
+        const std::optional<store::Source> source = store_.find_source(it->second);
+        if (!source.has_value()) {
+            respond_error(client_fd, 404, "unknown source");
+            return;
+        }
+        const std::string snapshot = store_.latest_records(it->second);
+        const json::Value parsed = json::parse(snapshot);
+        const store::SourceState state = store_.source_state(it->second);
+        json::Writer w;
+        w.begin_object();
+        w.field("source_id", source->id);
+        w.field("name", source->name);
+        w.field("jurisdiction", source->jurisdiction);
+        w.field("baseline_rate", state.baseline_rate);
+        w.field("good_runs", state.good_runs);
+        w.field_raw("snapshot", parsed.is_object() ? snapshot : "null");
+        w.end_object();
+        respond_json(client_fd, 200, w.str());
+        return;
+    }
+
+    if (req.path == "/api/benchmark" && req.method == "POST") {
+        std::size_t rounds = 5;
+        const auto it = req.query.find("rounds");
+        if (it != req.query.end()) {
+            rounds = static_cast<std::size_t>(std::atoll(it->second.c_str()));
+        }
+        rounds = std::min<std::size_t>(std::max<std::size_t>(rounds, 1), 25);
+        const std::vector<store::Source> sources = store_.sources();
+
+        // A scale test is just the real pipeline, measured: every run below
+        // fetches, parses, classifies, maps and resolves exactly as a
+        // scheduled ingest would.
+        const std::int64_t rss_before = metrics::current_rss_bytes();
+        const double cpu_before = metrics::cpu_time_ms();
+        std::int64_t runs = 0;
+        std::int64_t ok = 0;
+        std::int64_t records = 0;
+        std::int64_t events_new = 0;
+        std::int64_t bytes = 0;
+        const Stopwatch watch;
+        {
+            const std::lock_guard<std::mutex> lock{run_mutex_};
+            for (std::size_t round = 0; round < rounds; ++round) {
+                for (const store::Source& s : sources) {
+                    if (!s.enabled) continue;
+                    const store::RunRecord r = pipeline_.run_source(s);
+                    ++runs;
+                    if (r.ok) ++ok;
+                    records += r.records_extracted;
+                    events_new += r.events_new;
+                    bytes += r.bytes;
+                }
+            }
+        }
+        const double total_ms = watch.elapsed_ms();
+
+        json::Writer w;
+        w.begin_object();
+        w.field("rounds", static_cast<std::int64_t>(rounds));
+        w.field("runs", runs);
+        w.field("ok_runs", ok);
+        w.field("records_processed", records);
+        w.field("events_new", events_new);
+        w.field("bytes_processed", bytes);
+        w.field("total_ms", total_ms);
+        w.field("runs_per_sec", total_ms > 0.0 ? runs * 1000.0 / total_ms : 0.0);
+        w.field("records_per_sec", total_ms > 0.0 ? records * 1000.0 / total_ms : 0.0);
+        w.field("cpu_ms", metrics::cpu_time_ms() - cpu_before);
+        w.field("rss_before_bytes", rss_before);
+        w.field("rss_after_bytes", metrics::current_rss_bytes());
+        w.end_object();
+        respond_json(client_fd, 200, w.str());
+        return;
+    }
+
     if (req.path == "/api/sources" && req.method == "GET") {
         json::Writer w;
         w.begin_array();
@@ -444,7 +560,10 @@ void Server::handle_connection(int client_fd) {
             respond_error(client_fd, 400, "source query parameter required");
             return;
         }
-        respond_json(client_fd, 200, store_.latest_records(it->second));
+        const std::string snapshot = store_.latest_records(it->second);
+        const json::Value parsed = json::parse(snapshot);
+        const json::Value* records = parsed.find("records");
+        respond_json(client_fd, 200, records == nullptr ? "[]" : records->serialize());
         return;
     }
 
@@ -470,6 +589,14 @@ void Server::handle_connection(int client_fd) {
             w.field("address", detail("address"));
             w.field("parcel_id", detail("parcel_id"));
             w.field("last_event_date", latest.event_date);
+            std::vector<std::string> source_ids;
+            for (const events::PropertyEvent& e : evs) {
+                if (std::find(source_ids.begin(), source_ids.end(), e.source_id) ==
+                    source_ids.end()) {
+                    source_ids.push_back(e.source_id);
+                }
+            }
+            w.field("sources", static_cast<std::int64_t>(source_ids.size()));
             w.end_object();
         }
         w.end_array();

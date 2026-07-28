@@ -63,6 +63,54 @@ std::vector<Scored> NaiveBayes::predict(const features::Bag& bag) const {
     return out;
 }
 
+std::vector<ClassSummary> NaiveBayes::summarize(std::size_t top_n) const {
+    // Corpus-wide token totals for the lift denominator.
+    std::map<std::string, std::int64_t> corpus_counts;
+    std::int64_t corpus_tokens = 0;
+    for (const Class& c : classes_) {
+        for (const auto& [token, count] : c.counts) corpus_counts[token] += count;
+        corpus_tokens += c.tokens;
+    }
+
+    std::vector<ClassSummary> out;
+    for (const Class& c : classes_) {
+        ClassSummary summary;
+        summary.name = c.name;
+        summary.documents = c.documents;
+        summary.tokens = c.tokens;
+        if (c.tokens == 0 || corpus_tokens == 0) {
+            out.push_back(std::move(summary));
+            continue;
+        }
+        std::vector<TokenWeight> weights;
+        for (const auto& [token, count] : c.counts) {
+            if (count < 2) continue; // one-offs are noise, not vocabulary
+            const double in_class =
+                static_cast<double>(count) / static_cast<double>(c.tokens);
+            const double in_corpus = static_cast<double>(corpus_counts[token]) /
+                                     static_cast<double>(corpus_tokens);
+            weights.push_back(TokenWeight{token, count, in_class / in_corpus});
+        }
+        // Class-exclusive tokens all share the maximum lift, so rank by
+        // lift weighted with log frequency: the vocabulary the class uses
+        // often comes first.
+        auto score = [](const TokenWeight& t) {
+            return t.lift * std::log1p(static_cast<double>(t.count));
+        };
+        std::sort(weights.begin(), weights.end(),
+                  [&](const TokenWeight& a, const TokenWeight& b) {
+                      const double sa = score(a);
+                      const double sb = score(b);
+                      if (sa != sb) return sa > sb;
+                      return a.token < b.token;
+                  });
+        if (weights.size() > top_n) weights.resize(top_n);
+        summary.top_tokens = std::move(weights);
+        out.push_back(std::move(summary));
+    }
+    return out;
+}
+
 std::string NaiveBayes::serialize() const {
     json::Writer w;
     w.begin_object();

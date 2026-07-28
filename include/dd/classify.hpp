@@ -37,6 +37,7 @@ public:
     const std::string& trained_at() const noexcept { return trained_at_; }
     double trained_accuracy() const noexcept { return trained_accuracy_; }
     std::size_t example_count() const noexcept { return bayes_.example_count(); }
+    const model::NaiveBayes& bayes() const noexcept { return bayes_; }
 
 private:
     model::NaiveBayes bayes_;
