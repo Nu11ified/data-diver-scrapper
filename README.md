@@ -114,9 +114,14 @@ dependencies, both validated on data they never saw:
   lexicon. Its training data is real: `harvest` walks the Socrata
   discovery API - the same infrastructure behind most US government open
   data portals - and collects thousands of live columns with values.
-  Labels are exact-lexicon hits only (high precision); everything else is
-  "none", and validation holds out entire portals so the reported accuracy
-  is generalisation, not memorisation.
+  Labels are exact-lexicon hits only (high precision); near-miss names
+  that touch lexicon vocabulary without matching are masked rather than
+  taught as negatives, everything else is "none", and validation holds
+  out entire portals so the reported accuracy is generalisation, not
+  memorisation - currently 87% over 276 columns from portals the model
+  never saw. In the matcher its verdict counts as name evidence only
+  when decisive (argmax at >= 0.7), and never bypasses the weak-validator
+  floor for free-text fields.
 
 ## How matching works
 
@@ -174,9 +179,11 @@ measured:
    classification key for every shipped source, written by reading the actual
    column values - it records mistakes the engine currently makes, not the
    engine's own output. `bench` scores the engine against it from cached
-   bytes: classification accuracy, mapping precision/recall/F1 per source,
-   and measured compute. The engine currently scores 14/14 classification
-   and 0.96 mapping F1 in about 4 ms per document at zero marginal cost.
+   bytes: classification accuracy, mapping precision/recall/F1 per source
+   (a wrong mapping on a required field counts as both a false positive
+   and a false negative), and measured compute. The engine currently
+   scores 14/14 classification and 0.94 mapping F1 in about 8 ms per
+   document at zero marginal cost. Incomplete runs fail loudly.
 An LLM API could attempt the same mapping, but this engine does it
 deterministically, explainably (`map`, `review`), offline, in milliseconds,
 at zero marginal cost per document - and the benchmark keeps that claim
