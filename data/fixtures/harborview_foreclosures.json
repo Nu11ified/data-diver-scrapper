@@ -1,0 +1,10 @@
+{
+  "court": "Harborview County Circuit Court",
+  "docket": "mortgage foreclosure filings",
+  "filings": [
+    {"case_number": "2026-CV-04182", "plaintiff": "First Meridian Bank", "defendant": "Cole, Brandon", "parcel_number": "310-660-012", "property_address": "310 Aster Ct", "judgment_amount": 214880.15, "lis_pendens": "2026-05-20", "status": "default entered"},
+    {"case_number": "2026-CV-04197", "plaintiff": "Lakeshore Mortgage Co", "defendant": "Ibrahim, Sana", "parcel_number": "310-661-040", "property_address": "92 Fulton Ave", "judgment_amount": 98450.00, "lis_pendens": "2026-05-27", "status": "answer filed"},
+    {"case_number": "2026-CV-04210", "plaintiff": "Homestead Savings", "defendant": "Beck, Arthur", "parcel_number": "312-002-008", "property_address": "5 Garland Pl", "judgment_amount": 156200.44, "lis_pendens": "2026-06-02", "status": "summary judgment"},
+    {"case_number": "2026-CV-04226", "plaintiff": "Union Trust Bank", "defendant": "Silva, Carmen", "parcel_number": "312-019-330", "property_address": "70 Neptune Way", "judgment_amount": 187300.00, "lis_pendens": "2026-06-09", "status": "lis pendens recorded"}
+  ]
+}

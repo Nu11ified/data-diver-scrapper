@@ -1,0 +1,38 @@
+%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj
+4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj
+5 0 obj << /Length 549 >>
+stream
+BT
+/F1 10 Tf
+40 720 Td
+(Eldridge County Treasurer) Tj
+0 -14 Td
+(Delinquent Tax Roll) Tj
+0 -14 Td
+(Parcel        Taxpayer            Situs Address      Amount Due    Sale Date) Tj
+0 -14 Td
+(162-08-410    Weiss, Norman       9 Alder Ct         3215.87       2026-09-02) Tj
+0 -14 Td
+(162-08-455    Pratt, Louise       340 King St        412.60        2026-09-02) Tj
+0 -14 Td
+(163-11-002    Ida Grove Farms     21 Vesper Rd       28110.34      2026-09-09) Tj
+0 -14 Td
+(164-02-118    Quist, Erika        55 Harbor View     1580.00       2026-09-09) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000309 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+909
+%%EOF

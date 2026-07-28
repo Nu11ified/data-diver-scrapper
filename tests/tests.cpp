@@ -12,10 +12,15 @@
 #include "dd/fetch.hpp"
 #include "dd/html.hpp"
 #include "dd/json.hpp"
+#include "dd/heal.hpp"
 #include "dd/metrics.hpp"
 #include "dd/model.hpp"
 #include "dd/pdf.hpp"
+#include "dd/pipeline.hpp"
 #include "dd/schema.hpp"
+#include "dd/store.hpp"
+
+#include <filesystem>
 
 #if defined(DD_HAVE_ZLIB)
 #include <zlib.h>
@@ -954,6 +959,261 @@ TEST(events_serialize_roundtrip) {
     CHECK_NEAR(back.amount, e.amount, 1e-9);
     CHECK_EQ(back.details.at("case_number"), "26-FC-1108");
     CHECK_THROWS(dd::events::PropertyEvent::deserialize("{\"kind\":\"nope\"}"));
+}
+
+// --------------------------------------------------------------- store -----
+
+std::string fresh_dir(const std::string& name) {
+    const std::string dir = "build/test_tmp/" + name;
+    std::filesystem::remove_all(dir);
+    dd::fileio::ensure_dir(dir);
+    return dir;
+}
+
+TEST(store_sources_persist_across_reopen) {
+    const std::string root = fresh_dir("store_sources");
+    {
+        dd::store::Store store{root};
+        CHECK(store.sources().empty());
+        const dd::store::Source s = store.add_source("Test County", "data/fixtures/crestline_auctions.csv", "Test County");
+        CHECK(!s.id.empty());
+        CHECK(store.find_source(s.id).has_value());
+    }
+    {
+        dd::store::Store reopened{root};
+        CHECK_EQ(reopened.sources().size(), std::size_t{1});
+        CHECK_EQ(reopened.sources()[0].name, "Test County");
+    }
+    dd::store::Store store{root};
+    CHECK_THROWS(store.add_source("", "url", ""));
+    CHECK_THROWS(store.add_source("name", " ", ""));
+}
+
+TEST(store_seed_creates_sources_and_working_copies) {
+    const std::string root = fresh_dir("store_seed");
+    const std::string seeds = root + "/seeds.json";
+    dd::fileio::write_file_atomic(
+        seeds, "[{\"id\":\"demo\",\"name\":\"Demo\",\"url\":\"" + root +
+                   "/local/demo.html\",\"jurisdiction\":\"Demo County\","
+                   "\"seed_from\":\"data/fixtures/millbrook_tax.html\"}]");
+    dd::store::Store store{root};
+    store.seed(seeds);
+    CHECK_EQ(store.sources().size(), std::size_t{1});
+    CHECK(dd::fileio::exists(root + "/local/demo.html"));
+    // Seeding twice must not duplicate.
+    store.seed(seeds);
+    CHECK_EQ(store.sources().size(), std::size_t{1});
+}
+
+TEST(store_runs_events_repairs_roundtrip) {
+    const std::string root = fresh_dir("store_rounds");
+    dd::store::Store store{root};
+
+    dd::store::RunRecord run;
+    run.id = "r1";
+    run.source_id = "s1";
+    run.started_at = "2026-07-01T00:00:00Z";
+    run.ok = true;
+    run.stage = "done";
+    run.bytes = 1234;
+    run.fetch_ms = 1.5;
+    run.extraction_rate = 0.9;
+    store.record_run(run);
+
+    dd::events::PropertyEvent e = make_event(dd::events::Kind::TaxDelinquency, "2026-01-01");
+    CHECK_EQ(store.add_events({e, e}), std::size_t{1}); // same id twice: one insert
+    CHECK_EQ(store.add_events({e}), std::size_t{0});    // and never again
+
+    dd::store::RepairRecord repair;
+    repair.id = "rep1";
+    repair.source_id = "s1";
+    repair.at = "2026-07-01T00:00:00Z";
+    repair.reason = "test";
+    repair.confidence = 0.8;
+    repair.accepted = true;
+    repair.changes = {"owner: 'a' -> 'b'"};
+    store.add_repair(repair);
+
+    dd::store::Store reopened{root};
+    const std::vector<dd::store::RunRecord> runs = reopened.runs(10);
+    CHECK_EQ(runs.size(), std::size_t{1});
+    CHECK_EQ(runs[0].bytes, std::int64_t{1234});
+    CHECK_NEAR(runs[0].extraction_rate, 0.9, 1e-9);
+    CHECK_EQ(reopened.event_count(), std::size_t{1});
+    CHECK_EQ(reopened.events_for(e.property_key).size(), std::size_t{1});
+    const std::vector<dd::store::RepairRecord> repairs = reopened.repairs();
+    CHECK_EQ(repairs.size(), std::size_t{1});
+    CHECK_EQ(repairs[0].changes.size(), std::size_t{1});
+    CHECK(repairs[0].accepted);
+}
+
+// ------------------------------------------------------------ pipeline -----
+
+dd::classify::Classifier test_classifier() {
+    return dd::classify::Classifier::load("data/model/source_classifier.json");
+}
+
+TEST(pipeline_learns_and_ingests_table_site) {
+    const std::string root = fresh_dir("pipe_learn");
+    dd::store::Store store{root};
+    const dd::store::Source source =
+        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+
+    const dd::store::RunRecord run = pipeline.run_source(source);
+    CHECK(run.ok);
+    CHECK_EQ(run.stage, "done");
+    CHECK_EQ(run.classification, "tax_delinquency");
+    CHECK(run.class_confidence > 0.5);
+    CHECK_EQ(run.records_extracted, std::int64_t{6});
+    CHECK_EQ(run.events_new, std::int64_t{6});
+    CHECK(run.extraction_rate > 0.8);
+    CHECK(run.mapping_confidence > 0.7);
+    CHECK(run.bytes > 1000);
+    CHECK(run.fetch_ms >= 0.0);
+    CHECK(run.total_ms > 0.0);
+    CHECK(run.rss_bytes > 1024 * 1024);
+    CHECK(!run.structure_fingerprint.empty());
+
+    // The learned state is persisted with a baseline.
+    const dd::store::SourceState state = store.source_state(source.id);
+    CHECK(state.has_mapping);
+    CHECK_NEAR(state.baseline_rate, run.extraction_rate, 1e-9);
+    CHECK_EQ(state.good_runs, 1);
+
+    // Events resolve to jurisdiction-scoped properties.
+    const std::vector<std::string> keys = store.property_keys();
+    CHECK_EQ(keys.size(), std::size_t{6});
+    CHECK(dd::str::contains(keys[0], "millbrook_county|p:"));
+
+    // Re-ingesting the same bytes creates nothing new.
+    const dd::store::RunRecord again = pipeline.run_source(source);
+    CHECK(again.ok);
+    CHECK_EQ(again.events_new, std::int64_t{0});
+    CHECK(!again.drift_detected);
+}
+
+TEST(pipeline_handles_json_csv_pdf_dialects) {
+    const std::string root = fresh_dir("pipe_dialects");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+
+    const dd::store::Source foreclosures = store.add_source(
+        "Harborview FC", "data/fixtures/harborview_foreclosures.json", "Harborview County");
+    const dd::store::RunRecord fc = pipeline.run_source(foreclosures);
+    CHECK(fc.ok);
+    CHECK_EQ(fc.classification, "foreclosure_filing");
+    CHECK_EQ(fc.format, "json");
+    CHECK_EQ(fc.events_new, std::int64_t{4});
+
+    const dd::store::Source auctions = store.add_source(
+        "Crestline Auctions", "data/fixtures/crestline_auctions.csv", "Crestline County");
+    const dd::store::RunRecord au = pipeline.run_source(auctions);
+    CHECK(au.ok);
+    CHECK_EQ(au.classification, "trustee_auction");
+    CHECK_EQ(au.format, "csv");
+    CHECK_EQ(au.events_new, std::int64_t{4});
+
+    const dd::store::Source pdf = store.add_source(
+        "Eldridge PDF", "data/fixtures/eldridge_delinquent.pdf", "Eldridge County");
+    const dd::store::RunRecord pd = pipeline.run_source(pdf);
+    CHECK(pd.ok);
+    CHECK_EQ(pd.classification, "tax_delinquency");
+    CHECK_EQ(pd.format, "pdf");
+    CHECK_EQ(pd.records_extracted, std::int64_t{4});
+
+    // The sold-at-auction row must produce a SoldAtAuction event and drive
+    // that property's lifecycle there.
+    bool found_sold = false;
+    for (const std::string& key : store.property_keys()) {
+        const std::vector<dd::events::PropertyEvent> evs = store.events_for(key);
+        const dd::events::Lifecycle life = dd::events::reduce(evs);
+        if (life.state == dd::events::State::SoldAtAuction) found_sold = true;
+    }
+    CHECK(found_sold);
+}
+
+TEST(pipeline_records_fetch_failure) {
+    const std::string root = fresh_dir("pipe_fail");
+    dd::store::Store store{root};
+    const dd::store::Source source =
+        store.add_source("Broken", "build/test_tmp/nope_not_here.html", "Nowhere");
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    const dd::store::RunRecord run = pipeline.run_source(source);
+    CHECK(!run.ok);
+    CHECK_EQ(run.stage, "fetch");
+    CHECK(!run.error.empty());
+    CHECK_EQ(store.runs(5).size(), std::size_t{1});
+}
+
+TEST(pipeline_detects_drift_and_heals) {
+    const std::string root = fresh_dir("pipe_drift");
+    dd::store::Store store{root};
+    const std::string site = root + "/local/site.html";
+
+    // Day one: the county publishes a table.
+    dd::fileio::write_file_atomic(site, dd::fileio::read_file("data/fixtures/millbrook_tax.html"));
+    const dd::store::Source source = store.add_source("Millbrook Drift", site, "Millbrook County");
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+
+    const dd::store::RunRecord first = pipeline.run_source(source);
+    CHECK(first.ok);
+    CHECK_EQ(first.events_new, std::int64_t{6});
+    const std::string old_fingerprint = first.structure_fingerprint;
+
+    // Day two: the county redesigns. Same facts, new markup, renamed labels,
+    // one new delinquent parcel.
+    dd::fileio::write_file_atomic(site,
+                                  dd::fileio::read_file("data/fixtures/millbrook_tax_v2.html"));
+    const dd::store::RunRecord second = pipeline.run_source(source);
+    CHECK(second.ok);
+    CHECK(second.drift_detected);
+    CHECK(second.repair_attempted);
+    CHECK(second.repair_accepted);
+    CHECK(second.structure_fingerprint != old_fingerprint);
+    CHECK(second.extraction_rate > 0.8);
+    // Six parcels unchanged (dedup), one newly delinquent.
+    CHECK_EQ(second.events_new, std::int64_t{1});
+
+    // The repair is on the record with its evidence and its diff.
+    const std::vector<dd::store::RepairRecord> repairs = store.repairs(source.id);
+    CHECK_EQ(repairs.size(), std::size_t{1});
+    CHECK(repairs[0].accepted);
+    CHECK(repairs[0].confidence >= dd::heal::auto_accept_threshold());
+    CHECK(repairs[0].after_rate > 0.8);
+    bool mentions_owner = false;
+    for (const std::string& change : repairs[0].changes) {
+        if (dd::str::contains(change, "owner") && dd::str::contains(change, "taxpayer")) {
+            mentions_owner = true;
+        }
+    }
+    CHECK(mentions_owner);
+
+    // The healed mapping is now the accepted one and keeps working.
+    const dd::store::RunRecord third = pipeline.run_source(source);
+    CHECK(third.ok);
+    CHECK(!third.drift_detected);
+    CHECK_EQ(third.events_new, std::int64_t{0});
+}
+
+TEST(heal_assessment_ignores_healthy_updates) {
+    // Content changed but extraction still works: not drift.
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv", "Parcel,Owner\n111-22,Jane\n444-55,Bob\n777-88,Sue\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::ExtractionResult extraction = dd::schema::apply_mapping(mapping, m);
+
+    dd::store::SourceState state;
+    state.source_id = "s";
+    state.has_mapping = true;
+    state.mapping = mapping;
+    state.baseline_rate = extraction.rate;
+    state.good_runs = 3;
+    state.fingerprint = "different_fingerprint";
+
+    const dd::heal::Assessment verdict = dd::heal::assess(state, m, extraction);
+    CHECK(!verdict.drift);
+    CHECK(verdict.fingerprint_changed);
 }
 
 } // namespace

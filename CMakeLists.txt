@@ -25,6 +25,9 @@ add_library(dd_engine STATIC
   src/schema.cpp
   src/entity.cpp
   src/events.cpp
+  src/store.cpp
+  src/heal.cpp
+  src/pipeline.cpp
 )
 
 target_include_directories(dd_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
