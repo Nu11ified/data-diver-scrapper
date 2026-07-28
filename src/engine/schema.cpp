@@ -21,7 +21,8 @@ const std::vector<FieldSpec>& specs() {
     static const std::vector<FieldSpec> kSpecs = {
         {Field::ParcelId, "parcel_id", true,
          {"parcel", "parcel number", "parcel id", "apn", "pin", "property id", "account number",
-          "tax account", "account", "parcel no", "folio", "tax id", "instrument"}},
+          "tax account", "account", "parcel no", "folio", "tax id", "instrument",
+          "property group"}},
         {Field::Owner, "owner", true,
          {"owner", "owner name", "taxpayer", "taxpayer name", "property holder", "owner of record",
           "name", "defendant", "grantee", "grantor", "decedent", "applicant", "borrower"}},
@@ -30,7 +31,8 @@ const std::vector<FieldSpec>& specs() {
           "street address", "property location"}},
         {Field::AmountDue, "amount_due", false,
          {"amount due", "amount owed", "delinquent amount", "balance", "balance due", "total due",
-          "taxes due", "amount", "judgment amount", "fine", "fine assessed"}},
+          "taxes due", "amount", "judgment amount", "fine", "fine assessed", "tax amount",
+          "tax due"}},
         {Field::AssessedValue, "assessed_value", false,
          {"assessed value", "assessment", "assessed total", "total assessed value", "market value",
           "appraised value", "land value", "estate value"}},
@@ -46,10 +48,10 @@ const std::vector<FieldSpec>& specs() {
         {Field::CaseNumber, "case_number", false,
          {"case number", "case no", "case id", "docket", "docket number", "document number",
           "doc no", "permit number", "permit no", "sale number", "sale no", "sale id",
-          "certificate number", "citation number", "file number"}},
+          "certificate number", "citation number", "file number", "inspection number"}},
         {Field::Status, "status", false,
          {"status", "case status", "state", "disposition", "stage", "exemption", "deed type",
-          "estate type", "work class"}},
+          "estate type", "work class", "violation status", "inspection status"}},
         {Field::Description, "description", false,
          {"description", "legal description", "violation", "violation description",
           "violation type", "scope of work", "description of work", "work", "notes", "remarks"}},
@@ -112,6 +114,11 @@ double label_synonym_similarity(const std::string& label_slug,
     const std::vector<std::string> syn_tokens = str::tokenize_words(synonym);
     if (syn_tokens.empty() || label_tokens.empty()) return 0.0;
 
+    // A one-word synonym is weak evidence: it only matches a label that IS
+    // that word. Partial credit here is how "name" wrongly claimed
+    // "street_name" for the owner field.
+    if (syn_tokens.size() == 1 && label_tokens.size() > 1) return 0.0;
+
     double overlap = 0.0;
     for (const std::string& st : syn_tokens) {
         double best = 0.0;
@@ -140,10 +147,20 @@ double label_similarity(const FieldSpec& spec, const std::string& label) {
     return best;
 }
 
-constexpr double kAcceptThreshold = 0.60;
+constexpr double kAcceptThreshold = 0.65;
 constexpr double kLabelWeight = 0.55;
 constexpr double kValueWeight = 0.45;
 constexpr std::size_t kSampleLimit = 25;
+
+// Money, date and parcel validators are decisive: values that pass are
+// strong evidence in themselves. Text fields validate almost anything, so
+// for them the label must carry the case on its own. This is what stops a
+// street_name column from becoming the owner because both end in "name".
+bool validator_is_weak(Field f) {
+    return f == Field::Owner || f == Field::Address || f == Field::Status ||
+           f == Field::Description;
+}
+constexpr double kWeakValidatorLabelFloor = 0.70;
 
 } // namespace
 
@@ -394,6 +411,7 @@ Mapping infer_mapping(const doc::Model& model) {
                 }
                 pass = static_cast<double>(good) / static_cast<double>(samples.size());
             }
+            if (validator_is_weak(spec.field) && sim < kWeakValidatorLabelFloor) continue;
             const double combined = kLabelWeight * sim + kValueWeight * pass;
             if (combined >= kAcceptThreshold && pass > 0.0) {
                 candidates.push_back(Candidate{spec.field, label, sim, pass, combined});

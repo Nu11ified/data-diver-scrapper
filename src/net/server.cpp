@@ -473,6 +473,40 @@ void Server::handle_connection(int client_fd) {
         return;
     }
 
+    // Demo controls, valid only for shipped demo sources that own a working
+    // copy (seed_from set). "drift" overwrites the working copy with the
+    // fixture's _v2 variant, exactly the way a county redesign changes the
+    // bytes at an unchanged URL, then runs the real pipeline against it.
+    // "reset" restores the original bytes.
+    if ((req.path == "/api/demo/drift" || req.path == "/api/demo/reset") &&
+        req.method == "POST") {
+        const auto it = req.query.find("source");
+        const std::optional<store::Source> source =
+            it == req.query.end() ? std::nullopt : store_.find_source(it->second);
+        if (!source.has_value()) {
+            respond_error(client_fd, 404, "unknown source");
+            return;
+        }
+        if (source->seed_from.empty()) {
+            respond_error(client_fd, 400, "not a demo source: it has no local working copy");
+            return;
+        }
+        std::string from = source->seed_from;
+        if (req.path == "/api/demo/drift") {
+            const std::size_t dot = from.rfind('.');
+            from = dot == std::string::npos ? from + "_v2"
+                                            : from.substr(0, dot) + "_v2" + from.substr(dot);
+        }
+        if (!fileio::exists(from)) {
+            respond_error(client_fd, 404, "demo variant missing: " + from);
+            return;
+        }
+        fileio::write_file_atomic(source->url, fileio::read_file(from));
+        const std::lock_guard<std::mutex> lock{run_mutex_};
+        respond_json(client_fd, 200, pipeline_.run_source(*source).serialize());
+        return;
+    }
+
     if (req.path == "/api/sources" && req.method == "GET") {
         json::Writer w;
         w.begin_array();

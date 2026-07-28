@@ -78,6 +78,21 @@ std::string extraction_snapshot(const store::RunRecord& run, const doc::Model& m
     w.begin_array();
     for (const std::string& label : model.labels) w.string_value(label);
     w.end_array();
+    // The dialect side of one record, verbatim, so the UI can show the same
+    // fact in both languages.
+    w.key("raw_sample");
+    w.begin_array();
+    if (!model.records.empty()) {
+        std::size_t emitted = 0;
+        for (const doc::Cell& cell : model.records.front().cells) {
+            if (++emitted > 12) break;
+            w.begin_object();
+            w.field("label", cell.label);
+            w.field("value", cell.value);
+            w.end_object();
+        }
+    }
+    w.end_array();
     w.key("classification");
     w.begin_object();
     w.field("label", prediction.label);

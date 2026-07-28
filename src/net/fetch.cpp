@@ -58,6 +58,13 @@ void global_init_once() {
     std::call_once(flag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
+// Query URLs pasted from data-portal builders often carry raw spaces, which
+// curl rejects outright. Encode them; everything else passes through as the
+// caller wrote it.
+std::string encode_spaces(const std::string& url) {
+    return str::replace_all(url, " ", "%20");
+}
+
 Result fetch_http(const std::string& url, const Options& options) {
     global_init_once();
     Result r;
@@ -74,7 +81,8 @@ Result fetch_http(const std::string& url, const Options& options) {
     std::pair<std::string*, std::int64_t> sink{&r.body, options.max_body_bytes};
     char error_buffer[CURL_ERROR_SIZE] = {0};
 
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    const std::string request_url = encode_spaces(url);
+    curl_easy_setopt(curl, CURLOPT_URL, request_url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

@@ -1444,6 +1444,96 @@ TEST(server_schema_model_benchmark_endpoints) {
     server.stop();
 }
 
+TEST(fetch_encodes_spaces_in_urls) {
+    // Bad scheme still fails, but a rejected URL must not be the reason.
+    const dd::fetch::Result r = dd::fetch::get("gopher://x/a b");
+    CHECK(!dd::str::contains(r.error, "Malformed"));
+}
+
+TEST(snapshot_carries_raw_dialect_sample) {
+    const std::string root = fresh_dir("pipe_snapshot");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    const dd::store::Source source =
+        store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
+    CHECK(pipeline.run_source(source).ok);
+    const dd::json::Value snap = dd::json::parse(store.latest_records(source.id));
+    const dd::json::Value* raw = snap.find("raw_sample");
+    CHECK(raw != nullptr && raw->is_array());
+    CHECK(raw->items().size() >= 5);
+    CHECK_EQ(raw->items()[0].find("label")->as_string(), "Parcel Number");
+    CHECK_EQ(raw->items()[0].find("value")->as_string(), "04-118-002");
+}
+
+TEST(server_demo_drift_and_reset) {
+    const std::string root = fresh_dir("server_demo");
+    dd::store::Store store{root};
+    const std::string seeds = root + "/seeds.json";
+    dd::fileio::write_file_atomic(
+        seeds, "[{\"id\":\"demo\",\"name\":\"Demo Roll\",\"url\":\"" + root +
+                   "/local/demo.html\",\"jurisdiction\":\"Millbrook County\","
+                   "\"seed_from\":\"data/fixtures/millbrook_tax.html\"}]");
+    store.seed(seeds);
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::server::Server server{store, pipeline, dd::server::Options{"127.0.0.1", 0, "web"}};
+    server.start();
+
+    // Learn on the original bytes first.
+    const dd::json::Value first =
+        dd::json::parse(http_request(server.port(), "POST", "/api/run?source=demo").body);
+    CHECK(first.find("ok")->as_bool());
+
+    // Drift demo: v2 bytes land at the same URL, the run heals.
+    const dd::json::Value drifted =
+        dd::json::parse(http_request(server.port(), "POST", "/api/demo/drift?source=demo").body);
+    CHECK(drifted.find("ok")->as_bool());
+    CHECK(drifted.find("drift_detected")->as_bool());
+    CHECK(drifted.find("repair_accepted")->as_bool());
+
+    // Reset restores the original bytes and the engine heals back.
+    const dd::json::Value reset =
+        dd::json::parse(http_request(server.port(), "POST", "/api/demo/reset?source=demo").body);
+    CHECK(reset.find("ok")->as_bool());
+    CHECK(reset.find("drift_detected")->as_bool());
+    CHECK(reset.find("repair_accepted")->as_bool());
+
+    // Guard rails: unknown source and non-demo source refuse.
+    CHECK_EQ(http_request(server.port(), "POST", "/api/demo/drift?source=zzz").status, 404);
+    const HttpReply added = http_request(
+        server.port(), "POST", "/api/sources",
+        R"({"name": "Plain", "url": "data/fixtures/crestline_auctions.csv"})");
+    const std::string plain_id = dd::json::parse(added.body).find("id")->as_string();
+    CHECK_EQ(http_request(server.port(), "POST", "/api/demo/drift?source=" + plain_id).status,
+             400);
+    server.stop();
+}
+
+// Real government open-data endpoints. Needs a network; when the fetch fails
+// the test reports itself skipped instead of failing the suite, but a
+// successful fetch must classify and extract correctly.
+TEST(pipeline_ingests_real_government_source) {
+    const std::string root = fresh_dir("pipe_real");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    const dd::store::Source source = store.add_source(
+        "Norfolk VA Delinquent Taxes",
+        "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,"
+        "sum(taxdue) as tax_due,sum(total) as total_due&$group=account,owner_name,address"
+        "&$order=total_due DESC&$limit=25",
+        "City of Norfolk VA");
+    const dd::store::RunRecord run = pipeline.run_source(source);
+    if (!run.ok && run.stage == "fetch") {
+        std::printf("     (network unavailable, real-source ingestion skipped: %s)\n",
+                    run.error.c_str());
+        return;
+    }
+    CHECK(run.ok);
+    CHECK_EQ(run.classification, "tax_delinquency");
+    CHECK_EQ(run.records_extracted, std::int64_t{25});
+    CHECK(run.extraction_rate > 0.8);
+    CHECK(run.events_new > 0);
+}
+
 } // namespace
 
 int main() {

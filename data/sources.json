@@ -35,5 +35,23 @@
     "name": "Eldridge County Delinquent Roll (PDF)",
     "url": "data/fixtures/eldridge_delinquent.pdf",
     "jurisdiction": "Eldridge County"
+  },
+  {
+    "id": "norfolk_delinquent",
+    "name": "Norfolk VA Delinquent Property Taxes",
+    "url": "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,sum(taxdue) as tax_due,sum(penaltydue) as penalty,sum(interestdue) as interest,sum(total) as total_due&$group=account,owner_name,address&$order=total_due DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "cook_tax_sale",
+    "name": "Cook County IL Annual Tax Sale",
+    "url": "https://datacatalog.cookcountyil.gov/resource/55ju-2fs9.json?$order=tax_sale_year DESC&$limit=50",
+    "jurisdiction": "Cook County IL"
+  },
+  {
+    "id": "chicago_violations",
+    "name": "Chicago Building Violations",
+    "url": "https://data.cityofchicago.org/resource/22u3-xenr.json?$order=violation_last_modified_date DESC&$limit=50",
+    "jurisdiction": "City of Chicago IL"
   }
 ]
