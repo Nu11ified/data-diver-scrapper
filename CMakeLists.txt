@@ -22,6 +22,9 @@ add_library(dd_engine STATIC
   src/features.cpp
   src/model.cpp
   src/classify.cpp
+  src/schema.cpp
+  src/entity.cpp
+  src/events.cpp
 )
 
 target_include_directories(dd_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

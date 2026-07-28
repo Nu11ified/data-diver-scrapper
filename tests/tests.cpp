@@ -6,6 +6,8 @@
 #include "dd/core.hpp"
 #include "dd/csv.hpp"
 #include "dd/document.hpp"
+#include "dd/entity.hpp"
+#include "dd/events.hpp"
 #include "dd/features.hpp"
 #include "dd/fetch.hpp"
 #include "dd/html.hpp"
@@ -13,6 +15,7 @@
 #include "dd/metrics.hpp"
 #include "dd/model.hpp"
 #include "dd/pdf.hpp"
+#include "dd/schema.hpp"
 
 #if defined(DD_HAVE_ZLIB)
 #include <zlib.h>
@@ -679,6 +682,278 @@ TEST(classifier_save_load_roundtrip) {
 
 TEST(classifier_missing_corpus_reports_error) {
     CHECK_THROWS(dd::classify::Classifier::train_from_corpus("data/no_such_dir", nullptr));
+}
+
+// -------------------------------------------------------------- schema -----
+
+TEST(schema_money_parsing) {
+    CHECK_NEAR(*dd::schema::parse_money("$8,421.37"), 8421.37, 1e-9);
+    CHECK_NEAR(*dd::schema::parse_money("120"), 120.0, 1e-9);
+    CHECK_NEAR(*dd::schema::parse_money("$ 1,000"), 1000.0, 1e-9);
+    CHECK(!dd::schema::parse_money("Jane Smith").has_value());
+    CHECK(!dd::schema::parse_money("12-34").has_value());
+    CHECK(!dd::schema::parse_money("").has_value());
+}
+
+TEST(schema_date_parsing) {
+    CHECK_EQ(*dd::schema::parse_date("2026-06-18"), "2026-06-18");
+    CHECK_EQ(*dd::schema::parse_date("06/18/2026"), "2026-06-18");
+    CHECK_EQ(*dd::schema::parse_date("June 18, 2026"), "2026-06-18");
+    CHECK_EQ(*dd::schema::parse_date("18 June 2026"), "2026-06-18");
+    CHECK(!dd::schema::parse_date("Jane Smith").has_value());
+    CHECK(!dd::schema::parse_date("123-456-789").has_value());
+    CHECK(!dd::schema::parse_date("99/99/2026").has_value());
+}
+
+TEST(schema_validators) {
+    using dd::schema::Field;
+    CHECK(dd::schema::validate(Field::ParcelId, "123-456-789"));
+    CHECK(dd::schema::validate(Field::ParcelId, "201-33-0870"));
+    CHECK(!dd::schema::validate(Field::ParcelId, "Jane Smith"));
+    CHECK(!dd::schema::validate(Field::ParcelId, "2026-06-18")); // a date is not a parcel
+    CHECK(!dd::schema::validate(Field::ParcelId, "$1,200.00"));
+
+    CHECK(dd::schema::validate(Field::Owner, "Smith, Jane"));
+    CHECK(!dd::schema::validate(Field::Owner, "123-456"));
+
+    CHECK(dd::schema::validate(Field::Address, "1402 Main Street"));
+    CHECK(dd::schema::validate(Field::Address, "PO Box 118"));
+    CHECK(!dd::schema::validate(Field::Address, "8421.37"));
+
+    CHECK(dd::schema::validate(Field::AmountDue, "$8,421.37"));
+    CHECK(!dd::schema::validate(Field::AmountDue, "Jane"));
+
+    CHECK(dd::schema::validate(Field::EventDate, "2026-06-18"));
+    CHECK(!dd::schema::validate(Field::EventDate, "next week"));
+
+    CHECK(dd::schema::validate(Field::CaseNumber, "2026-CV-04182"));
+    CHECK(!dd::schema::validate(Field::CaseNumber, "$500"));
+}
+
+TEST(schema_normalization) {
+    using dd::schema::Field;
+    CHECK_EQ(dd::schema::normalize(Field::AmountDue, "$8,421.37"), "8421.37");
+    CHECK_EQ(dd::schema::normalize(Field::EventDate, "06/18/2026"), "2026-06-18");
+    CHECK_EQ(dd::schema::normalize(Field::ParcelId, "12a-33"), "12A-33");
+    CHECK_EQ(dd::schema::normalize(Field::Owner, "  Jane   Smith "), "Jane Smith");
+}
+
+TEST(schema_infers_mapping_across_dialects) {
+    // Dialect one: conventional column names.
+    const dd::doc::Model a = dd::doc::build_auto(
+        "text/csv",
+        "Parcel Number,Owner Name,Property Address,Amount Due,Sale Date\n"
+        "111-22-333,\"Smith, Jane\",19 Birch Ln,\"$2,114.90\",2026-08-01\n"
+        "444-55-666,\"Ray, Bob\",820 Canal Rd,$860.02,2026-08-01\n");
+    const dd::schema::Mapping ma = dd::schema::infer_mapping(a);
+    CHECK(ma.find(dd::schema::Field::ParcelId) != nullptr);
+    CHECK_EQ(ma.find(dd::schema::Field::ParcelId)->source_label, "Parcel Number");
+    CHECK(ma.find(dd::schema::Field::Owner) != nullptr);
+    CHECK(ma.find(dd::schema::Field::Address) != nullptr);
+    CHECK(ma.find(dd::schema::Field::AmountDue) != nullptr);
+    CHECK(ma.find(dd::schema::Field::AuctionDate) != nullptr);
+    CHECK(ma.confidence > 0.7);
+
+    // Dialect two: a different county's vocabulary for the same facts.
+    const dd::doc::Model b = dd::doc::build_auto(
+        "application/json",
+        R"({"rows": [
+            {"apn": "77-100-08", "taxpayer": "Nguyen, An", "situs": "12 Fern Way", "balance": 902.11},
+            {"apn": "77-100-31", "taxpayer": "Cole, Dana", "situs": "77 Mill St", "balance": 5210.40}
+        ]})");
+    const dd::schema::Mapping mb = dd::schema::infer_mapping(b);
+    CHECK(mb.find(dd::schema::Field::ParcelId) != nullptr);
+    CHECK_EQ(mb.find(dd::schema::Field::ParcelId)->source_label, "apn");
+    CHECK(mb.find(dd::schema::Field::Owner) != nullptr);
+    CHECK_EQ(mb.find(dd::schema::Field::Owner)->source_label, "taxpayer");
+    CHECK(mb.find(dd::schema::Field::Address) != nullptr);
+    CHECK(mb.find(dd::schema::Field::AmountDue) != nullptr);
+    CHECK_EQ(mb.find(dd::schema::Field::AmountDue)->source_label, "balance");
+}
+
+TEST(schema_mapping_requires_identity_field) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv", "Amount,Date\n$100,2026-01-01\n$200,2026-01-02\n$300,2026-01-03\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    CHECK(mapping.fields.empty());
+    CHECK_NEAR(mapping.confidence, 0.0, 1e-12);
+}
+
+TEST(schema_mapping_confidence_reflects_measurements) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv",
+        "Parcel,Owner\n111-22,Jane\n444-55,Bob\n777-88,Sue\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::FieldMapping* parcel = mapping.find(dd::schema::Field::ParcelId);
+    CHECK(parcel != nullptr);
+    CHECK_NEAR(parcel->value_pass_rate, 1.0, 1e-9);
+    CHECK_NEAR(parcel->confidence,
+               0.55 * parcel->label_similarity + 0.45 * parcel->value_pass_rate, 1e-9);
+}
+
+TEST(schema_apply_mapping_measures_rates) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv",
+        "Parcel,Owner,Amount Due\n"
+        "111-22,Jane,$100.00\n"
+        "444-55,Bob,not available\n" // invalid money: must count against the rate
+        "777-88,Sue,$300.00\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::ExtractionResult result = dd::schema::apply_mapping(mapping, m);
+    CHECK_EQ(result.records.size(), std::size_t{3});
+    CHECK_EQ(result.records[0].values.at("amount_due"), "100.00");
+    CHECK(result.records[1].values.find("amount_due") == result.records[1].values.end());
+    CHECK_NEAR(result.field_rates.at("amount_due"), 2.0 / 3.0, 1e-9);
+    CHECK_NEAR(result.field_rates.at("parcel_id"), 1.0, 1e-9);
+    CHECK(result.rate > 0.5);
+    CHECK(result.rate < 1.0);
+}
+
+TEST(schema_mapping_serialize_roundtrip) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv", "Parcel,Owner,Balance\n111-22,Jane,$10\n444-55,Bob,$20\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::Mapping loaded = dd::schema::Mapping::deserialize(mapping.serialize());
+    CHECK_EQ(loaded.fields.size(), mapping.fields.size());
+    CHECK_NEAR(loaded.confidence, mapping.confidence, 1e-12);
+    const dd::schema::FieldMapping* owner = loaded.find(dd::schema::Field::Owner);
+    CHECK(owner != nullptr);
+    CHECK_EQ(owner->source_label, "Owner");
+}
+
+// -------------------------------------------------------------- entity -----
+
+TEST(entity_normalization) {
+    CHECK_EQ(dd::entity::normalize_parcel("123-456-789"), "123456789");
+    CHECK_EQ(dd::entity::normalize_parcel(" 12a.33 "), "12A33");
+    CHECK_EQ(dd::entity::normalize_address("1402 North Main Street"),
+             dd::entity::normalize_address("1402 N MAIN ST"));
+    CHECK(dd::entity::normalize_address("19 Birch Ln") !=
+          dd::entity::normalize_address("21 Birch Ln"));
+}
+
+TEST(entity_property_key) {
+    const std::string with_parcel =
+        dd::entity::property_key("Hamilton County", "123-456", "19 Birch Ln");
+    CHECK_EQ(with_parcel, "hamilton_county|p:123456");
+    const std::string with_address = dd::entity::property_key("Hamilton County", "", "19 Birch Lane");
+    CHECK_EQ(with_address, "hamilton_county|a:19 birch ln");
+    CHECK(dd::entity::property_key("X", "", "").empty());
+    // Same parcel in a different jurisdiction is a different property.
+    CHECK(dd::entity::property_key("A", "123", "") != dd::entity::property_key("B", "123", ""));
+}
+
+TEST(entity_same_owner) {
+    CHECK(dd::entity::same_owner("Smith, Jane", "Jane Smith"));
+    CHECK(dd::entity::same_owner("SMITH JANE", "jane smith"));
+    CHECK(!dd::entity::same_owner("Jane Smith", "Bob Ray"));
+    CHECK(!dd::entity::same_owner("", "Bob Ray"));
+}
+
+// -------------------------------------------------------------- events -----
+
+dd::events::PropertyEvent make_event(dd::events::Kind kind, const std::string& date,
+                                     const std::string& source = "s1") {
+    dd::events::PropertyEvent e;
+    e.property_key = "county|p:123";
+    e.kind = kind;
+    e.event_date = date;
+    e.recorded_at = "2026-07-01T00:00:00Z";
+    e.source_id = source;
+    e.run_id = "r1";
+    e.confidence = 0.9;
+    e.id = dd::events::PropertyEvent::compute_id(e);
+    return e;
+}
+
+TEST(events_kind_from_source) {
+    using dd::events::Kind;
+    CHECK(dd::events::kind_from_source_label("tax_delinquency", "") == Kind::TaxDelinquency);
+    CHECK(dd::events::kind_from_source_label("trustee_auction", "scheduled") ==
+          Kind::AuctionScheduled);
+    CHECK(dd::events::kind_from_source_label("trustee_auction", "sold at auction") ==
+          Kind::SoldAtAuction);
+    CHECK(dd::events::kind_from_source_label("deed_transfer", "") == Kind::DeedTransfer);
+}
+
+TEST(events_lifecycle_advances_in_order) {
+    using dd::events::Kind;
+    using dd::events::State;
+    // Deliberately shuffled input: the reducer must order by date itself.
+    std::vector<dd::events::PropertyEvent> evs = {
+        make_event(Kind::AuctionScheduled, "2026-05-01"),
+        make_event(Kind::TaxDelinquency, "2026-01-01"),
+        make_event(Kind::ForeclosureFiled, "2026-03-01"),
+    };
+    const dd::events::Lifecycle life = dd::events::reduce(evs);
+    CHECK(life.state == State::AuctionScheduled);
+    CHECK_EQ(life.transitions.size(), std::size_t{3});
+    CHECK(life.transitions[0].state == State::TaxDelinquent);
+    CHECK(life.transitions[1].state == State::ForeclosureFiled);
+    CHECK(life.transitions[2].state == State::AuctionScheduled);
+}
+
+TEST(events_lifecycle_never_regresses) {
+    using dd::events::Kind;
+    using dd::events::State;
+    std::vector<dd::events::PropertyEvent> evs = {
+        make_event(Kind::ForeclosureFiled, "2026-03-01"),
+        make_event(Kind::TaxDelinquency, "2026-04-01"), // later but lower rank
+    };
+    const dd::events::Lifecycle life = dd::events::reduce(evs);
+    CHECK(life.state == State::ForeclosureFiled);
+    CHECK_EQ(life.transitions.size(), std::size_t{1});
+}
+
+TEST(events_deed_transfer_resets) {
+    using dd::events::Kind;
+    using dd::events::State;
+    std::vector<dd::events::PropertyEvent> evs = {
+        make_event(Kind::TaxDelinquency, "2026-01-01"),
+        make_event(Kind::SoldAtAuction, "2026-05-01"),
+        make_event(Kind::DeedTransfer, "2026-06-01"),
+    };
+    const dd::events::Lifecycle life = dd::events::reduce(evs);
+    CHECK(life.state == State::Normal);
+    CHECK_EQ(life.transitions.back().state, State::Normal);
+}
+
+TEST(events_evidence_kinds_do_not_move_state) {
+    using dd::events::Kind;
+    using dd::events::State;
+    std::vector<dd::events::PropertyEvent> evs = {
+        make_event(Kind::PermitIssued, "2026-01-01"),
+        make_event(Kind::CodeViolation, "2026-02-01"),
+        make_event(Kind::AssessmentRecorded, "2026-03-01"),
+        make_event(Kind::ProbateOpened, "2026-04-01"),
+    };
+    const dd::events::Lifecycle life = dd::events::reduce(evs);
+    CHECK(life.state == State::Normal);
+    CHECK(life.transitions.empty());
+}
+
+TEST(events_id_is_content_stable) {
+    const dd::events::PropertyEvent a = make_event(dd::events::Kind::TaxDelinquency, "2026-01-01");
+    dd::events::PropertyEvent b = make_event(dd::events::Kind::TaxDelinquency, "2026-01-01");
+    b.run_id = "another_run";
+    b.recorded_at = "2026-08-01T00:00:00Z";
+    b.id = dd::events::PropertyEvent::compute_id(b);
+    CHECK_EQ(a.id, b.id); // same fact, different run: same identity
+    const dd::events::PropertyEvent c = make_event(dd::events::Kind::TaxDelinquency, "2026-02-01");
+    CHECK(a.id != c.id);
+}
+
+TEST(events_serialize_roundtrip) {
+    dd::events::PropertyEvent e = make_event(dd::events::Kind::ForeclosureFiled, "2026-03-01");
+    e.amount = 214880.15;
+    e.details["case_number"] = "26-FC-1108";
+    e.details["owner"] = "Marsh, Tobias";
+    const dd::events::PropertyEvent back = dd::events::PropertyEvent::deserialize(e.serialize());
+    CHECK_EQ(back.id, e.id);
+    CHECK(back.kind == e.kind);
+    CHECK_NEAR(back.amount, e.amount, 1e-9);
+    CHECK_EQ(back.details.at("case_number"), "26-FC-1108");
+    CHECK_THROWS(dd::events::PropertyEvent::deserialize("{\"kind\":\"nope\"}"));
 }
 
 } // namespace
