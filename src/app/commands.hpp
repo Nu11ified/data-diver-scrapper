@@ -33,4 +33,11 @@ void model_status(const classify::Classifier& classifier);
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
           const std::string& model_path, double alpha, bool sweep);
 
+// The validity benchmark: scores the engine's classification and mapping on
+// every golden source against the hand-verified answer key, from cached
+// bytes. with_llm additionally runs the same documents and the same answer
+// key through the env-configured LLM baseline and prints both side by side.
+int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& golden_path,
+          bool with_llm);
+
 } // namespace dd::cli

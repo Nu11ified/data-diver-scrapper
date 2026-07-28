@@ -1,0 +1,173 @@
+{
+  "comment": "Hand-verified answer key over the real cached sources. For each canonical field: the acceptable source labels; \"\" in the list means unmapped is also acceptable; a field absent must stay unmapped. Verified by reading the actual column values, not by copying the engine's output - it records mistakes the engine currently makes.",
+  "sources": [
+    {
+      "id": "norfolk_delinquent",
+      "classification": "tax_delinquency",
+      "fields": {
+        "parcel_id": ["account"],
+        "owner": ["owner_name"],
+        "address": ["address"],
+        "amount_due": ["total_due", "tax_due"]
+      }
+    },
+    {
+      "id": "cook_tax_sale",
+      "classification": ["tax_delinquency", "trustee_auction"],
+      "fields": {
+        "parcel_id": ["pin"],
+        "amount_due": ["total_tax_and_penalty_amount_offered", "tax_amount_offered"],
+        "sale_price": ["total_amount_paid"],
+        "buyer": ["buyer_name"],
+        "event_date": ["tax_sale_year", ""],
+        "property_use": ["classification", ""],
+        "status": ["sold_at_sale", ""]
+      }
+    },
+    {
+      "id": "chicago_violations",
+      "classification": "code_violation",
+      "fields": {
+        "parcel_id": ["property_group", ""],
+        "address": ["address"],
+        "event_date": ["violation_date"],
+        "status": ["violation_status"],
+        "case_number": ["id", "inspection_number", ""],
+        "description": ["violation_description", "violation_ordinance"]
+      }
+    },
+    {
+      "id": "nola_violations",
+      "classification": "code_violation",
+      "fields": {
+        "case_number": ["case_number"],
+        "address": ["address"],
+        "event_date": ["date"],
+        "description": ["description", "violation"]
+      }
+    },
+    {
+      "id": "nola_sheriff_sales",
+      "classification": ["foreclosure_filing", "trustee_auction"],
+      "fields": {
+        "case_number": ["case_number"],
+        "address": ["propertyaddress"],
+        "sale_price": ["saleamount"],
+        "auction_date": ["saledate"],
+        "event_date": ["saledate", ""],
+        "status": ["status"],
+        "plaintiff": ["plaintiff"],
+        "defendant": ["defendant"],
+        "owner": ["defendant", ""],
+        "description": ["casetitle", ""]
+      }
+    },
+    {
+      "id": "seattle_permits",
+      "classification": "building_permit",
+      "fields": {
+        "case_number": ["permit_number"],
+        "address": ["address"],
+        "property_use": ["permitclass"],
+        "description": ["description"],
+        "sale_price": ["valuation", ""],
+        "status": ["status"]
+      }
+    },
+    {
+      "id": "nyc_property_sales",
+      "classification": "deed_transfer",
+      "fields": {
+        "address": ["address"],
+        "zip": ["zip_code"],
+        "sale_price": ["consideration"],
+        "event_date": ["recorded"]
+      }
+    },
+    {
+      "id": "norfolk_assessments",
+      "classification": "assessor_roll",
+      "fields": {
+        "parcel_id": ["parcel_id"],
+        "owner": ["owner"],
+        "legal_description": ["legal_description"],
+        "property_use": ["property_use"],
+        "assessed_value": ["total_assessed_value"]
+      }
+    },
+    {
+      "id": "norfolk_violations",
+      "classification": "code_violation",
+      "fields": {
+        "parcel_id": ["tax_account", "gpin"],
+        "address": ["address"],
+        "event_date": ["created_date"],
+        "auction_date": ["abatement_date", ""],
+        "case_number": ["complaint_id", "violation_id"],
+        "status": ["status"],
+        "description": ["ordinance"]
+      }
+    },
+    {
+      "id": "kcmo_property_violations",
+      "classification": "code_violation",
+      "fields": {
+        "parcel_id": ["pin"],
+        "case_number": ["case_id", "id"],
+        "event_date": ["case_opened", "violation_entry_date"],
+        "status": ["status"],
+        "description": ["violation_description"],
+        "address": ["address"],
+        "zip": ["zip_code"]
+      }
+    },
+    {
+      "id": "cincinnati_code_enforcement",
+      "classification": "code_violation",
+      "fields": {
+        "address": ["full_address"],
+        "case_number": ["number_key"],
+        "event_date": ["entered_date"],
+        "status": ["data_status_display", "data_status", "status_class"],
+        "description": ["comp_type_desc", "sub_type_desc"]
+      }
+    },
+    {
+      "id": "la_building_permits",
+      "classification": "building_permit",
+      "fields": {
+        "parcel_id": ["apn", "pin_nbr"],
+        "address": ["primary_address"],
+        "zip": ["zip_code"],
+        "property_use": ["use_desc"],
+        "sale_price": ["valuation", ""],
+        "event_date": ["issue_date"],
+        "case_number": ["permit_nbr"],
+        "status": ["status_desc"],
+        "description": ["work_desc"]
+      }
+    },
+    {
+      "id": "howard_md_tax_sale",
+      "classification": ["tax_delinquency", "trustee_auction"],
+      "fields": {
+        "parcel_id": ["parcel"],
+        "assessed_value": ["assessed_value"],
+        "amount_due": ["total_due", "taxes_due"],
+        "sale_price": ["bid_amount", "sale_amount"],
+        "event_date": ["year", ""]
+      }
+    },
+    {
+      "id": "prince_georges_violations",
+      "classification": "code_violation",
+      "fields": {
+        "parcel_id": ["property_id"],
+        "case_number": ["violation_id", "inspection_id"],
+        "event_date": ["inspection_date"],
+        "description": ["violation_description"],
+        "zip": ["zip_code"]
+      }
+    }
+  ]
+}

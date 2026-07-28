@@ -3,7 +3,9 @@
 #include "render.hpp"
 
 #include "dd/core/core.hpp"
+#include "dd/engine/bench.hpp"
 #include "dd/engine/events.hpp"
+#include "dd/ml/llm.hpp"
 #include "dd/parse/document.hpp"
 
 #include <algorithm>
@@ -347,6 +349,159 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
         std::printf(" and live-swapped into this session");
     }
     std::printf("\n");
+    return 0;
+}
+
+namespace {
+
+std::vector<std::string> class_names(const classify::Classifier& classifier) {
+    std::vector<std::string> out;
+    for (const model::ClassSummary& c : classifier.bayes().summarize(1)) out.push_back(c.name);
+    return out;
+}
+
+std::map<std::string, std::string> as_field_map(const schema::Mapping& mapping) {
+    std::map<std::string, std::string> out;
+    for (const schema::FieldMapping& fm : mapping.fields) out[fm.field] = fm.source_label;
+    return out;
+}
+
+struct BenchTotals {
+    std::size_t docs = 0;
+    std::size_t cls_ok = 0;
+    bench::MappingScore mapping;
+    double ms = 0.0;
+
+    void add(bool ok, const bench::MappingScore& s, double elapsed) {
+        ++docs;
+        if (ok) ++cls_ok;
+        mapping.tp += s.tp;
+        mapping.spurious += s.spurious;
+        mapping.missing += s.missing;
+        ms += elapsed;
+    }
+};
+
+void print_totals(const char* who, const BenchTotals& t, const std::string& cost) {
+    std::printf("  %s: classification %zu/%zu, mapping precision %s recall %s F1 %s, "
+                "%.0f ms for %zu documents, cost %s\n",
+                who, t.cls_ok, t.docs, pct(t.mapping.precision()).c_str(),
+                pct(t.mapping.recall()).c_str(), pct(t.mapping.f1()).c_str(), t.ms, t.docs,
+                cost.c_str());
+}
+
+} // namespace
+
+int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& golden_path,
+          bool with_llm) {
+    const std::vector<bench::Golden> golden = bench::load_golden(golden_path);
+    const std::vector<std::string> classes = class_names(pipeline.classifier());
+
+    section("Engine vs answer key (" + std::to_string(golden.size()) + " hand-verified sources)");
+    BenchTotals engine_totals;
+    std::vector<std::vector<std::string>> rows;
+    struct Doc {
+        const bench::Golden* golden;
+        doc::Model model;
+        std::string url;
+    };
+    std::vector<Doc> docs;
+    for (const bench::Golden& g : golden) {
+        const std::optional<store::CachedFetch> cached = store.fetch_cache(g.source_id);
+        if (!cached.has_value()) {
+            rows.push_back({g.source_id, stamp("failed"), "no cached bytes: run it first",
+                            "", "", ""});
+            continue;
+        }
+        const std::optional<store::Source> source = store.find_source(g.source_id);
+        Doc d{&g, doc::build_auto(cached->content_type, cached->body),
+              source.has_value() ? source->url : ""};
+
+        const Stopwatch watch;
+        const classify::Prediction prediction =
+            pipeline.classifier().classify(d.model, d.url);
+        const schema::Mapping mapping = schema::infer_mapping(pipeline.registry(), d.model);
+        const double elapsed = watch.elapsed_ms();
+
+        const bool cls_ok = bench::classification_ok(g, prediction.label);
+        const bench::MappingScore score =
+            bench::score_mapping(g, pipeline.registry(), as_field_map(mapping));
+        engine_totals.add(cls_ok, score, elapsed);
+        rows.push_back({g.source_id, cls_ok ? stamp("ok") : stamp("failed"), prediction.label,
+                        std::to_string(score.tp) + "/" + std::to_string(score.spurious) + "/" +
+                            std::to_string(score.missing),
+                        meter(score.f1()),
+                        std::to_string(static_cast<int>(elapsed * 1000.0)) + " us"});
+        docs.push_back(std::move(d));
+    }
+    render::table({"source", "class", "predicted", "ok/spur/miss", "mapping F1", "compute"},
+                  rows);
+    print_totals("engine", engine_totals, "$0.00");
+
+    if (!with_llm) {
+        std::printf("  %s\n",
+                    paint("dim", "bench llm runs the same key through an OpenAI-compatible "
+                                 "baseline (DD_LLM_ENDPOINT/KEY/MODEL)").c_str());
+        return 0;
+    }
+
+    const llm::Config config = llm::config_from_env();
+    if (!config.ready()) {
+        std::printf("\n  %s set DD_LLM_MODEL and DD_LLM_KEY (and DD_LLM_ENDPOINT for a "
+                    "non-OpenAI provider) to run the baseline\n",
+                    stamp("failed").c_str());
+        return 1;
+    }
+
+    section("LLM baseline (" + config.model + ") vs the same answer key");
+    BenchTotals llm_totals;
+    std::int64_t tokens_in = 0;
+    std::int64_t tokens_out = 0;
+    std::vector<std::vector<std::string>> llm_rows;
+    for (const Doc& d : docs) {
+        const llm::Completion completion =
+            llm::complete(config, bench::llm_prompt(pipeline.registry(), classes, d.model));
+        if (!completion.ok) {
+            llm_rows.push_back({d.golden->source_id, stamp("failed"), completion.error, "", "",
+                                ""});
+            llm_totals.add(false, bench::MappingScore{}, completion.total_ms);
+            continue;
+        }
+        tokens_in += completion.tokens_in;
+        tokens_out += completion.tokens_out;
+        const bench::LlmAnswer answer = bench::parse_llm_answer(completion.text);
+        if (!answer.ok) {
+            llm_rows.push_back({d.golden->source_id, stamp("failed"), answer.error, "", "", ""});
+            llm_totals.add(false, bench::MappingScore{}, completion.total_ms);
+            continue;
+        }
+        const bool cls_ok = bench::classification_ok(*d.golden, answer.classification);
+        const bench::MappingScore score =
+            bench::score_mapping(*d.golden, pipeline.registry(), answer.mapping);
+        llm_totals.add(cls_ok, score, completion.total_ms);
+        llm_rows.push_back({d.golden->source_id, cls_ok ? stamp("ok") : stamp("failed"),
+                            answer.classification,
+                            std::to_string(score.tp) + "/" + std::to_string(score.spurious) +
+                                "/" + std::to_string(score.missing),
+                            meter(score.f1()),
+                            std::to_string(static_cast<int>(completion.total_ms)) + " ms"});
+    }
+    render::table({"source", "class", "predicted", "ok/spur/miss", "mapping F1", "latency"},
+                  llm_rows);
+
+    std::string cost = std::to_string(tokens_in) + " in / " + std::to_string(tokens_out) +
+                       " out tokens";
+    if (config.price_in > 0.0 || config.price_out > 0.0) {
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "$%.4f",
+                      (static_cast<double>(tokens_in) * config.price_in +
+                       static_cast<double>(tokens_out) * config.price_out) /
+                          1e6);
+        cost += " = ";
+        cost += buffer;
+    }
+    print_totals("llm", llm_totals, cost);
+    print_totals("engine", engine_totals, "$0.00");
     return 0;
 }
 
