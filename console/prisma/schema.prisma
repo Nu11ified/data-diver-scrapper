@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model County {
+  id         String     @id @default(cuid())
+  name       String     @unique
+  slug       String     @unique
+  sources    Source[]
+  properties Property[]
+  createdAt  DateTime   @default(now())
+}
+
+model Source {
+  id                 String    @id            // engine id
+  name               String
+  url                String
+  enabled            Boolean   @default(true)
+  county             County    @relation(fields: [countyId], references: [id])
+  countyId           String
+  classification     String?
+  mappingConfidence  Float?
+  baselineRate       Float?
+  goodRuns           Int       @default(0)
+  mapping            Json?
+  labels             Json?
+  rawSample          Json?
+  classificationDist Json?
+  fieldRates         Json?
+  lastRunAt          DateTime?
+  runs               Run[]
+  repairs            Repair[]
+  records            CanonicalRecord[]
+  events             Event[]
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+model Run {
+  id               String   @id              // engine run id
+  source           Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId         String
+  startedAt        DateTime
+  ok               Boolean
+  stage            String
+  error            String?
+  httpStatus       Int
+  bytes            Int
+  fetchMs          Float
+  parseMs          Float
+  classifyMs       Float
+  mapMs            Float
+  totalMs          Float
+  format           String
+  classification   String
+  classConfidence  Float
+  recordsExtracted Int
+  eventsNew        Int
+  extractionRate   Float
+  mappingConfidence Float
+  driftDetected    Boolean
+  repairAccepted   Boolean
+  rssBytes         Float
+  cpuMs            Float
+  @@index([sourceId, startedAt])
+}
+
+model Property {
+  key           String   @id                // engine property key
+  county        County   @relation(fields: [countyId], references: [id])
+  countyId      String
+  parcelId      String?
+  owner         String?
+  address       String?
+  state         String
+  transitions   Json?
+  sourcesCount  Int      @default(1)
+  lastEventDate String?
+  events        Event[]
+  updatedAt     DateTime @updatedAt
+  @@index([countyId, state])
+}
+
+model Event {
+  id          String   @id                  // engine content-hash id
+  property    Property @relation(fields: [propertyKey], references: [key], onDelete: Cascade)
+  propertyKey String
+  source      Source?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  sourceId    String?
+  kind        String
+  eventDate   String?
+  recordedAt  DateTime
+  runId       String
+  amount      Float    @default(0)
+  confidence  Float    @default(0)
+  details     Json
+  @@index([propertyKey])
+}
+
+model Repair {
+  id            String   @id
+  source        Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId      String
+  at            DateTime
+  reason        String
+  beforeMapping Json?
+  afterMapping  Json?
+  beforeRate    Float
+  afterRate     Float
+  confidence    Float
+  resolution    String   // auto | pending | approved | rejected
+  changes       Json
+}
+
+model CanonicalRecord {
+  id           String  @id @default(cuid())
+  source       Source  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId     String
+  runId        String
+  position     Int
+  values       Json
+  completeness Float
+  @@index([sourceId])
+}
+
+model TrainingReport {
+  id         String   @id @default(cuid())
+  at         DateTime
+  durationMs Float
+  examples   Int
+  classes    Int
+  accuracy   Float
+  perClass   Json
+  confusion  Json
+}
+
+model EngineSample {
+  id          String   @id @default(cuid())
+  at          DateTime @default(now())
+  rssBytes    Float
+  peakRss     Float
+  cpuMs       Float
+  totalRuns   Int
+  totalEvents Int
+}

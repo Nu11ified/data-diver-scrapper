@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    container_name: datadiver-db
+    ports:
+      - "5455:5432"
+    environment:
+      POSTGRES_USER: datadiver
+      POSTGRES_PASSWORD: datadiver
+      POSTGRES_DB: datadiver
+    volumes:
+      - datadiver-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datadiver -d datadiver"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  datadiver-pgdata:
