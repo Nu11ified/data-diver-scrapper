@@ -460,6 +460,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  review SOURCE_ID       confirm or refuse uncertain matches\n"
                         "  harvest [N]            build the column corpus from live portals\n"
                         "  train columns [EPOCHS] train the column transformer, validate by domain\n"
+                        "  export COUNTY [FILE]   the compiled county as canonical JSON\n"
                         "  bench                  score against the hand-verified answer key\n"
                         "  model                  classifier status\n"
                         "  train [ALPHA|sweep]    retrain with validation breakdown\n"
@@ -554,6 +555,16 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             if (rc == 0) state.reload_column_model();
             continue;
         }
+        if (command == "export") {
+            if (parts.size() < 2 || parts.size() > 3) {
+                std::printf("  usage: export COUNTY [FILE]\n");
+                continue;
+            }
+            state.ensure();
+            dd::cli::export_county(*state.store, state.pipeline->registry(), parts[1],
+                                   parts.size() == 3 ? parts[2] : "");
+            continue;
+        }
         if (command == "bench" && parts.size() == 1) {
             dd::pipeline::Pipeline& pipeline = state.ensure();
             dd::cli::bench(*state.store, pipeline, "data/golden/golden.json");
@@ -632,6 +643,7 @@ int usage() {
         "  datadiver review SOURCE_ID         confirm or refuse uncertain matches\n"
         "  datadiver model                    classifier status\n"
         "  datadiver bench                    score the engine against the answer key\n"
+        "  datadiver export COUNTY [--out F]  the compiled county as canonical JSON\n"
         "  datadiver harvest [--datasets N]   build the column corpus from live portals\n"
         "  datadiver train-columns [--epochs N] train the column transformer\n"
         "  datadiver train [--alpha A|--sweep] retrain with validation breakdown\n"
@@ -777,7 +789,8 @@ int main(int argc, char** argv) {
         }
 
         if (args.command == "counties" || args.command == "county" || args.command == "map" ||
-            args.command == "review" || args.command == "model" || args.command == "bench") {
+            args.command == "review" || args.command == "model" || args.command == "bench" ||
+            args.command == "export") {
             dd::store::Store store{state_dir};
             store.seed(seeds_path);
             dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path),
@@ -793,6 +806,12 @@ int main(int argc, char** argv) {
             if (args.command == "model") {
                 dd::cli::model_status(pipeline.classifier(), pipeline.column_model());
                 return 0;
+            }
+            if (args.command == "export") {
+                if (args.positional.empty()) return usage();
+                return dd::cli::export_county(store, pipeline.registry(),
+                                              dd::str::join(args.positional, " "),
+                                              flag(args, "out", ""));
             }
             if (args.command == "bench") {
                 return dd::cli::bench(store, pipeline,

@@ -166,6 +166,29 @@ store::RunRecord Pipeline::run_source_id(const std::string& source_id) {
     return run_source(*source);
 }
 
+std::string expand_url_template(const store::Source& source, const store::Store& store) {
+    const std::size_t at = source.url.find("{parcels}");
+    if (at == std::string::npos) return source.url;
+    const std::string slug = str::slug(source.jurisdiction);
+    std::vector<std::string> parcels;
+    for (const std::string& key : store.property_keys()) {
+        if (parcels.size() >= 150) break;
+        const std::string prefix = slug + "|p:";
+        if (key.rfind(prefix, 0) != 0) continue;
+        const std::string parcel = key.substr(prefix.size());
+        bool clean = !parcel.empty();
+        for (char c : parcel) {
+            if (c == '\'' || c == '"') clean = false;
+        }
+        if (clean) parcels.push_back("'" + parcel + "'");
+    }
+    if (parcels.empty()) {
+        throw Error("enrichment source " + source.id + " has no parcels to target yet; run " +
+                    "the jurisdiction's primary sources first");
+    }
+    return source.url.substr(0, at) + str::join(parcels, ",") + source.url.substr(at + 9);
+}
+
 store::RunRecord Pipeline::run_source(const store::Source& source) {
     const Stopwatch total_watch;
     const double cpu_before = metrics::cpu_time_ms();
@@ -176,7 +199,20 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     run.started_at = timeutil::iso_now();
 
     // ------------------------------------------------------------ fetch ----
-    const fetch::Result fetched = fetch::get(source.url);
+    std::string url;
+    try {
+        url = expand_url_template(source, store_);
+    } catch (const Error& e) {
+        run.ok = false;
+        run.stage = "fetch";
+        run.error = e.what();
+        run.total_ms = total_watch.elapsed_ms();
+        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
+        run.rss_bytes = metrics::current_rss_bytes();
+        store_.record_run(run);
+        return run;
+    }
+    const fetch::Result fetched = fetch::get(url);
     run.http_status = fetched.http_status;
     run.bytes = fetched.bytes;
     run.fetch_ms = fetched.total_ms;

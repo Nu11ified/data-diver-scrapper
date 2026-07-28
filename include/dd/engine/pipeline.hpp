@@ -15,6 +15,12 @@ namespace dd::pipeline {
 // overrides), resolve to properties, and append events. Produces one
 // RunRecord per attempt with only measured numbers on it; failures surface
 // on the record with the stage that failed.
+// Expands a {parcels} placeholder in an enrichment source's URL into a
+// quoted, comma-separated list of the parcel ids already tracked for that
+// source's jurisdiction (capped at 150). Throws dd::Error when the store has
+// no parcels to enrich - the primary sources must run first.
+std::string expand_url_template(const store::Source& source, const store::Store& store);
+
 class Pipeline {
 public:
     // The registry is the canonical schema this pipeline fills: the set of

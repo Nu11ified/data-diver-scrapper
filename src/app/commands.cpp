@@ -4,6 +4,7 @@
 
 #include "dd/core/core.hpp"
 #include "dd/engine/bench.hpp"
+#include "dd/engine/exporter.hpp"
 #include "dd/engine/harvest.hpp"
 #include "dd/engine/events.hpp"
 #include "dd/parse/document.hpp"
@@ -507,6 +508,19 @@ int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
         pipeline->set_column_model(std::move(model));
         std::printf("  %s\n", paint("dim", "live matcher now uses this model").c_str());
     }
+    return 0;
+}
+
+int export_county(store::Store& store, const schema::Registry& registry,
+                  const std::string& county, const std::string& out_path) {
+    const std::string payload = exporter::county_json(store, registry, county);
+    if (out_path.empty()) {
+        std::printf("%s\n", payload.c_str());
+        return 0;
+    }
+    fileio::write_file_atomic(out_path, payload);
+    std::printf("  %s wrote %zu bytes to %s\n", stamp("ok").c_str(), payload.size(),
+                out_path.c_str());
     return 0;
 }
 

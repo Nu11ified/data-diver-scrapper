@@ -45,6 +45,11 @@ int harvest(const schema::Registry& registry, const std::string& corpus_path,
 int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
                   const std::string& model_path, int epochs);
 
+// Writes the compiled county payload (exporter::county_json) to out_path,
+// or prints it when out_path is empty.
+int export_county(store::Store& store, const schema::Registry& registry,
+                  const std::string& county, const std::string& out_path);
+
 // The validity benchmark: scores the engine's classification and mapping on
 // every golden source against the hand-verified answer key, from cached
 // bytes.

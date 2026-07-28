@@ -257,20 +257,28 @@ void Store::persist_sources_locked() {
 
 void Store::seed(const std::string& seeds_path) {
     const std::lock_guard<std::mutex> lock{mutex_};
-    if (sources_.empty() && fileio::exists(seeds_path)) {
-        const json::Value list = json::parse(fileio::read_file(seeds_path));
-        for (const json::Value& entry : list.items()) {
-            Source s;
-            s.id = get_string(entry, "id");
-            s.name = get_string(entry, "name");
-            s.url = get_string(entry, "url");
-            s.jurisdiction = get_string(entry, "jurisdiction");
-            s.seed_from = get_string(entry, "seed_from");
-            s.added_at = timeutil::iso_now();
-            if (!s.id.empty() && !s.url.empty()) sources_.push_back(std::move(s));
+    if (!fileio::exists(seeds_path)) return;
+    // Seeds are configuration: ids added to the file join an existing store;
+    // sources the operator already has are left untouched.
+    bool changed = false;
+    const json::Value list = json::parse(fileio::read_file(seeds_path));
+    for (const json::Value& entry : list.items()) {
+        Source s;
+        s.id = get_string(entry, "id");
+        s.name = get_string(entry, "name");
+        s.url = get_string(entry, "url");
+        s.jurisdiction = get_string(entry, "jurisdiction");
+        s.seed_from = get_string(entry, "seed_from");
+        s.added_at = timeutil::iso_now();
+        if (s.id.empty() || s.url.empty()) continue;
+        const bool present = std::any_of(sources_.begin(), sources_.end(),
+                                         [&](const Source& e) { return e.id == s.id; });
+        if (!present) {
+            sources_.push_back(std::move(s));
+            changed = true;
         }
-        persist_sources_locked();
     }
+    if (changed) persist_sources_locked();
     // Materialize any missing working copies.
     for (const Source& s : sources_) {
         if (s.seed_from.empty() || fileio::exists(s.url)) continue;

@@ -18,6 +18,12 @@
   "jurisdiction": "City of Chicago IL"
  },
  {
+  "id": "norfolk_parcel_assessments",
+  "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
+  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$where=parcel_id in({parcels})&$limit=200",
+  "jurisdiction": "City of Norfolk VA"
+ },
+ {
   "id": "nola_violations",
   "name": "New Orleans LA Code Enforcement Violations",
   "url": "https://data.nola.gov/resource/3ehi-je3s.json?$select=caseno as case_number,location as address,violationdate as date,codesection as code_section,violation,description&$order=violationdate DESC&$limit=50",
