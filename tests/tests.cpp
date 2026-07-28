@@ -1813,6 +1813,61 @@ TEST(schema_candidates_surface_near_misses_for_review) {
     CHECK(street_as_owner->confidence >= 0.45);
 }
 
+TEST(schema_neural_evidence_maps_headers_the_lexicon_cannot) {
+    const dd::schema::Registry registry = dd::schema::Registry::from_json(R"({"fields": [
+        {"name": "parcel_id", "kind": "id", "identity": true,
+         "synonyms": ["parcel", "apn"]},
+        {"name": "owner", "kind": "name", "synonyms": ["owner", "taxpayer"]}
+    ]})");
+
+    // A tiny transformer taught that digit-run columns carry parcel_id and
+    // word-pair columns carry owner, under many different header names.
+    std::mt19937 rng{23};
+    std::vector<dd::columns::Example> corpus;
+    static const char* kIdNames[] = {"tms", "sbl", "geo_ref", "prop_key", "roll_no"};
+    static const char* kOwnerNames[] = {"party", "holder", "resident", "citizen", "deeded_to"};
+    static const char* kPeople[] = {"maria lopez", "james hill", "ada okafor", "chen wei"};
+    for (int i = 0; i < 60; ++i) {
+        dd::columns::Example id_col;
+        id_col.name = kIdNames[rng() % 5];
+        for (int v = 0; v < 3; ++v) {
+            id_col.values.push_back(std::to_string(100000 + static_cast<int>(rng() % 900000)));
+        }
+        id_col.label = "parcel_id";
+        id_col.domain = "d" + std::to_string(i % 6);
+        corpus.push_back(id_col);
+
+        dd::columns::Example owner_col;
+        owner_col.name = kOwnerNames[rng() % 5];
+        for (int v = 0; v < 3; ++v) owner_col.values.push_back(kPeople[rng() % 4]);
+        owner_col.label = "owner";
+        owner_col.domain = "d" + std::to_string(i % 6);
+        corpus.push_back(owner_col);
+    }
+    dd::columns::ColumnModel nn{tiny_hyper()};
+    dd::columns::TrainConfig config;
+    config.epochs = 15;
+    config.batch = 16;
+    config.threads = 2;
+    nn.train(corpus, {}, config);
+
+    // "gpin_key" appears in no synonym list and no training example; only the
+    // transformer's read of the name shape and digit values can map it.
+    const dd::doc::Model m = dd::doc::build_auto(
+        "application/json",
+        R"([{"gpin_key": "482113", "deeded_to": "maria lopez"},
+            {"gpin_key": "903427", "deeded_to": "james hill"},
+            {"gpin_key": "118755", "deeded_to": "chen wei"}])");
+
+    const dd::schema::Mapping without = dd::schema::infer_mapping(registry, m);
+    CHECK(without.find("parcel_id") == nullptr);
+
+    const dd::schema::Mapping with = dd::schema::infer_mapping(registry, m, &nn);
+    const dd::schema::FieldMapping* mapped = with.find("parcel_id");
+    CHECK(mapped != nullptr);
+    CHECK_EQ(mapped->source_label, "gpin_key");
+}
+
 TEST(schema_registry_rejects_bad_files) {
     CHECK_THROWS(dd::schema::Registry::from_json("{}"));
     CHECK_THROWS(dd::schema::Registry::from_json(R"({"fields": []})"));

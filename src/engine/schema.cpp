@@ -490,9 +490,12 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
     std::vector<Candidate> candidates;
     for (const std::string& label : model.labels) {
         // Name evidence comes from two independent sources: the lexicon and,
-        // when a trained column model is on hand, its posterior over fields
-        // for this column's name and sample values. The stronger one counts.
-        std::map<std::string, double> posterior;
+        // when a trained column model is on hand, its verdict on this
+        // column's name and sample values. The posterior only counts for the
+        // field the model actually picked, and only when it is confident -
+        // a hedged distribution is not name evidence.
+        std::string neural_field;
+        double neural_confidence = 0.0;
         if (neural != nullptr && neural->trained()) {
             std::vector<std::string> samples;
             for (const doc::RawRecord& record : model.records) {
@@ -500,12 +503,15 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
                 const doc::Cell* cell = record.find(label);
                 if (cell != nullptr && !cell->value.empty()) samples.push_back(cell->value);
             }
-            posterior = neural->predict(label, samples).distribution;
+            const columns::Prediction verdict = neural->predict(label, samples);
+            if (verdict.confidence >= 0.7 && verdict.label != "none") {
+                neural_field = verdict.label;
+                neural_confidence = verdict.confidence;
+            }
         }
         for (const FieldDef& field : registry.fields()) {
             const double sim = score_label(field, label);
-            const auto nn_it = posterior.find(field.name);
-            const double nn = nn_it == posterior.end() ? 0.0 : nn_it->second;
+            const double nn = field.name == neural_field ? neural_confidence : 0.0;
             const double name_evidence = std::max(sim, nn);
             const PassStats pass = measured_pass(field, label, model);
             const double combined = kLabelWeight * name_evidence + kValueWeight * pass.rate;
