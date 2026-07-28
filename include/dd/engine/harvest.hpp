@@ -31,13 +31,22 @@ struct Stats {
     std::size_t datasets_sampled = 0;
     std::size_t labeled = 0;
     std::size_t none = 0;
+    std::size_t masked = 0;
     std::size_t domains = 0;
 };
 
-// Exact-slug lexicon match of a column against the schema; empty when the
-// column matches nothing (the caller decides whether to keep it as "none").
-std::string weak_label(const schema::Registry& registry, const std::string& field_name,
-                       const std::string& display_name);
+// The weak label for one column. An exact lexicon hit yields the field. A
+// near miss - a name that contains lexicon vocabulary without matching it,
+// or whose API and display names hit different fields - is masked: it is
+// probably a positive we cannot verify, and teaching it as "none" would
+// poison the corpus. Only columns with no lexicon contact at all become
+// "none" examples.
+struct WeakLabel {
+    std::string field;    // empty unless an unambiguous exact hit
+    bool masked = false;  // drop from the corpus entirely
+};
+WeakLabel weak_label(const schema::Registry& registry, const std::string& field_name,
+                     const std::string& display_name);
 
 // Runs the harvest. `log` receives one line per catalog query and per
 // failure; pass nullptr for silence.

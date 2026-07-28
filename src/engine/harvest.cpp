@@ -45,20 +45,71 @@ Options default_options() {
     return o;
 }
 
-std::string weak_label(const schema::Registry& registry, const std::string& field_name,
-                       const std::string& display_name) {
-    const std::string field_slug = str::slug(field_name);
-    const std::string display_slug = str::slug(display_name);
+namespace {
+
+std::string exact_hit(const schema::Registry& registry, const std::string& slug) {
+    if (slug.empty()) return {};
     for (const schema::FieldDef& field : registry.fields()) {
-        if (str::slug(field.name) == field_slug || str::slug(field.name) == display_slug) {
-            return field.name;
-        }
+        if (str::slug(field.name) == slug) return field.name;
         for (const std::string& synonym : field.synonyms) {
-            const std::string synonym_slug = str::slug(synonym);
-            if (synonym_slug == field_slug || synonym_slug == display_slug) return field.name;
+            if (str::slug(synonym) == slug) return field.name;
         }
     }
     return {};
+}
+
+bool touches_lexicon(const schema::Registry& registry, const std::string& slug) {
+    if (slug.size() < 4) return false;
+    for (const schema::FieldDef& field : registry.fields()) {
+        std::vector<std::string> vocabulary{str::slug(field.name)};
+        for (const std::string& synonym : field.synonyms) vocabulary.push_back(str::slug(synonym));
+        for (const std::string& word : vocabulary) {
+            if (word.size() < 4) continue;
+            if (str::contains(slug, word) || str::contains(word, slug)) return true;
+        }
+    }
+    return false;
+}
+
+bool plausible_domain(const std::string& domain) {
+    if (domain.empty() || domain.size() > 128 || !str::contains(domain, ".")) return false;
+    if (domain == "localhost" || domain.front() == '.' || domain.back() == '.') return false;
+    bool any_alpha = false;
+    for (char c : domain) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
+        if (!ok) return false;
+        if (c >= 'a' && c <= 'z') any_alpha = true;
+    }
+    return any_alpha; // an all-digits-and-dots "domain" is a raw IP: refuse
+}
+
+bool plausible_dataset_id(const std::string& id) {
+    if (id.size() != 9 || id[4] != '-') return false;
+    for (std::size_t i = 0; i < id.size(); ++i) {
+        if (i == 4) continue;
+        const char c = id[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+WeakLabel weak_label(const schema::Registry& registry, const std::string& field_name,
+                     const std::string& display_name) {
+    const std::string field_slug = str::slug(field_name);
+    const std::string display_slug = str::slug(display_name);
+    const std::string by_field = exact_hit(registry, field_slug);
+    const std::string by_display = exact_hit(registry, display_slug);
+    if (!by_field.empty() && !by_display.empty() && by_field != by_display) {
+        return WeakLabel{"", true}; // the two names disagree: ambiguous
+    }
+    if (!by_field.empty()) return WeakLabel{by_field, false};
+    if (!by_display.empty()) return WeakLabel{by_display, false};
+    if (touches_lexicon(registry, field_slug) || touches_lexicon(registry, display_slug)) {
+        return WeakLabel{"", true}; // near miss: probably a positive we cannot verify
+    }
+    return WeakLabel{"", false};
 }
 
 std::vector<columns::Example> run(const schema::Registry& registry, const Options& options,
@@ -90,8 +141,10 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
         const json::Value* results = root.find("results");
         if (results == nullptr) continue;
         std::size_t sampled_here = 0;
+        std::size_t entries_taken = 0;
 
         for (const json::Value& entry : results->items()) {
+            if (++entries_taken > options.datasets_per_query) break;
             const json::Value* resource = entry.find("resource");
             const json::Value* metadata = entry.find("metadata");
             if (resource == nullptr || metadata == nullptr) continue;
@@ -104,6 +157,7 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
             }
             const std::string dataset_id = id->as_string();
             const std::string dataset_domain = domain->as_string();
+            if (!plausible_domain(dataset_domain) || !plausible_dataset_id(dataset_id)) continue;
             if (!seen_datasets.insert(dataset_domain + "/" + dataset_id).second) continue;
             ++local.datasets_seen;
 
@@ -119,14 +173,26 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
                     rows = json::Value{};
                 }
             }
-            const bool has_rows = rows.is_array() && !rows.items().empty();
-            if (has_rows) {
-                ++local.datasets_sampled;
-                ++sampled_here;
+            bool has_rows = false;
+            if (rows.is_array()) {
+                for (const json::Value& row : rows.items()) {
+                    if (!row.is_object()) continue;
+                    for (const auto& [key, cell] : row.members()) {
+                        if (!cell_text(cell).empty()) {
+                            has_rows = true;
+                            break;
+                        }
+                    }
+                    if (has_rows) break;
+                }
             }
+            if (!has_rows) continue; // metadata without values teaches nothing safe
+            ++local.datasets_sampled;
+            ++sampled_here;
 
             std::size_t none_kept = 0;
-            for (std::size_t c = 0; c < fields->items().size(); ++c) {
+            const std::size_t column_cap = std::min<std::size_t>(fields->items().size(), 64);
+            for (std::size_t c = 0; c < column_cap; ++c) {
                 const std::string field_name = fields->items()[c].as_string();
                 if (field_name.empty() || field_name[0] == ':') continue;
                 const std::string display = c < names->items().size()
@@ -135,23 +201,26 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
                 columns::Example example;
                 example.name = display.empty() ? field_name : display;
                 example.domain = dataset_domain;
-                if (has_rows) {
-                    for (const json::Value& row : rows.items()) {
-                        if (example.values.size() >= 3) break;
-                        const json::Value* cell = row.find(field_name);
-                        if (cell == nullptr) continue;
-                        const std::string text = cell_text(*cell);
-                        if (!text.empty()) example.values.push_back(text);
-                    }
+                for (const json::Value& row : rows.items()) {
+                    if (example.values.size() >= 3) break;
+                    if (!row.is_object()) continue;
+                    const json::Value* cell = row.find(field_name);
+                    if (cell == nullptr) continue;
+                    const std::string text = cell_text(*cell);
+                    if (!text.empty()) example.values.push_back(text);
                 }
-                const std::string label = weak_label(registry, field_name, display);
-                if (label.empty()) {
+                const WeakLabel label = weak_label(registry, field_name, display);
+                if (label.masked) {
+                    ++local.masked;
+                    continue;
+                }
+                if (label.field.empty()) {
                     if (none_kept >= options.max_none_per_dataset) continue;
                     ++none_kept;
                     example.label = "none";
                     ++local.none;
                 } else {
-                    example.label = label;
+                    example.label = label.field;
                     ++local.labeled;
                 }
                 domains.insert(dataset_domain);

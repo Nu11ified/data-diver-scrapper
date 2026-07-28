@@ -39,7 +39,14 @@ std::vector<Golden> load_golden(const std::string& path) {
             throw Error("golden: every source needs \"id\" and \"classification\"");
         }
         g.source_id = id->as_string();
+        if (g.source_id.empty()) throw Error("golden: empty source id");
+        for (const Golden& existing : out) {
+            if (existing.source_id == g.source_id) {
+                throw Error("golden: duplicate source id " + g.source_id);
+            }
+        }
         g.classifications = string_or_list(*cls);
+        if (g.classifications.empty()) throw Error("golden: no classification for " + g.source_id);
         if (const json::Value* fields = entry.find("fields"); fields != nullptr) {
             for (const auto& [field, labels] : fields->members()) {
                 g.fields[field] = string_or_list(labels);
@@ -79,17 +86,19 @@ MappingScore score_mapping(const Golden& golden, const schema::Registry& registr
 
         const auto mapped_it = mapped.find(field.name);
         const std::string label = mapped_it == mapped.end() ? "" : mapped_it->second;
+        const bool required = !contains(acceptable, "") &&
+                              std::any_of(acceptable.begin(), acceptable.end(),
+                                          [](const std::string& l) { return !l.empty(); });
 
         if (label.empty()) {
-            const bool required =
-                !contains(acceptable, "") &&
-                std::any_of(acceptable.begin(), acceptable.end(),
-                            [](const std::string& l) { return !l.empty(); });
             if (required) ++score.missing;
         } else if (contains(acceptable, label)) {
             ++score.tp;
         } else {
+            // A wrong mapping is a false positive, and where the key demanded
+            // a real label it is a false negative too.
             ++score.spurious;
+            if (required) ++score.missing;
         }
     }
     return score;

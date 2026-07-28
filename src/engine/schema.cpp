@@ -4,6 +4,7 @@
 #include "dd/core/json.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cctype>
 #include <cstring>
@@ -40,7 +41,11 @@ int month_from_name(std::string_view word) {
 }
 
 std::string format_iso(int year, int month, int day) {
-    if (year < 1800 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) return {};
+    if (year < 1800 || year > 2200 || month < 1 || month > 12 || day < 1) return {};
+    static constexpr int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    const int max_day = month == 2 && leap ? 29 : kDays[month - 1];
+    if (day > max_day) return {};
     char buffer[16];
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
     return std::string{buffer};
@@ -250,6 +255,8 @@ std::optional<double> parse_money(std::string_view value) {
     bool negative = false;
     bool seen_digit = false;
     bool seen_dot = false;
+    bool closed = false;
+    int parens = 0;
     std::size_t currency = 0;
     for (char c : value) {
         if (std::isdigit(static_cast<unsigned char>(c)) != 0) {
@@ -268,14 +275,26 @@ std::optional<double> parse_money(std::string_view value) {
             ++currency;
             continue;
         }
-        if (c == '(' || c == ')') continue; // accounting negatives
+        if (c == '(') {
+            if (seen_digit) return std::nullopt;
+            ++parens;
+            continue;
+        }
+        if (c == ')') {
+            if (parens != 1 || !seen_digit) return std::nullopt;
+            --parens;
+            closed = true;
+            continue;
+        }
         if (c == '-' && !seen_digit) {
             negative = true;
             continue;
         }
         return std::nullopt;
     }
-    if (!seen_digit || currency > 1) return std::nullopt;
+    if (!seen_digit || currency > 1 || parens != 0) return std::nullopt;
+    if (closed) negative = true; // (1,000) is an accounting negative
+    if (digits.size() > 18) return std::nullopt;
     const double parsed = std::atof(digits.c_str());
     return negative ? -parsed : parsed;
 }
@@ -284,16 +303,26 @@ std::optional<std::string> parse_date(std::string_view value) {
     const std::string cleaned = str::trim(value);
     if (cleaned.empty() || cleaned.size() > 40) return std::nullopt;
 
+    // A date may continue into a timestamp ("2026-07-27T22:46:46", "4/26/2018
+    // 12:00:00 AM") but not into arbitrary text.
+    const auto timestamp_tail = [&](int consumed) {
+        if (consumed <= 0 || static_cast<std::size_t>(consumed) > cleaned.size()) return false;
+        const std::string_view rest = std::string_view{cleaned}.substr(consumed);
+        return rest.empty() || rest.front() == 'T' || rest.front() == ' ';
+    };
     // YYYY-MM-DD or YYYY/MM/DD
-    int y = 0, m = 0, d = 0;
-    if (std::sscanf(cleaned.c_str(), "%4d-%2d-%2d", &y, &m, &d) == 3 ||
-        std::sscanf(cleaned.c_str(), "%4d/%2d/%2d", &y, &m, &d) == 3) {
+    int y = 0, m = 0, d = 0, used = 0;
+    if ((std::sscanf(cleaned.c_str(), "%4d-%2d-%2d%n", &y, &m, &d, &used) == 3 ||
+         std::sscanf(cleaned.c_str(), "%4d/%2d/%2d%n", &y, &m, &d, &used) == 3) &&
+        timestamp_tail(used)) {
         const std::string iso = format_iso(y, m, d);
         if (!iso.empty()) return iso;
     }
     // MM/DD/YYYY or MM-DD-YYYY
-    if (std::sscanf(cleaned.c_str(), "%2d/%2d/%4d", &m, &d, &y) == 3 ||
-        std::sscanf(cleaned.c_str(), "%2d-%2d-%4d", &m, &d, &y) == 3) {
+    used = 0;
+    if ((std::sscanf(cleaned.c_str(), "%2d/%2d/%4d%n", &m, &d, &y, &used) == 3 ||
+        std::sscanf(cleaned.c_str(), "%2d-%2d-%4d%n", &m, &d, &y, &used) == 3) &&
+        timestamp_tail(used)) {
         const std::string iso = format_iso(y, m, d);
         if (!iso.empty()) return iso;
     }
@@ -301,14 +330,16 @@ std::optional<std::string> parse_date(std::string_view value) {
     const std::vector<std::string> words = str::tokenize_words(cleaned);
     if (words.size() == 3) {
         if (const int month = month_from_name(words[0]); month != 0) {
-            if (str::is_digits(words[1]) && str::is_digits(words[2])) {
+            if (str::is_digits(words[1]) && str::is_digits(words[2]) &&
+                words[1].size() <= 2 && words[2].size() == 4) {
                 const std::string iso =
                     format_iso(std::atoi(words[2].c_str()), month, std::atoi(words[1].c_str()));
                 if (!iso.empty()) return iso;
             }
         }
         if (const int month = month_from_name(words[1]); month != 0) {
-            if (str::is_digits(words[0]) && str::is_digits(words[2])) {
+            if (str::is_digits(words[0]) && str::is_digits(words[2]) &&
+                words[0].size() <= 2 && words[2].size() == 4) {
                 const std::string iso =
                     format_iso(std::atoi(words[2].c_str()), month, std::atoi(words[0].c_str()));
                 if (!iso.empty()) return iso;
@@ -480,6 +511,16 @@ Mapping Mapping::deserialize(const std::string& text) {
         if (conf != nullptr) fm.confidence = conf->as_number();
         const json::Value* ref = entry.find("reformatted");
         if (ref != nullptr) fm.reformatted = ref->as_bool();
+        for (const double score : {fm.label_similarity, fm.value_pass_rate, fm.confidence}) {
+            if (!std::isfinite(score) || score < 0.0 || score > 1.0) {
+                throw Error("schema: mapping score out of range for " + fm.field);
+            }
+        }
+        for (const FieldMapping& existing : out.fields) {
+            if (existing.field == fm.field || existing.source_label == fm.source_label) {
+                throw Error("schema: mapping duplicates field or label " + fm.field);
+            }
+        }
         out.fields.push_back(std::move(fm));
     }
     return out;

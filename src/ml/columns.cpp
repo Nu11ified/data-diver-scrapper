@@ -27,6 +27,14 @@ int char_token(unsigned char c) {
     return kUnk;
 }
 
+void validate_hyper(const Hyper& h) {
+    const bool ok = h.seq_len >= 2 && h.seq_len <= 1024 && h.d_model >= 2 &&
+                    h.d_model <= 1024 && h.heads >= 1 && h.heads <= h.d_model &&
+                    h.d_model % h.heads == 0 && h.layers >= 1 && h.layers <= 16 &&
+                    h.d_ffn >= 1 && h.d_ffn <= 4096;
+    if (!ok) throw Error("columns: invalid architecture dimensions");
+}
+
 // Offsets of every tensor inside the flat parameter buffer.
 struct Layout {
     int d, ffn, layers, seq, classes;
@@ -190,8 +198,18 @@ struct Trace {
     };
     std::vector<BlockTrace> blocks;
     std::vector<double> x_final, cls_norm, xhatf, inv_stdf;
-    std::vector<double> probs;
+    std::vector<double> logits, probs;
 };
+
+// Stable cross-entropy from raw logits, so the reported loss and the p-y
+// gradient always describe the same function.
+double cross_entropy(const std::vector<double>& logits, int target) {
+    double mx = logits[0];
+    for (double v : logits) mx = std::max(mx, v);
+    double sum = 0.0;
+    for (double v : logits) sum += std::exp(v - mx);
+    return mx + std::log(sum) - logits[static_cast<std::size_t>(target)];
+}
 
 struct Net {
     Layout lay;
@@ -314,9 +332,10 @@ struct Net {
         trace->inv_stdf.assign(1, 0.0);
         layer_norm(x.data(), 1, d, p + lay.lnf_g, p + lay.lnf_b, trace->cls_norm.data(),
                    trace->xhatf.data(), trace->inv_stdf.data());
-        trace->probs.assign(static_cast<std::size_t>(lay.classes), 0.0);
+        trace->logits.assign(static_cast<std::size_t>(lay.classes), 0.0);
         linear(trace->cls_norm.data(), 1, d, lay.classes, p + lay.head_w, p + lay.head_b,
-               trace->probs.data());
+               trace->logits.data());
+        trace->probs = trace->logits;
         softmax_row(trace->probs.data(), lay.classes);
     }
 
@@ -434,6 +453,8 @@ void append_corpus(const std::string& path, const std::vector<Example>& examples
 
 void split_by_domain(const std::vector<Example>& all, int fold, std::vector<Example>* train,
                      std::vector<Example>* holdout) {
+    if (fold <= 1) throw Error("columns: split fold must be at least 2");
+    if (train == nullptr || holdout == nullptr) throw Error("columns: null split output");
     for (const Example& e : all) {
         std::uint64_t h = 1469598103934665603ULL;
         for (char c : e.domain) h = (h ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
@@ -474,7 +495,13 @@ void ColumnModel::init_params(std::uint32_t seed) {
 
 TrainReport ColumnModel::train(const std::vector<Example>& train_set,
                                const std::vector<Example>& holdout, const TrainConfig& config) {
+    validate_hyper(hyper_);
     if (train_set.empty()) throw Error("columns: no training examples");
+    if (config.batch <= 0) throw Error("columns: batch must be positive");
+    if (config.epochs < 0 || config.epochs > 1000) throw Error("columns: epochs out of range");
+    if (!std::isfinite(config.lr) || config.lr <= 0.0) {
+        throw Error("columns: learning rate must be positive and finite");
+    }
     classes_.clear();
     for (const Example& e : train_set) {
         if (std::find(classes_.begin(), classes_.end(), e.label) == classes_.end()) {
@@ -482,6 +509,9 @@ TrainReport ColumnModel::train(const std::vector<Example>& train_set,
         }
     }
     std::sort(classes_.begin(), classes_.end());
+    if (classes_.size() < 2) {
+        throw Error("columns: training needs at least two classes");
+    }
     init_params(config.seed);
     const Layout lay = make_layout(hyper_, static_cast<int>(classes_.size()));
     const Net net{lay, hyper_.heads};
@@ -526,8 +556,7 @@ TrainReport ColumnModel::train(const std::vector<Example>& train_set,
                             tokenize(e.name, e.values, static_cast<std::size_t>(hyper_.seq_len));
                         net.run(params_.data(), ids, &trace);
                         const int target = class_index.at(e.label);
-                        losses[static_cast<std::size_t>(t)] +=
-                            -std::log(std::max(1e-12, trace.probs[target]));
+                        losses[static_cast<std::size_t>(t)] += cross_entropy(trace.logits, target);
                         net.backprop(params_.data(), trace, target,
                                      grads[static_cast<std::size_t>(t)].data());
                     }
@@ -589,6 +618,7 @@ Prediction ColumnModel::predict(const std::string& name,
 }
 
 double ColumnModel::loss_for(const Example& example) const {
+    if (!trained()) throw Error("columns: model is not trained");
     const Layout lay = make_layout(hyper_, static_cast<int>(classes_.size()));
     const Net net{lay, hyper_.heads};
     Trace trace;
@@ -597,11 +627,12 @@ double ColumnModel::loss_for(const Example& example) const {
             &trace);
     const auto it = std::find(classes_.begin(), classes_.end(), example.label);
     if (it == classes_.end()) throw Error("columns: unknown label " + example.label);
-    return -std::log(std::max(1e-12, trace.probs[static_cast<std::size_t>(
-                                         std::distance(classes_.begin(), it))]));
+    return cross_entropy(trace.logits,
+                         static_cast<int>(std::distance(classes_.begin(), it)));
 }
 
 std::vector<double> ColumnModel::gradient_for(const Example& example) const {
+    if (!trained()) throw Error("columns: model is not trained");
     const Layout lay = make_layout(hyper_, static_cast<int>(classes_.size()));
     const Net net{lay, hyper_.heads};
     Trace trace;
@@ -647,20 +678,43 @@ ColumnModel ColumnModel::deserialize(const std::string& text) {
     ColumnModel model;
     const json::Value* hyper = root.find("hyper");
     if (hyper == nullptr) throw Error("columns: missing hyper");
-    model.hyper_.seq_len = static_cast<int>(hyper->find("seq_len")->as_number());
-    model.hyper_.d_model = static_cast<int>(hyper->find("d_model")->as_number());
-    model.hyper_.heads = static_cast<int>(hyper->find("heads")->as_number());
-    model.hyper_.layers = static_cast<int>(hyper->find("layers")->as_number());
-    model.hyper_.d_ffn = static_cast<int>(hyper->find("d_ffn")->as_number());
+    const auto hyper_int = [&](const char* name) {
+        const json::Value* v = hyper->find(name);
+        if (v == nullptr) throw Error(std::string{"columns: hyper missing "} + name);
+        const double n = v->as_number();
+        if (!std::isfinite(n) || n != std::floor(n)) {
+            throw Error(std::string{"columns: hyper "} + name + " is not an integer");
+        }
+        return static_cast<int>(n);
+    };
+    model.hyper_.seq_len = hyper_int("seq_len");
+    model.hyper_.d_model = hyper_int("d_model");
+    model.hyper_.heads = hyper_int("heads");
+    model.hyper_.layers = hyper_int("layers");
+    model.hyper_.d_ffn = hyper_int("d_ffn");
+    validate_hyper(model.hyper_);
     const json::Value* classes = root.find("classes");
     const json::Value* params = root.find("params");
     if (classes == nullptr || params == nullptr || classes->items().empty()) {
         throw Error("columns: missing classes or params");
     }
-    for (const json::Value& c : classes->items()) model.classes_.push_back(c.as_string());
+    if (classes->items().size() > 4096) throw Error("columns: too many classes");
+    for (const json::Value& c : classes->items()) {
+        const std::string label = c.as_string();
+        if (label.empty()) throw Error("columns: empty class label");
+        if (std::find(model.classes_.begin(), model.classes_.end(), label) !=
+            model.classes_.end()) {
+            throw Error("columns: duplicate class label " + label);
+        }
+        model.classes_.push_back(label);
+    }
     const Layout lay = make_layout(model.hyper_, static_cast<int>(model.classes_.size()));
     model.params_.reserve(params->items().size());
-    for (const json::Value& p : params->items()) model.params_.push_back(p.as_number());
+    for (const json::Value& p : params->items()) {
+        const double value = p.as_number();
+        if (!std::isfinite(value)) throw Error("columns: non-finite parameter");
+        model.params_.push_back(value);
+    }
     if (model.params_.size() != lay.total) {
         throw Error("columns: parameter count does not match the architecture");
     }

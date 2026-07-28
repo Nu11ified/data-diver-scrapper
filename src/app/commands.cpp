@@ -68,13 +68,21 @@ std::string first_role_value(const schema::Registry& registry,
     return {};
 }
 
-bool ask_yes_no(std::istream& in, const std::string& question) {
-    std::printf("%s [y/n] ", question.c_str());
-    std::fflush(stdout);
-    std::string answer;
-    if (!std::getline(in, answer)) return false;
-    const std::string cleaned = str::to_lower(str::trim(answer));
-    return cleaned == "y" || cleaned == "yes";
+enum class Answer { Yes, No, Abort };
+
+// A non-answer must never become a stored decision: reprompt on anything
+// unrecognised, abort the whole review on end of input.
+Answer ask_yes_no(std::istream& in, const std::string& question) {
+    while (true) {
+        std::printf("%s [y/n] ", question.c_str());
+        std::fflush(stdout);
+        std::string answer;
+        if (!std::getline(in, answer)) return Answer::Abort;
+        const std::string cleaned = str::to_lower(str::trim(answer));
+        if (cleaned == "y" || cleaned == "yes") return Answer::Yes;
+        if (cleaned == "n" || cleaned == "no") return Answer::No;
+        std::printf("    please answer y or n (end input to abort)\n");
+    }
 }
 
 } // namespace
@@ -136,7 +144,11 @@ void county_properties(store::Store& store, const schema::Registry& registry,
     section("Properties");
     std::vector<std::vector<std::string>> rows;
     for (const std::string& key : keys) {
-        const std::vector<events::PropertyEvent> evs = store.events_for(key);
+        std::vector<events::PropertyEvent> evs = store.events_for(key);
+        std::stable_sort(evs.begin(), evs.end(),
+                         [](const events::PropertyEvent& a, const events::PropertyEvent& b) {
+                             return a.event_date < b.event_date;
+                         });
         const events::Lifecycle life = events::reduce(evs);
         std::string amount;
         for (auto it = evs.rbegin(); it != evs.rend(); ++it) {
@@ -234,18 +246,24 @@ void review(store::Store& store, pipeline::Pipeline& pipeline, const std::string
                         c.field.c_str(), c.source_label.c_str(), pct(c.confidence).c_str(),
                         c.reformatted ? " (values need extraction)" : "");
             std::printf("    samples: %s\n", paint("dim", samples).c_str());
-            if (ask_yes_no(in, "    keep this match?")) {
-                state.overrides[c.field] = c.source_label;
-            } else {
-                state.overrides[c.field] = "";
+            const Answer answer = ask_yes_no(in, "    keep this match?");
+            if (answer == Answer::Abort) {
+                std::printf("\n  review aborted; nothing saved\n");
+                return;
             }
+            state.overrides[c.field] = answer == Answer::Yes ? c.source_label : "";
             ++decisions;
         } else if (!c.accepted && state.mapping.find(c.field) == nullptr) {
             std::printf("\n  %s %s <- %s at %s confidence (held back automatically)\n",
                         stamp("review").c_str(), c.field.c_str(), c.source_label.c_str(),
                         pct(c.confidence).c_str());
             std::printf("    samples: %s\n", paint("dim", samples).c_str());
-            if (ask_yes_no(in, "    map it anyway?")) {
+            const Answer answer = ask_yes_no(in, "    map it anyway?");
+            if (answer == Answer::Abort) {
+                std::printf("\n  review aborted; nothing saved\n");
+                return;
+            }
+            if (answer == Answer::Yes) {
                 state.overrides[c.field] = c.source_label;
                 ++decisions;
             }
@@ -427,6 +445,7 @@ int harvest(const schema::Registry& registry, const std::string& corpus_path,
         {"columns", std::to_string(examples.size())},
         {"lexicon-labeled", std::to_string(stats.labeled)},
         {"none", std::to_string(stats.none)},
+        {"masked near-misses", std::to_string(stats.masked)},
         {"corpus", corpus_path},
     });
     std::printf("  %s\n", paint("dim", "labels are exact lexicon hits only; the model must "
@@ -493,6 +512,16 @@ int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
 
 int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& golden_path) {
     const std::vector<bench::Golden> golden = bench::load_golden(golden_path);
+    for (const bench::Golden& g : golden) {
+        for (const auto& [field, labels] : g.fields) {
+            if (pipeline.registry().find(field) == nullptr) {
+                std::printf("  %s answer key names unknown field '%s' in %s\n",
+                            stamp("failed").c_str(), field.c_str(), g.source_id.c_str());
+                return 1;
+            }
+        }
+    }
+    std::size_t skipped = 0;
 
     section("Engine vs answer key (" + std::to_string(golden.size()) + " hand-verified sources)");
     BenchTotals engine_totals;
@@ -502,6 +531,7 @@ int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& 
         if (!cached.has_value()) {
             rows.push_back({g.source_id, stamp("failed"), "no cached bytes: run it first",
                             "", "", ""});
+            ++skipped;
             continue;
         }
         const std::optional<store::Source> source = store.find_source(g.source_id);
@@ -526,11 +556,20 @@ int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& 
     }
     render::table({"source", "class", "predicted", "ok/spur/miss", "mapping F1", "compute"},
                   rows);
+    if (engine_totals.docs == 0) {
+        std::printf("  %s nothing scored: no golden source has cached bytes (run all first)\n",
+                    stamp("failed").c_str());
+        return 1;
+    }
     print_totals("engine", engine_totals, "$0.00");
-
     std::printf("  %s\n",
                 paint("dim", "the key is hand-verified against the raw columns; misses here "
                              "are real engine mistakes").c_str());
+    if (skipped > 0) {
+        std::printf("  %s incomplete: %zu of %zu sources had no cached bytes\n",
+                    stamp("failed").c_str(), skipped, golden.size());
+        return 1;
+    }
     return 0;
 }
 

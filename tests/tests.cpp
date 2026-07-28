@@ -20,6 +20,7 @@
 #include "dd/parse/pdf.hpp"
 #include "dd/engine/pipeline.hpp"
 #include "dd/engine/bench.hpp"
+#include "dd/engine/harvest.hpp"
 #include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
 
@@ -706,6 +707,14 @@ TEST(bench_scores_mapping_against_answer_key) {
         dd::bench::score_mapping(golden, registry, {{"b", "col_y"}});
     CHECK_EQ(missing.missing, std::size_t{1});
     CHECK_EQ(missing.tp, std::size_t{1});
+
+    // A wrong mapping on a required field is a false positive AND a false
+    // negative: the right label was not produced.
+    const dd::bench::MappingScore wrong =
+        dd::bench::score_mapping(golden, registry, {{"a", "col_wrong"}});
+    CHECK_EQ(wrong.spurious, std::size_t{1});
+    CHECK_EQ(wrong.missing, std::size_t{1});
+    CHECK_NEAR(wrong.recall(), 0.0, 1e-9);
 }
 
 // ------------------------------------------------------- column model -----
@@ -786,9 +795,11 @@ TEST(columns_gradients_match_finite_differences) {
         params[i] = saved;
         const double numeric = (up - down) / (2.0 * eps);
         if (std::abs(numeric) < 1e-8 && std::abs(grad[i]) < 1e-8) continue;
+        // Central differences bottom out near machine precision, so tiny
+        // gradients pass on absolute agreement, the rest on relative.
         const double rel = std::abs(numeric - grad[i]) /
                            std::max({std::abs(numeric), std::abs(grad[i]), 1e-8});
-        CHECK(rel < 1e-4);
+        CHECK(std::abs(numeric - grad[i]) < 1e-9 || rel < 1e-4);
         ++checked;
     }
     CHECK(checked > 20);
@@ -831,6 +842,50 @@ TEST(columns_model_serializes_roundtrip) {
     CHECK_EQ(before.label, after.label);
     CHECK_NEAR(before.confidence, after.confidence, 1e-12);
     CHECK_THROWS(dd::columns::ColumnModel::deserialize("{\"kind\":\"other\"}"));
+
+    // Malformed architectures must be rejected before any buffer math: the
+    // negative seq_len here wraps the layout arithmetic to a tiny "valid"
+    // parameter count if unchecked.
+    const auto model_json = [](const char* hyper, const char* classes, const char* params) {
+        return std::string{"{\"kind\":\"column_transformer\",\"hyper\":"} + hyper +
+               ",\"classes\":" + classes + ",\"params\":" + params + "}";
+    };
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize(model_json(
+        R"({"seq_len":-147,"d_model":8,"heads":1,"layers":1,"d_ffn":1})",
+        R"(["a","b","c"])", "[0.1,0.2,0.3,0.4]")));
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize(model_json(
+        R"({"seq_len":16,"d_model":8,"heads":0,"layers":1,"d_ffn":12})",
+        R"(["a","b"])", "[0.1]")));
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize(model_json(
+        R"({"seq_len":16,"d_model":8,"heads":3,"layers":1,"d_ffn":12})",
+        R"(["a","b"])", "[0.1]")));
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize(model_json(
+        R"({"d_model":8,"heads":2,"layers":1,"d_ffn":12})",
+        R"(["a","b"])", "[0.1]")));
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize(model_json(
+        R"({"seq_len":16,"d_model":8,"heads":2,"layers":1,"d_ffn":12})",
+        R"(["a","a"])", "[0.1]")));
+}
+
+TEST(columns_training_rejects_degenerate_configuration) {
+    std::vector<dd::columns::Example> one_class;
+    for (int i = 0; i < 8; ++i) {
+        one_class.push_back(dd::columns::Example{"col", {"1", "2"}, "only", "d"});
+    }
+    dd::columns::ColumnModel model{tiny_hyper()};
+    dd::columns::TrainConfig config;
+    config.epochs = 1;
+    CHECK_THROWS(model.train(one_class, {}, config));
+
+    std::vector<dd::columns::Example> two = synthetic_columns(4, 3);
+    dd::columns::TrainConfig bad_batch;
+    bad_batch.batch = 0;
+    CHECK_THROWS(model.train(two, {}, bad_batch));
+
+    std::vector<dd::columns::Example> train_out;
+    std::vector<dd::columns::Example> holdout_out;
+    CHECK_THROWS(dd::columns::split_by_domain(two, 1, &train_out, &holdout_out));
+    CHECK_THROWS(dd::columns::split_by_domain(two, 4, nullptr, &holdout_out));
 }
 
 TEST(classifier_trains_with_high_holdout_accuracy) {
@@ -900,6 +955,11 @@ TEST(schema_money_parsing) {
     CHECK(!dd::schema::parse_money("Jane Smith").has_value());
     CHECK(!dd::schema::parse_money("12-34").has_value());
     CHECK(!dd::schema::parse_money("").has_value());
+    // Accounting parentheses mean negative, and must balance.
+    CHECK_NEAR(*dd::schema::parse_money("($1,000)"), -1000.0, 1e-9);
+    CHECK_NEAR(*dd::schema::parse_money("(500.25)"), -500.25, 1e-9);
+    CHECK(!dd::schema::parse_money("(1,000").has_value());
+    CHECK(!dd::schema::parse_money("1,000)").has_value());
 }
 
 TEST(schema_date_parsing) {
@@ -910,6 +970,15 @@ TEST(schema_date_parsing) {
     CHECK(!dd::schema::parse_date("Jane Smith").has_value());
     CHECK(!dd::schema::parse_date("123-456-789").has_value());
     CHECK(!dd::schema::parse_date("99/99/2026").has_value());
+    // Calendar validity, not just day <= 31.
+    CHECK(!dd::schema::parse_date("2026-02-31").has_value());
+    CHECK(!dd::schema::parse_date("2026-04-31").has_value());
+    CHECK_EQ(*dd::schema::parse_date("2024-02-29"), "2024-02-29");
+    CHECK(!dd::schema::parse_date("2023-02-29").has_value());
+    // Timestamps continue a date; arbitrary text does not.
+    CHECK_EQ(*dd::schema::parse_date("2026-07-27T22:46:46.000"), "2026-07-27");
+    CHECK_EQ(*dd::schema::parse_date("4/26/2018 12:00:00 AM"), "2018-04-26");
+    CHECK(!dd::schema::parse_date("2026-02-11garbage").has_value());
 }
 
 TEST(schema_validators) {
@@ -1200,6 +1269,11 @@ TEST(bench_golden_loads_strings_and_lists) {
 
     CHECK_THROWS(dd::bench::load_golden(dir + "/absent.json"));
     dd::fileio::write_file_atomic(path, R"({"sources": [{"id": "x"}]})");
+    CHECK_THROWS(dd::bench::load_golden(path));
+    dd::fileio::write_file_atomic(path, R"({"sources": [
+        {"id": "dup", "classification": "a"}, {"id": "dup", "classification": "b"}]})");
+    CHECK_THROWS(dd::bench::load_golden(path));
+    dd::fileio::write_file_atomic(path, R"({"sources": [{"id": "", "classification": "a"}]})");
     CHECK_THROWS(dd::bench::load_golden(path));
 }
 
@@ -1866,6 +1940,40 @@ TEST(schema_neural_evidence_maps_headers_the_lexicon_cannot) {
     const dd::schema::FieldMapping* mapped = with.find("parcel_id");
     CHECK(mapped != nullptr);
     CHECK_EQ(mapped->source_label, "gpin_key");
+}
+
+TEST(schema_mapping_deserialize_rejects_duplicates_and_bad_scores) {
+    CHECK_THROWS(dd::schema::Mapping::deserialize(R"({"fields": [
+        {"field": "parcel_id", "source_label": "a", "confidence": 0.9},
+        {"field": "parcel_id", "source_label": "b", "confidence": 0.9}]})"));
+    CHECK_THROWS(dd::schema::Mapping::deserialize(R"({"fields": [
+        {"field": "parcel_id", "source_label": "a", "confidence": 0.9},
+        {"field": "owner", "source_label": "a", "confidence": 0.9}]})"));
+    CHECK_THROWS(dd::schema::Mapping::deserialize(R"({"fields": [
+        {"field": "parcel_id", "source_label": "a", "confidence": 1.5}]})"));
+}
+
+TEST(harvest_weak_labels_mask_near_misses_and_conflicts) {
+    const dd::schema::Registry& registry = test_registry();
+    // Exact lexicon hit labels the field.
+    const dd::harvest::WeakLabel exact = dd::harvest::weak_label(registry, "apn", "APN");
+    CHECK_EQ(exact.field, "parcel_id");
+    CHECK(!exact.masked);
+    // A near miss (owner_nm contains lexicon vocabulary) must be masked, not
+    // taught as a hard negative.
+    const dd::harvest::WeakLabel near = dd::harvest::weak_label(registry, "owner_nm", "");
+    CHECK(near.field.empty());
+    CHECK(near.masked);
+    // API name and display name hitting different fields is ambiguous.
+    const dd::harvest::WeakLabel conflict =
+        dd::harvest::weak_label(registry, "apn", "Case Number");
+    CHECK(conflict.field.empty());
+    CHECK(conflict.masked);
+    // No lexicon contact at all is a safe "none".
+    const dd::harvest::WeakLabel none =
+        dd::harvest::weak_label(registry, "wind_speed_mph", "Wind Speed");
+    CHECK(none.field.empty());
+    CHECK(!none.masked);
 }
 
 TEST(schema_registry_rejects_bad_files) {

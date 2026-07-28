@@ -26,7 +26,10 @@
 #include "dd/parse/document.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cmath>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <ctime>
 #include <iostream>
@@ -328,7 +331,8 @@ void print_schema(const dd::schema::Registry& registry) {
     dd::render::table({"field", "kind", "role", "identity", "lexicon"}, rows);
 }
 
-std::vector<std::string> shell_tokens(const std::string& input) {
+// Whitespace-and-quote tokenizer; a dangling quote is an error, not a guess.
+std::optional<std::vector<std::string>> shell_tokens(const std::string& input) {
     std::vector<std::string> out;
     std::string current;
     bool quoted = false;
@@ -337,15 +341,45 @@ std::vector<std::string> shell_tokens(const std::string& input) {
             quoted = !quoted;
             continue;
         }
-        if (c == ' ' && !quoted) {
+        if ((c == ' ' || c == '\t') && !quoted) {
             if (!current.empty()) out.push_back(current);
             current.clear();
             continue;
         }
         current.push_back(c);
     }
+    if (quoted) return std::nullopt;
     if (!current.empty()) out.push_back(current);
     return out;
+}
+
+// Strict full-consumption number parsing; anything else is a usage error.
+std::optional<long> parse_long(const std::string& s, long lo, long hi) {
+    if (s.empty()) return std::nullopt;
+    char* end = nullptr;
+    errno = 0;
+    const long value = std::strtol(s.c_str(), &end, 10);
+    if (errno != 0 || end != s.c_str() + s.size() || value < lo || value > hi) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+std::optional<double> parse_positive_double(const std::string& s, double hi) {
+    if (s.empty()) return std::nullopt;
+    char* end = nullptr;
+    errno = 0;
+    const double value = std::strtod(s.c_str(), &end);
+    if (errno != 0 || end != s.c_str() + s.size() || !std::isfinite(value) || value <= 0.0 ||
+        value > hi) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+bool looks_like_document(const std::string& input) {
+    return dd::str::contains(input, "://") || input.front() == '/' ||
+           input.rfind("./", 0) == 0 || dd::fileio::exists(input);
 }
 
 void print_run(const dd::store::RunRecord& run);
@@ -364,8 +398,20 @@ struct ShellState {
     std::string model_path;
     std::string schema_path;
     std::string columns_model_path;
+    std::optional<dd::columns::ColumnModel> column_model;
     std::optional<dd::store::Store> store;
     std::optional<dd::pipeline::Pipeline> pipeline;
+
+    const dd::columns::ColumnModel* column_model_ptr() const {
+        return column_model.has_value() ? &*column_model : nullptr;
+    }
+
+    void reload_column_model() {
+        column_model = load_column_model(columns_model_path);
+        if (pipeline.has_value() && column_model.has_value()) {
+            pipeline->set_column_model(*column_model);
+        }
+    }
 
     dd::pipeline::Pipeline& ensure() {
         if (!pipeline.has_value()) {
@@ -373,10 +419,7 @@ struct ShellState {
             store->seed(seeds_path);
             pipeline.emplace(*store, dd::classify::Classifier::load(model_path),
                              dd::schema::Registry::load(schema_path));
-            if (std::optional<dd::columns::ColumnModel> nn = load_column_model(columns_model_path);
-                nn.has_value()) {
-                pipeline->set_column_model(std::move(*nn));
-            }
+            if (column_model.has_value()) pipeline->set_column_model(*column_model);
         }
         return *pipeline;
     }
@@ -384,10 +427,7 @@ struct ShellState {
 
 int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier,
           ShellState& state) {
-    const std::optional<dd::columns::ColumnModel> column_model =
-        load_column_model(state.columns_model_path);
-    const dd::columns::ColumnModel* nn =
-        column_model.has_value() ? &*column_model : nullptr;
+    state.reload_column_model();
     std::printf("%s\n", paint("bold", "Data Diver").c_str());
     std::printf("%s\n",
                 paint("dim", "paste a URL to align it; 'help' lists commands.").c_str());
@@ -399,8 +439,16 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
         if (!std::getline(std::cin, line)) break;
         const std::string input = dd::str::trim(line);
         if (input.empty()) continue;
-        if (input == "quit" || input == "exit" || input == "q") break;
-        if (input == "help") {
+        const std::optional<std::vector<std::string>> tokens = shell_tokens(input);
+        if (!tokens.has_value() || tokens->empty()) {
+            std::printf("  unmatched quote; try again\n");
+            continue;
+        }
+        const std::vector<std::string>& parts = *tokens;
+        const std::string& command = parts[0];
+
+        if (command == "quit" || command == "exit" || command == "q") break;
+        if (command == "help" && parts.size() == 1) {
             std::printf("  URL                    align a page or API response\n"
                         "  watch URL [secs]       refetch on an interval, heal on drift\n"
                         "  counties               county list with sources and properties\n"
@@ -419,40 +467,46 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  quit                   leave\n");
             continue;
         }
-        if (input == "counties") {
+        if (command == "counties" && parts.size() == 1) {
             state.ensure();
             dd::cli::counties(*state.store);
             continue;
         }
-        if (input == "sources") {
+        if (command == "sources" && parts.size() == 1) {
             state.ensure();
             for (const dd::store::Source& s : state.store->sources()) {
                 std::printf("  %-26s %-40s %s\n", s.id.c_str(), s.name.c_str(), s.url.c_str());
             }
             continue;
         }
-        if (input.rfind("county ", 0) == 0) {
+        if (command == "county") {
+            if (parts.size() < 2) {
+                std::printf("  usage: county NAME\n");
+                continue;
+            }
+            std::string county = parts[1];
+            for (std::size_t i = 2; i < parts.size(); ++i) county += " " + parts[i];
             state.ensure();
-            dd::cli::county_properties(*state.store, state.pipeline->registry(),
-                                       dd::str::trim(input.substr(7)));
+            dd::cli::county_properties(*state.store, state.pipeline->registry(), county);
             continue;
         }
-        if (input.rfind("add ", 0) == 0) {
-            const std::vector<std::string> parts = shell_tokens(input);
+        if (command == "add") {
             if (parts.size() != 4) {
                 std::printf("  usage: add \"County Name\" \"Source Name\" URL\n");
                 continue;
             }
             state.ensure();
-            const dd::store::Source s =
-                state.store->add_source(parts[2], parts[3], parts[1]);
+            const dd::store::Source s = state.store->add_source(parts[2], parts[3], parts[1]);
             std::printf("  added %s; 'run %s' to ingest it\n", s.id.c_str(), s.id.c_str());
             continue;
         }
-        if (input.rfind("run", 0) == 0 && (input == "run" || input[3] == ' ')) {
-            const std::vector<std::string> parts = shell_tokens(input);
+        if (command == "run") {
+            if (parts.size() != 2) {
+                std::printf("  usage: run (all | SOURCE_ID)\n");
+                continue;
+            }
             dd::pipeline::Pipeline& pipeline = state.ensure();
-            if (parts.size() < 2 || parts[1] == "all") {
+            if (parts[1] == "all") {
                 for (const dd::store::Source& s : state.store->sources()) {
                     if (s.enabled) print_run(pipeline.run_source(s));
                 }
@@ -465,72 +519,91 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             }
             continue;
         }
-        if (input.rfind("map ", 0) == 0) {
+        if (command == "map" || command == "review") {
+            if (parts.size() != 2) {
+                std::printf("  usage: %s SOURCE_ID\n", command.c_str());
+                continue;
+            }
             dd::pipeline::Pipeline& pipeline = state.ensure();
-            dd::cli::show_mapping(*state.store, pipeline, dd::str::trim(input.substr(4)));
+            if (command == "map") dd::cli::show_mapping(*state.store, pipeline, parts[1]);
+            else dd::cli::review(*state.store, pipeline, parts[1], std::cin);
             continue;
         }
-        if (input.rfind("review ", 0) == 0) {
-            dd::pipeline::Pipeline& pipeline = state.ensure();
-            dd::cli::review(*state.store, pipeline, dd::str::trim(input.substr(7)), std::cin);
+        if (command == "harvest") {
+            std::optional<long> per_query{0};
+            if (parts.size() == 2) per_query = parse_long(parts[1], 1, 500);
+            if (parts.size() > 2 || !per_query.has_value()) {
+                std::printf("  usage: harvest [DATASETS_PER_QUERY (1-500)]\n");
+                continue;
+            }
+            dd::cli::harvest(registry, "data/columns/corpus.jsonl",
+                             static_cast<std::size_t>(*per_query));
             continue;
         }
-        if (input.rfind("harvest", 0) == 0 && (input == "harvest" || input[7] == ' ')) {
-            const std::vector<std::string> parts = shell_tokens(input);
-            const std::size_t per_query =
-                parts.size() >= 2 ? static_cast<std::size_t>(std::atoi(parts[1].c_str())) : 0;
-            dd::cli::harvest(registry, "data/columns/corpus.jsonl", per_query);
+        if (command == "train" && parts.size() >= 2 && parts[1] == "columns") {
+            std::optional<long> epochs{30};
+            if (parts.size() == 3) epochs = parse_long(parts[2], 1, 500);
+            if (parts.size() > 3 || !epochs.has_value()) {
+                std::printf("  usage: train columns [EPOCHS (1-500)]\n");
+                continue;
+            }
+            const int rc = dd::cli::train_columns(
+                state.pipeline.has_value() ? &*state.pipeline : nullptr,
+                "data/columns/corpus.jsonl", state.columns_model_path,
+                static_cast<int>(*epochs));
+            if (rc == 0) state.reload_column_model();
             continue;
         }
-        if (input.rfind("train columns", 0) == 0) {
-            const std::vector<std::string> parts = shell_tokens(input);
-            const int epochs = parts.size() >= 3 ? std::max(1, std::atoi(parts[2].c_str())) : 6;
-            dd::cli::train_columns(state.pipeline.has_value() ? &*state.pipeline : nullptr,
-                                   "data/columns/corpus.jsonl", state.columns_model_path,
-                                   epochs);
-            continue;
-        }
-        if (input == "bench") {
+        if (command == "bench" && parts.size() == 1) {
             dd::pipeline::Pipeline& pipeline = state.ensure();
             dd::cli::bench(*state.store, pipeline, "data/golden/golden.json");
             continue;
         }
-        if (input == "model") {
+        if (command == "model" && parts.size() == 1) {
             const dd::classify::Classifier& live =
                 state.pipeline.has_value() ? state.pipeline->classifier() : classifier;
             dd::cli::model_status(live, state.pipeline.has_value()
                                             ? state.pipeline->column_model()
-                                            : nn);
+                                            : state.column_model_ptr());
             continue;
         }
-        if (input.rfind("train", 0) == 0 && (input == "train" || input[5] == ' ')) {
-            const std::vector<std::string> parts = shell_tokens(input);
-            const bool sweep = parts.size() >= 2 && parts[1] == "sweep";
-            const double alpha =
-                (!sweep && parts.size() >= 2) ? std::atof(parts[1].c_str()) : 1.0;
+        if (command == "train") {
+            const bool sweep = parts.size() == 2 && parts[1] == "sweep";
+            std::optional<double> alpha{1.0};
+            if (!sweep && parts.size() == 2) alpha = parse_positive_double(parts[1], 100.0);
+            if (parts.size() > 2 || !alpha.has_value()) {
+                std::printf("  usage: train [ALPHA|sweep]\n");
+                continue;
+            }
             dd::cli::train(state.pipeline.has_value() ? &*state.pipeline : nullptr,
-                           "data/corpus", state.model_path, alpha > 0.0 ? alpha : 1.0, sweep);
+                           "data/corpus", state.model_path, *alpha, sweep);
             continue;
         }
-        if (input == "schema") {
+        if (command == "schema" && parts.size() == 1) {
             print_schema(registry);
             continue;
         }
-        if (input.rfind("watch ", 0) == 0) {
-            const std::vector<std::string> parts = dd::str::split(input, ' ');
-            if (parts.size() < 2 || parts[1].empty()) {
-                std::printf("  usage: watch URL [seconds]\n");
+        if (command == "watch") {
+            std::optional<long> seconds{15};
+            if (parts.size() == 3) seconds = parse_long(parts[2], 1, 86400);
+            if (parts.size() < 2 || parts.size() > 3 || !seconds.has_value()) {
+                std::printf("  usage: watch URL [SECONDS (1-86400)]\n");
                 continue;
             }
-            const int seconds =
-                parts.size() >= 3 ? std::max(1, std::atoi(parts[2].c_str())) : 15;
-            watch_url(registry, classifier, nn, parts[1], seconds);
+            watch_url(registry, classifier, state.column_model_ptr(), parts[1],
+                      static_cast<int>(*seconds));
             continue;
         }
-        const dd::Stopwatch total;
-        run_align(registry, nn, classifier, input);
-        std::printf("\n%s\n",
-                    paint("dim", "total " + fmt_ms(total.elapsed_ms()) + " end to end").c_str());
+        if (parts.size() == 1 && looks_like_document(input)) {
+            const dd::Stopwatch total;
+            run_align(registry, state.column_model_ptr(), classifier, input);
+            std::printf("\n%s\n",
+                        paint("dim", "total " + fmt_ms(total.elapsed_ms()) + " end to end")
+                            .c_str());
+            continue;
+        }
+        std::printf("  unknown command '%s'; 'help' lists commands, or paste a URL\n",
+                    command.c_str());
     }
     std::printf("bye\n");
     return 0;
@@ -576,6 +649,13 @@ int main(int argc, char** argv) {
     const std::string schema_path = flag(args, "schema", "data/schema.json");
     const std::string columns_model_path =
         flag(args, "columns-model", "data/model/column_model.json");
+    for (const std::string& path :
+         {state_dir, model_path, seeds_path, schema_path, columns_model_path}) {
+        if (path.empty()) {
+            std::fprintf(stderr, "datadiver: a path flag was given an empty value\n");
+            return usage();
+        }
+    }
 
     try {
         if (args.command.empty() || args.command == "shell") {
@@ -610,7 +690,13 @@ int main(int argc, char** argv) {
 
         if (args.command == "watch") {
             if (args.positional.empty()) return usage();
-            const int interval = std::max(1, std::atoi(flag(args, "interval", "15").c_str()));
+            const std::optional<long> parsed =
+                parse_long(flag(args, "interval", "15"), 1, 86400);
+            if (!parsed.has_value()) {
+                std::fprintf(stderr, "datadiver: --interval must be 1-86400 seconds\n");
+                return 2;
+            }
+            const int interval = static_cast<int>(*parsed);
             const std::optional<dd::columns::ColumnModel> nn =
                 load_column_model(columns_model_path);
             return watch_url(dd::schema::Registry::load(schema_path),
@@ -655,23 +741,39 @@ int main(int argc, char** argv) {
         }
 
         if (args.command == "harvest") {
+            std::optional<long> datasets{0};
+            if (args.flags.count("datasets") != 0) {
+                datasets = parse_long(flag(args, "datasets", ""), 1, 500);
+            }
+            if (!datasets.has_value()) {
+                std::fprintf(stderr, "datadiver: --datasets must be 1-500\n");
+                return 2;
+            }
             return dd::cli::harvest(dd::schema::Registry::load(schema_path),
                                     flag(args, "corpus", "data/columns/corpus.jsonl"),
-                                    static_cast<std::size_t>(
-                                        std::atoi(flag(args, "datasets", "0").c_str())));
+                                    static_cast<std::size_t>(*datasets));
         }
 
         if (args.command == "train-columns") {
+            const std::optional<long> epochs = parse_long(flag(args, "epochs", "30"), 1, 500);
+            if (!epochs.has_value()) {
+                std::fprintf(stderr, "datadiver: --epochs must be 1-500\n");
+                return 2;
+            }
             return dd::cli::train_columns(nullptr,
                                           flag(args, "corpus", "data/columns/corpus.jsonl"),
-                                          columns_model_path,
-                                          std::max(1, std::atoi(flag(args, "epochs", "6").c_str())));
+                                          columns_model_path, static_cast<int>(*epochs));
         }
 
         if (args.command == "train") {
-            const double alpha = std::atof(flag(args, "alpha", "1.0").c_str());
+            const std::optional<double> alpha =
+                parse_positive_double(flag(args, "alpha", "1.0"), 100.0);
+            if (!alpha.has_value()) {
+                std::fprintf(stderr, "datadiver: --alpha must be a positive number\n");
+                return 2;
+            }
             return dd::cli::train(nullptr, flag(args, "corpus", "data/corpus"), model_path,
-                                  alpha > 0.0 ? alpha : 1.0, args.flags.count("sweep") != 0);
+                                  *alpha, args.flags.count("sweep") != 0);
         }
 
         if (args.command == "counties" || args.command == "county" || args.command == "map" ||
