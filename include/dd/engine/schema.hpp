@@ -10,40 +10,60 @@
 
 namespace dd::schema {
 
-// The canonical property-event schema. Every source dialect compiles onto
-// these fields.
-enum class Field {
-    ParcelId,
-    Owner,
-    Address,
-    AmountDue,
-    AssessedValue,
-    SalePrice,
-    EventDate,
-    AuctionDate,
-    CaseNumber,
-    Status,
-    Description,
+// Validator families. A field's kind decides how its values are checked and
+// normalized; the fields themselves are configuration, not code.
+enum class Kind { Id, Name, Address, Money, Date, Status, Text };
+
+std::string_view kind_name(Kind k);
+std::optional<Kind> kind_from_name(std::string_view name);
+
+// One canonical field, defined in the schema file. The role ties a field to
+// engine behaviour without hardcoding its name:
+//   parcel / address    property identity (parcel preferred)
+//   owner               display + event details
+//   status              feeds event kind refinement (e.g. "sold at auction")
+//   event_date          the event's date
+//   fallback_date       used when no event_date mapped (e.g. auction date)
+//   amount              the event amount; first mapped amount field wins,
+//                       in schema order
+// A field may have no role: it is extracted and carried, nothing more.
+struct FieldDef {
+    std::string name;
+    Kind kind = Kind::Text;
+    std::string role;
+    bool identity = false;
+    std::vector<std::string> synonyms;
 };
 
-std::string_view field_name(Field f);
-const std::vector<Field>& all_fields();
+// The set of labels we need to fill, loaded from JSON. Immutable once built.
+class Registry {
+public:
+    // Throws dd::Error on unreadable or malformed schema files, on duplicate
+    // field names, and on a schema with no identity field.
+    static Registry load(const std::string& path);
+    static Registry from_json(const std::string& text);
 
-// Fields that identify the property. A mapping that finds none of these
-// cannot resolve records and is not accepted.
-bool is_identity_field(Field f);
+    const std::vector<FieldDef>& fields() const noexcept { return fields_; }
+    const FieldDef* find(std::string_view name) const;
+
+    // Fields carrying a role, in schema order.
+    std::vector<const FieldDef*> with_role(std::string_view role) const;
+
+private:
+    std::vector<FieldDef> fields_;
+};
 
 // Validators. Each checks whether a raw source value is plausible for the
-// field and yields the normalized form (money as plain decimal, dates as ISO
-// 8601). Mapping confidence is built from measured validator pass rates.
-bool validate(Field f, std::string_view value);
-std::string normalize(Field f, std::string_view value);
+// field's kind and yields the normalized form (money as plain decimal, dates
+// as ISO 8601). Mapping confidence is built from measured pass rates.
+bool validate(const FieldDef& field, std::string_view value);
+std::string normalize(const FieldDef& field, std::string_view value);
 std::optional<double> parse_money(std::string_view value);
 std::optional<std::string> parse_date(std::string_view value);
 
 // How one source dialect maps onto one canonical field.
 struct FieldMapping {
-    Field field = Field::Description;
+    std::string field;              // canonical field name
     std::string source_label;
     double label_similarity = 0.0;  // lexicon similarity, [0,1]
     double value_pass_rate = 0.0;   // measured over sampled values, [0,1]
@@ -54,29 +74,28 @@ struct Mapping {
     std::vector<FieldMapping> fields;
     double confidence = 0.0;        // mean of accepted field confidences
 
-    const FieldMapping* find(Field f) const;
+    const FieldMapping* find(std::string_view field) const;
     std::string serialize() const;
     static Mapping deserialize(const std::string& text);
 };
 
 // Learns a mapping from the labels and sample values of a document. Labels
-// are scored against a synonym lexicon with fuzzy token matching, values
-// against the field validators; a field is accepted when the combined score
+// are scored against each field's synonyms with fuzzy token matching, values
+// against the kind validator; a field is accepted when the combined score
 // clears the threshold. Each source label maps to at most one field.
-Mapping infer_mapping(const doc::Model& model);
+Mapping infer_mapping(const Registry& registry, const doc::Model& model);
 
 // Lexicon similarity of one (field, label) pair, in [0,1]: the same scorer
-// infer_mapping uses to weigh a source label against a canonical field.
-double score_label(Field f, const std::string& label);
+// infer_mapping uses.
+double score_label(const FieldDef& field, const std::string& label);
 
 // Applies operator overrides (canonical field name -> source label; empty
 // label = force-unmap) on top of an inferred or healed mapping. An
 // overridden field maps to its label when the document carries it, with the
 // label similarity from the lexicon and the value pass rate measured on this
 // document; when the pinned label is absent the field stays unmapped rather
-// than falling back to inference. Per-field and overall confidence are
-// recomputed the same way infer_mapping computes them.
-Mapping apply_overrides(const Mapping& mapping,
+// than falling back to inference.
+Mapping apply_overrides(const Registry& registry, const Mapping& mapping,
                         const std::map<std::string, std::string>& overrides,
                         const doc::Model& model);
 
@@ -95,6 +114,7 @@ struct ExtractionResult {
     double rate = 0.0;
 };
 
-ExtractionResult apply_mapping(const Mapping& mapping, const doc::Model& model);
+ExtractionResult apply_mapping(const Registry& registry, const Mapping& mapping,
+                               const doc::Model& model);
 
 } // namespace dd::schema

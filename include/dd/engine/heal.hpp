@@ -38,8 +38,8 @@ struct Proposal {
 // text, headers), so the healer rescores those labels against the field
 // lexicon and validates the values they produce. Acceptance requires both a
 // confident mapping and recovery of most of the baseline extraction rate.
-Proposal propose(const doc::Model& model, const schema::Mapping& previous,
-                 double baseline_rate);
+Proposal propose(const schema::Registry& registry, const doc::Model& model,
+                 const schema::Mapping& previous, double baseline_rate);
 
 // Auto-accept bar for repairs. Exposed so tests and the UI can state it.
 double auto_accept_threshold();

@@ -15,7 +15,7 @@ constexpr double kRecoveryRatio = 0.7;
 
 constexpr double kAutoAcceptConfidence = 0.75;
 
-std::string describe(const schema::Mapping& mapping, schema::Field field) {
+std::string describe(const schema::Mapping& mapping, std::string_view field) {
     const schema::FieldMapping* fm = mapping.find(field);
     return fm == nullptr ? std::string{"(unmapped)"} : "'" + fm->source_label + "'";
 }
@@ -53,11 +53,11 @@ Assessment assess(const store::SourceState& state, const doc::Model& model,
     return out;
 }
 
-Proposal propose(const doc::Model& model, const schema::Mapping& previous,
-                 double baseline_rate) {
+Proposal propose(const schema::Registry& registry, const doc::Model& model,
+                 const schema::Mapping& previous, double baseline_rate) {
     Proposal out;
-    out.candidate = schema::infer_mapping(model);
-    out.result = schema::apply_mapping(out.candidate, model);
+    out.candidate = schema::infer_mapping(registry, model);
+    out.result = schema::apply_mapping(registry, out.candidate, model);
 
     if (out.candidate.fields.empty()) {
         out.confidence = 0.0;
@@ -79,14 +79,14 @@ Proposal propose(const doc::Model& model, const schema::Mapping& previous,
                             : out.result.rate > 0.0;
     out.acceptable = recovered_enough && out.confidence >= kAutoAcceptConfidence;
 
-    for (schema::Field field : schema::all_fields()) {
-        const schema::FieldMapping* before = previous.find(field);
-        const schema::FieldMapping* after = out.candidate.find(field);
+    for (const schema::FieldDef& field : registry.fields()) {
+        const schema::FieldMapping* before = previous.find(field.name);
+        const schema::FieldMapping* after = out.candidate.find(field.name);
         if (before == nullptr && after == nullptr) continue;
-        const std::string b = describe(previous, field);
-        const std::string a = describe(out.candidate, field);
+        const std::string b = describe(previous, field.name);
+        const std::string a = describe(out.candidate, field.name);
         if (b == a) continue;
-        out.changes.push_back(std::string{schema::field_name(field)} + ": " + b + " -> " + a);
+        out.changes.push_back(field.name + ": " + b + " -> " + a);
     }
     if (out.changes.empty()) out.changes.push_back("mapping unchanged; values revalidated");
     return out;

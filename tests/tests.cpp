@@ -104,6 +104,20 @@ void report(const char* file, int line, const std::string& message) {
         if (!threw) report(__FILE__, __LINE__, "expected dd::Error from: " #expr);     \
     } while (0)
 
+const dd::schema::Registry& test_registry() {
+    static const dd::schema::Registry registry =
+        dd::schema::Registry::load("data/schema.json");
+    return registry;
+}
+
+bool tvalidate(const char* field, std::string_view value) {
+    return dd::schema::validate(*test_registry().find(field), value);
+}
+
+std::string tnormalize(const char* field, std::string_view value) {
+    return dd::schema::normalize(*test_registry().find(field), value);
+}
+
 // ---------------------------------------------------------------- core -----
 
 TEST(str_basics) {
@@ -716,36 +730,34 @@ TEST(schema_date_parsing) {
 }
 
 TEST(schema_validators) {
-    using dd::schema::Field;
-    CHECK(dd::schema::validate(Field::ParcelId, "123-456-789"));
-    CHECK(dd::schema::validate(Field::ParcelId, "201-33-0870"));
-    CHECK(!dd::schema::validate(Field::ParcelId, "Jane Smith"));
-    CHECK(!dd::schema::validate(Field::ParcelId, "2026-06-18")); // a date is not a parcel
-    CHECK(!dd::schema::validate(Field::ParcelId, "$1,200.00"));
+    CHECK(tvalidate("parcel_id", "123-456-789"));
+    CHECK(tvalidate("parcel_id", "201-33-0870"));
+    CHECK(!tvalidate("parcel_id", "Jane Smith"));
+    CHECK(!tvalidate("parcel_id", "2026-06-18")); // a date is not a parcel
+    CHECK(!tvalidate("parcel_id", "$1,200.00"));
 
-    CHECK(dd::schema::validate(Field::Owner, "Smith, Jane"));
-    CHECK(!dd::schema::validate(Field::Owner, "123-456"));
+    CHECK(tvalidate("owner", "Smith, Jane"));
+    CHECK(!tvalidate("owner", "123-456"));
 
-    CHECK(dd::schema::validate(Field::Address, "1402 Main Street"));
-    CHECK(dd::schema::validate(Field::Address, "PO Box 118"));
-    CHECK(!dd::schema::validate(Field::Address, "8421.37"));
+    CHECK(tvalidate("address", "1402 Main Street"));
+    CHECK(tvalidate("address", "PO Box 118"));
+    CHECK(!tvalidate("address", "8421.37"));
 
-    CHECK(dd::schema::validate(Field::AmountDue, "$8,421.37"));
-    CHECK(!dd::schema::validate(Field::AmountDue, "Jane"));
+    CHECK(tvalidate("amount_due", "$8,421.37"));
+    CHECK(!tvalidate("amount_due", "Jane"));
 
-    CHECK(dd::schema::validate(Field::EventDate, "2026-06-18"));
-    CHECK(!dd::schema::validate(Field::EventDate, "next week"));
+    CHECK(tvalidate("event_date", "2026-06-18"));
+    CHECK(!tvalidate("event_date", "next week"));
 
-    CHECK(dd::schema::validate(Field::CaseNumber, "2026-CV-04182"));
-    CHECK(!dd::schema::validate(Field::CaseNumber, "$500"));
+    CHECK(tvalidate("case_number", "2026-CV-04182"));
+    CHECK(!tvalidate("case_number", "$500"));
 }
 
 TEST(schema_normalization) {
-    using dd::schema::Field;
-    CHECK_EQ(dd::schema::normalize(Field::AmountDue, "$8,421.37"), "8421.37");
-    CHECK_EQ(dd::schema::normalize(Field::EventDate, "06/18/2026"), "2026-06-18");
-    CHECK_EQ(dd::schema::normalize(Field::ParcelId, "12a-33"), "12A-33");
-    CHECK_EQ(dd::schema::normalize(Field::Owner, "  Jane   Smith "), "Jane Smith");
+    CHECK_EQ(tnormalize("amount_due", "$8,421.37"), "8421.37");
+    CHECK_EQ(tnormalize("event_date", "06/18/2026"), "2026-06-18");
+    CHECK_EQ(tnormalize("parcel_id", "12a-33"), "12A-33");
+    CHECK_EQ(tnormalize("owner", "  Jane   Smith "), "Jane Smith");
 }
 
 TEST(schema_infers_mapping_across_dialects) {
@@ -755,13 +767,13 @@ TEST(schema_infers_mapping_across_dialects) {
         "Parcel Number,Owner Name,Property Address,Amount Due,Sale Date\n"
         "111-22-333,\"Smith, Jane\",19 Birch Ln,\"$2,114.90\",2026-08-01\n"
         "444-55-666,\"Ray, Bob\",820 Canal Rd,$860.02,2026-08-01\n");
-    const dd::schema::Mapping ma = dd::schema::infer_mapping(a);
-    CHECK(ma.find(dd::schema::Field::ParcelId) != nullptr);
-    CHECK_EQ(ma.find(dd::schema::Field::ParcelId)->source_label, "Parcel Number");
-    CHECK(ma.find(dd::schema::Field::Owner) != nullptr);
-    CHECK(ma.find(dd::schema::Field::Address) != nullptr);
-    CHECK(ma.find(dd::schema::Field::AmountDue) != nullptr);
-    CHECK(ma.find(dd::schema::Field::AuctionDate) != nullptr);
+    const dd::schema::Mapping ma = dd::schema::infer_mapping(test_registry(), a);
+    CHECK(ma.find("parcel_id") != nullptr);
+    CHECK_EQ(ma.find("parcel_id")->source_label, "Parcel Number");
+    CHECK(ma.find("owner") != nullptr);
+    CHECK(ma.find("address") != nullptr);
+    CHECK(ma.find("amount_due") != nullptr);
+    CHECK(ma.find("auction_date") != nullptr);
     CHECK(ma.confidence > 0.7);
 
     // Dialect two: a different county's vocabulary for the same facts.
@@ -771,20 +783,20 @@ TEST(schema_infers_mapping_across_dialects) {
             {"apn": "77-100-08", "taxpayer": "Nguyen, An", "situs": "12 Fern Way", "balance": 902.11},
             {"apn": "77-100-31", "taxpayer": "Cole, Dana", "situs": "77 Mill St", "balance": 5210.40}
         ]})");
-    const dd::schema::Mapping mb = dd::schema::infer_mapping(b);
-    CHECK(mb.find(dd::schema::Field::ParcelId) != nullptr);
-    CHECK_EQ(mb.find(dd::schema::Field::ParcelId)->source_label, "apn");
-    CHECK(mb.find(dd::schema::Field::Owner) != nullptr);
-    CHECK_EQ(mb.find(dd::schema::Field::Owner)->source_label, "taxpayer");
-    CHECK(mb.find(dd::schema::Field::Address) != nullptr);
-    CHECK(mb.find(dd::schema::Field::AmountDue) != nullptr);
-    CHECK_EQ(mb.find(dd::schema::Field::AmountDue)->source_label, "balance");
+    const dd::schema::Mapping mb = dd::schema::infer_mapping(test_registry(), b);
+    CHECK(mb.find("parcel_id") != nullptr);
+    CHECK_EQ(mb.find("parcel_id")->source_label, "apn");
+    CHECK(mb.find("owner") != nullptr);
+    CHECK_EQ(mb.find("owner")->source_label, "taxpayer");
+    CHECK(mb.find("address") != nullptr);
+    CHECK(mb.find("amount_due") != nullptr);
+    CHECK_EQ(mb.find("amount_due")->source_label, "balance");
 }
 
 TEST(schema_mapping_requires_identity_field) {
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv", "Amount,Date\n$100,2026-01-01\n$200,2026-01-02\n$300,2026-01-03\n");
-    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
     CHECK(mapping.fields.empty());
     CHECK_NEAR(mapping.confidence, 0.0, 1e-12);
 }
@@ -793,8 +805,8 @@ TEST(schema_mapping_confidence_reflects_measurements) {
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv",
         "Parcel,Owner\n111-22,Jane\n444-55,Bob\n777-88,Sue\n");
-    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
-    const dd::schema::FieldMapping* parcel = mapping.find(dd::schema::Field::ParcelId);
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
+    const dd::schema::FieldMapping* parcel = mapping.find("parcel_id");
     CHECK(parcel != nullptr);
     CHECK_NEAR(parcel->value_pass_rate, 1.0, 1e-9);
     CHECK_NEAR(parcel->confidence,
@@ -808,8 +820,8 @@ TEST(schema_apply_mapping_measures_rates) {
         "111-22,Jane,$100.00\n"
         "444-55,Bob,not available\n" // invalid money: must count against the rate
         "777-88,Sue,$300.00\n");
-    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
-    const dd::schema::ExtractionResult result = dd::schema::apply_mapping(mapping, m);
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
+    const dd::schema::ExtractionResult result = dd::schema::apply_mapping(test_registry(), mapping, m);
     CHECK_EQ(result.records.size(), std::size_t{3});
     CHECK_EQ(result.records[0].values.at("amount_due"), "100.00");
     CHECK(result.records[1].values.find("amount_due") == result.records[1].values.end());
@@ -822,11 +834,11 @@ TEST(schema_apply_mapping_measures_rates) {
 TEST(schema_mapping_serialize_roundtrip) {
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv", "Parcel,Owner,Balance\n111-22,Jane,$10\n444-55,Bob,$20\n");
-    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
     const dd::schema::Mapping loaded = dd::schema::Mapping::deserialize(mapping.serialize());
     CHECK_EQ(loaded.fields.size(), mapping.fields.size());
     CHECK_NEAR(loaded.confidence, mapping.confidence, 1e-12);
-    const dd::schema::FieldMapping* owner = loaded.find(dd::schema::Field::Owner);
+    const dd::schema::FieldMapping* owner = loaded.find("owner");
     CHECK(owner != nullptr);
     CHECK_EQ(owner->source_label, "Owner");
 }
@@ -1058,12 +1070,13 @@ dd::classify::Classifier test_classifier() {
     return dd::classify::Classifier::load("data/model/source_classifier.json");
 }
 
+
 TEST(pipeline_learns_and_ingests_table_site) {
     const std::string root = fresh_dir("pipe_learn");
     dd::store::Store store{root};
     const dd::store::Source source =
         store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
 
     const dd::store::RunRecord run = pipeline.run_source(source);
     CHECK(run.ok);
@@ -1101,7 +1114,7 @@ TEST(pipeline_learns_and_ingests_table_site) {
 TEST(pipeline_handles_json_csv_pdf_dialects) {
     const std::string root = fresh_dir("pipe_dialects");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
 
     const dd::store::Source foreclosures = store.add_source(
         "Harborview FC", "data/fixtures/harborview_foreclosures.json", "Harborview County");
@@ -1143,7 +1156,7 @@ TEST(pipeline_records_fetch_failure) {
     dd::store::Store store{root};
     const dd::store::Source source =
         store.add_source("Broken", "build/test_tmp/nope_not_here.html", "Nowhere");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     const dd::store::RunRecord run = pipeline.run_source(source);
     CHECK(!run.ok);
     CHECK_EQ(run.stage, "fetch");
@@ -1159,7 +1172,7 @@ TEST(pipeline_detects_drift_and_heals) {
     // Day one: the county publishes a table.
     dd::fileio::write_file_atomic(site, dd::fileio::read_file("data/fixtures/millbrook_tax.html"));
     const dd::store::Source source = store.add_source("Millbrook Drift", site, "Millbrook County");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
 
     const dd::store::RunRecord first = pipeline.run_source(source);
     CHECK(first.ok);
@@ -1205,8 +1218,8 @@ TEST(heal_assessment_ignores_healthy_updates) {
     // Content changed but extraction still works: not drift.
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv", "Parcel,Owner\n111-22,Jane\n444-55,Bob\n777-88,Sue\n");
-    const dd::schema::Mapping mapping = dd::schema::infer_mapping(m);
-    const dd::schema::ExtractionResult extraction = dd::schema::apply_mapping(mapping, m);
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
+    const dd::schema::ExtractionResult extraction = dd::schema::apply_mapping(test_registry(), mapping, m);
 
     dd::store::SourceState state;
     state.source_id = "s";
@@ -1244,7 +1257,7 @@ TEST(pipeline_resolves_across_sources) {
     // and the assessment roll. Records must land on the same properties.
     const std::string root = fresh_dir("pipe_relations");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
 
     const dd::store::Source tax =
         store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
@@ -1276,7 +1289,7 @@ TEST(fetch_encodes_spaces_in_urls) {
 TEST(snapshot_carries_raw_dialect_sample) {
     const std::string root = fresh_dir("pipe_snapshot");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     const dd::store::Source source =
         store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
     CHECK(pipeline.run_source(source).ok);
@@ -1314,7 +1327,7 @@ TEST(store_update_and_remove_source) {
 
     // Removal deletes the learned state, snapshot and cache but keeps runs
     // and events: history is history.
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     CHECK(pipeline.run_source(*store.find_source(s.id)).ok);
     CHECK(dd::fileio::exists(root + "/state/" + s.id + ".json"));
     CHECK(dd::fileio::exists(root + "/records/" + s.id + ".json"));
@@ -1356,7 +1369,7 @@ TEST(store_resolve_repair_applies_mapping) {
     dd::store::Store store{root};
     const dd::store::Source s =
         store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     CHECK(pipeline.run_source(s).ok);
     const dd::store::SourceState before = store.source_state(s.id);
     CHECK(before.has_mapping);
@@ -1365,7 +1378,7 @@ TEST(store_resolve_repair_applies_mapping) {
     // page (the same shape the healer would propose for it).
     const dd::doc::Model v2 = dd::doc::build_auto(
         "text/html", dd::fileio::read_file("data/fixtures/millbrook_tax_v2.html"));
-    const dd::schema::Mapping v2_mapping = dd::schema::infer_mapping(v2);
+    const dd::schema::Mapping v2_mapping = dd::schema::infer_mapping(test_registry(), v2);
     CHECK(!v2_mapping.fields.empty());
     dd::store::RepairRecord pending;
     pending.id = "pending_1";
@@ -1382,7 +1395,7 @@ TEST(store_resolve_repair_applies_mapping) {
     const dd::store::SourceState after = store.source_state(s.id);
     CHECK(after.has_mapping);
     CHECK_EQ(after.good_runs, 0); // baseline restarts under the new mapping
-    const dd::schema::FieldMapping* owner = after.mapping.find(dd::schema::Field::Owner);
+    const dd::schema::FieldMapping* owner = after.mapping.find("owner");
     CHECK(owner != nullptr);
     CHECK_EQ(owner->source_label, "taxpayer");
 
@@ -1397,7 +1410,7 @@ TEST(store_resolve_repair_applies_mapping) {
 TEST(pipeline_applies_operator_overrides) {
     const std::string root = fresh_dir("pipe_overrides");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     const dd::store::Source source =
         store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
     CHECK(pipeline.run_source(source).ok);
@@ -1448,7 +1461,7 @@ TEST(classify_detailed_training_report) {
 TEST(pipeline_replays_cached_fetch) {
     const std::string root = fresh_dir("pipe_replay");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     const dd::store::Source source =
         store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
     CHECK(pipeline.run_source(source).ok);
@@ -1459,6 +1472,57 @@ TEST(pipeline_replays_cached_fetch) {
     CHECK(replay.ok);
     CHECK_EQ(replay.records_extracted, std::int64_t{6});
     CHECK_EQ(replay.events_new, std::int64_t{0}); // dedup absorbs the rerun
+}
+
+TEST(schema_is_configuration_not_code) {
+    // A different domain entirely, defined purely in JSON: the engine fills
+    // whatever labels the schema declares.
+    const dd::schema::Registry licenses = dd::schema::Registry::from_json(R"({
+      "fields": [
+        {"name": "license_number", "kind": "id", "identity": true,
+         "synonyms": ["license", "license no", "permit number"]},
+        {"name": "holder", "kind": "name", "role": "owner",
+         "synonyms": ["licensee", "business name", "holder"]},
+        {"name": "premises", "kind": "address", "identity": true,
+         "synonyms": ["premises address", "business address", "location"]},
+        {"name": "annual_fee", "kind": "money", "role": "amount",
+         "synonyms": ["fee", "annual fee", "fee paid"]},
+        {"name": "expires", "kind": "date", "role": "event_date",
+         "synonyms": ["expiry", "expiration date", "valid until"]}
+      ]
+    })");
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv",
+        "License No,Licensee,Business Address,Fee Paid,Expiration Date\n"
+        "BL-2026-118,Harbor Coffee LLC,12 Pier St,250.00,2027-01-31\n"
+        "BL-2026-204,Vega Auto Repair,900 Foundry Rd,410.00,2027-03-15\n");
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(licenses, m);
+    CHECK_EQ(mapping.fields.size(), std::size_t{5});
+    CHECK_EQ(mapping.find("license_number")->source_label, "License No");
+    CHECK_EQ(mapping.find("holder")->source_label, "Licensee");
+    CHECK_EQ(mapping.find("premises")->source_label, "Business Address");
+    CHECK_EQ(mapping.find("annual_fee")->source_label, "Fee Paid");
+    CHECK_EQ(mapping.find("expires")->source_label, "Expiration Date");
+
+    const dd::schema::ExtractionResult result =
+        dd::schema::apply_mapping(licenses, mapping, m);
+    CHECK_NEAR(result.rate, 1.0, 1e-9);
+    CHECK_EQ(result.records[0].values.at("annual_fee"), "250.00");
+    CHECK_EQ(result.records[1].values.at("expires"), "2027-03-15");
+}
+
+TEST(schema_registry_rejects_bad_files) {
+    CHECK_THROWS(dd::schema::Registry::from_json("{}"));
+    CHECK_THROWS(dd::schema::Registry::from_json(R"({"fields": []})"));
+    CHECK_THROWS(dd::schema::Registry::from_json(
+        R"({"fields": [{"name": "a", "kind": "nope", "identity": true}]})"));
+    CHECK_THROWS(dd::schema::Registry::from_json(
+        R"({"fields": [{"name": "a", "kind": "id", "identity": true},
+                       {"name": "a", "kind": "id"}]})"));
+    // No identity field: records could never resolve to properties.
+    CHECK_THROWS(dd::schema::Registry::from_json(
+        R"({"fields": [{"name": "amount", "kind": "money"}]})"));
+    CHECK_THROWS(dd::schema::Registry::load("data/no_such_schema.json"));
 }
 
 TEST(document_survives_bespoke_legacy_markup) {
@@ -1481,7 +1545,7 @@ TEST(document_survives_bespoke_legacy_markup) {
 TEST(pipeline_ingests_real_government_source) {
     const std::string root = fresh_dir("pipe_real");
     dd::store::Store store{root};
-    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     const dd::store::Source source = store.add_source(
         "Norfolk VA Delinquent Taxes",
         "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,"

@@ -24,35 +24,48 @@ std::string pick(const std::map<std::string, std::string>& values, const char* k
     return it == values.end() ? std::string{} : it->second;
 }
 
-// Builds property events from the canonical records of one run.
-std::vector<events::PropertyEvent> to_events(const store::Source& source,
+// The first non-empty value among the fields carrying `role`, in schema
+// order.
+std::string pick_role(const schema::Registry& registry,
+                      const std::map<std::string, std::string>& values,
+                      std::string_view role) {
+    for (const schema::FieldDef* field : registry.with_role(role)) {
+        const std::string value = pick(values, field->name.c_str());
+        if (!value.empty()) return value;
+    }
+    return {};
+}
+
+// Builds property events from the canonical records of one run. Field roles
+// from the schema file decide what identifies the property, what dates the
+// event and what its amount is; the canonical names themselves are free.
+std::vector<events::PropertyEvent> to_events(const schema::Registry& registry,
+                                             const store::Source& source,
                                              const store::RunRecord& run,
                                              const std::string& classification,
                                              double class_confidence,
                                              const schema::ExtractionResult& extraction) {
     std::vector<events::PropertyEvent> out;
     for (const schema::CanonicalRecord& record : extraction.records) {
-        const std::string parcel = pick(record.values, "parcel_id");
-        const std::string address = pick(record.values, "address");
+        const std::string parcel = pick_role(registry, record.values, "parcel");
+        const std::string address = pick_role(registry, record.values, "address");
         const std::string key = entity::property_key(source.jurisdiction, parcel, address);
         if (key.empty()) continue; // unresolvable: no identity evidence
 
         events::PropertyEvent e;
         e.property_key = key;
-        e.kind = events::kind_from_source_label(classification, pick(record.values, "status"));
-        e.event_date = pick(record.values, "event_date");
-        if (e.event_date.empty()) e.event_date = pick(record.values, "auction_date");
+        e.kind = events::kind_from_source_label(classification,
+                                                pick_role(registry, record.values, "status"));
+        e.event_date = pick_role(registry, record.values, "event_date");
+        if (e.event_date.empty()) {
+            e.event_date = pick_role(registry, record.values, "fallback_date");
+        }
         e.recorded_at = run.started_at;
         e.source_id = source.id;
         e.run_id = run.id;
         e.confidence = class_confidence;
-        for (const char* money_field : {"amount_due", "sale_price", "assessed_value"}) {
-            const std::string amount = pick(record.values, money_field);
-            if (!amount.empty()) {
-                e.amount = std::atof(amount.c_str());
-                break;
-            }
-        }
+        const std::string amount = pick_role(registry, record.values, "amount");
+        if (!amount.empty()) e.amount = std::atof(amount.c_str());
         e.details = record.values;
         e.id = events::PropertyEvent::compute_id(e);
         out.push_back(std::move(e));
@@ -135,8 +148,9 @@ double update_baseline(double baseline, int good_runs, double rate) {
 
 } // namespace
 
-Pipeline::Pipeline(store::Store& store, classify::Classifier classifier)
-    : store_{store}, classifier_{std::move(classifier)} {}
+Pipeline::Pipeline(store::Store& store, classify::Classifier classifier,
+                   schema::Registry registry)
+    : store_{store}, classifier_{std::move(classifier)}, registry_{std::move(registry)} {}
 
 void Pipeline::set_classifier(classify::Classifier classifier) {
     classifier_ = std::move(classifier);
@@ -256,12 +270,13 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
     schema::ExtractionResult extraction;
 
     if (state.has_mapping) {
-        extraction = schema::apply_mapping(state.mapping, model);
+        extraction = schema::apply_mapping(registry_, state.mapping, model);
         const heal::Assessment verdict = heal::assess(state, model, extraction);
         run.drift_detected = verdict.drift;
         if (verdict.drift) {
             run.repair_attempted = true;
-            const heal::Proposal proposal = heal::propose(model, state.mapping, state.baseline_rate);
+            const heal::Proposal proposal =
+                heal::propose(registry_, model, state.mapping, state.baseline_rate);
 
             store::RepairRecord repair;
             repair.id = new_run_id(source.id + "|repair");
@@ -296,7 +311,7 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
             mapping = state.mapping;
         }
     } else {
-        mapping = schema::infer_mapping(model);
+        mapping = schema::infer_mapping(registry_, model);
         if (!mapping.fields.empty()) {
             state.good_runs = 0;
             logging::info("pipeline: learned initial mapping for " + source.id);
@@ -307,14 +322,14 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
     // field maps to its label with the pass rate measured on this document,
     // and a force-unmapped field stays out.
     if (!state.overrides.empty()) {
-        mapping = schema::apply_overrides(mapping, state.overrides, model);
+        mapping = schema::apply_overrides(registry_, mapping, state.overrides, model);
     }
     if (mapping.fields.empty()) {
         run.map_ms = map_watch.elapsed_ms();
         return finish(false, "map",
                       "could not learn a mapping with an identity field from this document");
     }
-    extraction = schema::apply_mapping(mapping, model);
+    extraction = schema::apply_mapping(registry_, mapping, model);
     state.mapping = mapping;
     state.has_mapping = true;
     run.map_ms = map_watch.elapsed_ms();
@@ -323,7 +338,7 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
 
     // --------------------------------------------- resolve and add events --
     const std::vector<events::PropertyEvent> batch =
-        to_events(source, run, prediction.label, prediction.confidence, extraction);
+        to_events(registry_, source, run, prediction.label, prediction.confidence, extraction);
     run.events_new = static_cast<std::int64_t>(store_.add_events(batch));
     store_.save_latest_records(source.id,
                                extraction_snapshot(run, model, prediction, mapping, extraction));

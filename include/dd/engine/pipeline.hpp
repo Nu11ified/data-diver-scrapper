@@ -2,6 +2,7 @@
 
 #include "dd/core/core.hpp"
 #include "dd/ml/classify.hpp"
+#include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
 
 #include <string>
@@ -15,7 +16,9 @@ namespace dd::pipeline {
 // on the record with the stage that failed.
 class Pipeline {
 public:
-    Pipeline(store::Store& store, classify::Classifier classifier);
+    // The registry is the canonical schema this pipeline fills: the set of
+    // labels, their validators and their event roles, loaded from JSON.
+    Pipeline(store::Store& store, classify::Classifier classifier, schema::Registry registry);
 
     store::RunRecord run_source(const store::Source& source);
 
@@ -28,6 +31,7 @@ public:
     store::RunRecord run_cached(const store::Source& source);
 
     const classify::Classifier& classifier() const noexcept { return classifier_; }
+    const schema::Registry& registry() const noexcept { return registry_; }
 
     // Hot-swaps the live classifier. Callers serialize this with runs.
     void set_classifier(classify::Classifier classifier);
@@ -39,6 +43,7 @@ private:
 
     store::Store& store_;
     classify::Classifier classifier_;
+    schema::Registry registry_;
 };
 
 } // namespace dd::pipeline

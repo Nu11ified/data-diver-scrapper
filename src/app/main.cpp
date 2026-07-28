@@ -69,12 +69,14 @@ int main(int argc, char** argv) {
     const std::string state_dir = flag(args, "state", "var");
     const std::string model_path = flag(args, "model", "data/model/source_classifier.json");
     const std::string seeds_path = flag(args, "seeds", "data/sources.json");
+    const std::string schema_path = flag(args, "schema", "data/schema.json");
 
     try {
         if (args.command == "ingest") {
             dd::store::Store store{state_dir};
             store.seed(seeds_path);
-            dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path)};
+            dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path),
+                                            dd::schema::Registry::load(schema_path)};
             bool any_failed = false;
             if (args.flags.count("all") != 0) {
                 for (const dd::store::Source& s : store.sources()) {

@@ -10,62 +10,6 @@
 namespace dd::schema {
 namespace {
 
-struct FieldSpec {
-    Field field;
-    std::string_view name;
-    bool identity;
-    std::vector<std::string_view> synonyms;
-};
-
-const std::vector<FieldSpec>& specs() {
-    static const std::vector<FieldSpec> kSpecs = {
-        {Field::ParcelId, "parcel_id", true,
-         {"parcel", "parcel number", "parcel id", "apn", "pin", "property id", "account number",
-          "tax account", "account", "parcel no", "folio", "tax id", "instrument",
-          "property group"}},
-        {Field::Owner, "owner", true,
-         {"owner", "owner name", "taxpayer", "taxpayer name", "property holder", "owner of record",
-          "name", "defendant", "grantee", "grantor", "decedent", "applicant", "borrower"}},
-        {Field::Address, "address", true,
-         {"address", "property address", "situs address", "situs", "site address", "location",
-          "street address", "property location"}},
-        {Field::AmountDue, "amount_due", false,
-         {"amount due", "amount owed", "delinquent amount", "balance", "balance due", "total due",
-          "taxes due", "amount", "judgment amount", "fine", "fine assessed", "tax amount",
-          "tax due"}},
-        {Field::AssessedValue, "assessed_value", false,
-         {"assessed value", "assessment", "assessed total", "total assessed value", "market value",
-          "appraised value", "land value", "estate value"}},
-        {Field::SalePrice, "sale_price", false,
-         {"sale price", "consideration", "opening bid", "minimum bid", "sold for", "price",
-          "valuation", "declared valuation", "mortgage amount"}},
-        {Field::EventDate, "event_date", false,
-         {"date", "event date", "filing date", "filed", "recorded", "recording date", "issued",
-          "issued date", "opened", "date of death", "lis pendens", "letters issued"}},
-        {Field::AuctionDate, "auction_date", false,
-         {"auction date", "sale date", "auction", "tax sale date", "redemption deadline",
-          "compliance deadline", "compliance date", "deadline"}},
-        {Field::CaseNumber, "case_number", false,
-         {"case number", "case no", "case id", "docket", "docket number", "document number",
-          "doc no", "permit number", "permit no", "sale number", "sale no", "sale id",
-          "certificate number", "citation number", "file number", "inspection number"}},
-        {Field::Status, "status", false,
-         {"status", "case status", "state", "disposition", "stage", "exemption", "deed type",
-          "estate type", "work class", "violation status", "inspection status"}},
-        {Field::Description, "description", false,
-         {"description", "legal description", "violation", "violation description",
-          "violation type", "scope of work", "description of work", "work", "notes", "remarks"}},
-    };
-    return kSpecs;
-}
-
-const FieldSpec& spec_for(Field f) {
-    for (const FieldSpec& s : specs()) {
-        if (s.field == f) return s;
-    }
-    throw Error("schema: unknown field");
-}
-
 // --------------------------------------------------------- value checks ----
 
 bool has_alpha(std::string_view s) {
@@ -136,35 +80,24 @@ double label_synonym_similarity(const std::string& label_slug,
     return std::max(token_score, fuzzy >= 0.90 ? fuzzy : 0.0);
 }
 
-double label_similarity(const FieldSpec& spec, const std::string& label) {
-    const std::string slug = str::slug(label);
-    const std::vector<std::string> tokens = str::tokenize_words(label);
-    double best = 0.0;
-    for (std::string_view synonym : spec.synonyms) {
-        best = std::max(best, label_synonym_similarity(slug, tokens, synonym));
-        if (best >= 1.0) break;
-    }
-    return best;
-}
-
 constexpr double kAcceptThreshold = 0.65;
 constexpr double kLabelWeight = 0.55;
 constexpr double kValueWeight = 0.45;
 constexpr std::size_t kSampleLimit = 25;
 
-// Money, date and parcel validators are decisive: values that pass are
-// strong evidence in themselves. Text fields validate almost anything, so
-// for them the label must carry the case on its own. This is what stops a
+// Money, date and id validators are decisive: values that pass are strong
+// evidence in themselves. Text-family kinds validate almost anything, so for
+// them the label must carry the case on its own. This is what stops a
 // street_name column from becoming the owner because both end in "name".
-bool validator_is_weak(Field f) {
-    return f == Field::Owner || f == Field::Address || f == Field::Status ||
-           f == Field::Description;
+bool validator_is_weak(Kind k) {
+    return k == Kind::Name || k == Kind::Address || k == Kind::Status || k == Kind::Text;
 }
 constexpr double kWeakValidatorLabelFloor = 0.70;
 
-// Fraction of sampled values under `label` that validate for `f`, measured
-// on the actual document the mapping will run against.
-double measured_pass_rate(Field f, const std::string& label, const doc::Model& model) {
+// Fraction of sampled values under `label` that validate for `field`,
+// measured on the actual document the mapping will run against.
+double measured_pass_rate(const FieldDef& field, const std::string& label,
+                          const doc::Model& model) {
     std::size_t sampled = 0;
     std::size_t good = 0;
     for (const doc::RawRecord& record : model.records) {
@@ -172,25 +105,129 @@ double measured_pass_rate(Field f, const std::string& label, const doc::Model& m
         const doc::Cell* cell = record.find(label);
         if (cell == nullptr || cell->value.empty()) continue;
         ++sampled;
-        if (validate(f, cell->value)) ++good;
+        if (validate(field, cell->value)) ++good;
     }
     return sampled == 0 ? 0.0 : static_cast<double>(good) / static_cast<double>(sampled);
 }
 
-} // namespace
-
-std::string_view field_name(Field f) { return spec_for(f).name; }
-
-const std::vector<Field>& all_fields() {
-    static const std::vector<Field> kAll = [] {
-        std::vector<Field> out;
-        for (const FieldSpec& s : specs()) out.push_back(s.field);
-        return out;
-    }();
-    return kAll;
+// Registry order decides the display order of mapping fields.
+std::size_t field_order(const Registry& registry, std::string_view name) {
+    const std::vector<FieldDef>& fields = registry.fields();
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (fields[i].name == name) return i;
+    }
+    return fields.size();
 }
 
-bool is_identity_field(Field f) { return spec_for(f).identity; }
+void sort_by_schema_order(const Registry& registry, std::vector<FieldMapping>& fields) {
+    std::stable_sort(fields.begin(), fields.end(),
+                     [&](const FieldMapping& a, const FieldMapping& b) {
+                         return field_order(registry, a.field) < field_order(registry, b.field);
+                     });
+}
+
+double mean_confidence(const std::vector<FieldMapping>& fields) {
+    if (fields.empty()) return 0.0;
+    double total = 0.0;
+    for (const FieldMapping& fm : fields) total += fm.confidence;
+    return total / static_cast<double>(fields.size());
+}
+
+} // namespace
+
+// -------------------------------------------------------------- kinds ------
+
+std::string_view kind_name(Kind k) {
+    switch (k) {
+    case Kind::Id: return "id";
+    case Kind::Name: return "name";
+    case Kind::Address: return "address";
+    case Kind::Money: return "money";
+    case Kind::Date: return "date";
+    case Kind::Status: return "status";
+    case Kind::Text: return "text";
+    }
+    return "text";
+}
+
+std::optional<Kind> kind_from_name(std::string_view name) {
+    for (Kind k : {Kind::Id, Kind::Name, Kind::Address, Kind::Money, Kind::Date, Kind::Status,
+                   Kind::Text}) {
+        if (kind_name(k) == name) return k;
+    }
+    return std::nullopt;
+}
+
+// ------------------------------------------------------------ registry -----
+
+Registry Registry::from_json(const std::string& text) {
+    const json::Value root = json::parse(text);
+    const json::Value* fields = root.find("fields");
+    if (fields == nullptr || !fields->is_array()) {
+        throw Error("schema: file needs a 'fields' array");
+    }
+    Registry out;
+    for (const json::Value& entry : fields->items()) {
+        FieldDef def;
+        const json::Value* name = entry.find("name");
+        if (name == nullptr || name->as_string().empty()) {
+            throw Error("schema: every field needs a name");
+        }
+        def.name = str::slug(name->as_string());
+        if (out.find(def.name) != nullptr) {
+            throw Error("schema: duplicate field name '" + def.name + "'");
+        }
+        const json::Value* kind = entry.find("kind");
+        if (kind != nullptr) {
+            const std::optional<Kind> parsed = kind_from_name(kind->as_string());
+            if (!parsed.has_value()) {
+                throw Error("schema: unknown kind '" + kind->as_string() + "' on field '" +
+                            def.name + "'");
+            }
+            def.kind = *parsed;
+        }
+        const json::Value* role = entry.find("role");
+        if (role != nullptr) def.role = role->as_string();
+        const json::Value* identity = entry.find("identity");
+        if (identity != nullptr) def.identity = identity->as_bool();
+        const json::Value* synonyms = entry.find("synonyms");
+        if (synonyms != nullptr && synonyms->is_array()) {
+            for (const json::Value& s : synonyms->items()) def.synonyms.push_back(s.as_string());
+        }
+        // The field's own name always matches itself.
+        def.synonyms.push_back(str::join(str::tokenize_words(def.name), " "));
+        out.fields_.push_back(std::move(def));
+    }
+    if (out.fields_.empty()) throw Error("schema: no fields defined");
+    const bool has_identity = std::any_of(out.fields_.begin(), out.fields_.end(),
+                                          [](const FieldDef& f) { return f.identity; });
+    if (!has_identity) {
+        throw Error("schema: at least one field must be marked identity so records can "
+                    "resolve to properties");
+    }
+    return out;
+}
+
+Registry Registry::load(const std::string& path) {
+    return from_json(fileio::read_file(path));
+}
+
+const FieldDef* Registry::find(std::string_view name) const {
+    for (const FieldDef& f : fields_) {
+        if (f.name == name) return &f;
+    }
+    return nullptr;
+}
+
+std::vector<const FieldDef*> Registry::with_role(std::string_view role) const {
+    std::vector<const FieldDef*> out;
+    for (const FieldDef& f : fields_) {
+        if (f.role == role) out.push_back(&f);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------- validators -----
 
 std::optional<double> parse_money(std::string_view value) {
     std::string digits;
@@ -265,11 +302,11 @@ std::optional<std::string> parse_date(std::string_view value) {
     return std::nullopt;
 }
 
-bool validate(Field f, std::string_view raw) {
+bool validate(const FieldDef& field, std::string_view raw) {
     const std::string value = str::trim(raw);
     if (value.empty()) return false;
-    switch (f) {
-    case Field::ParcelId: {
+    switch (field.kind) {
+    case Kind::Id: {
         if (value.size() < 3 || value.size() > 30) return false;
         if (parse_date(value).has_value()) return false;
         if (str::contains(value, "$")) return false;
@@ -277,13 +314,13 @@ bool validate(Field f, std::string_view raw) {
         if (digits < 2) return false;
         return digits * 10 >= value.size() * 4; // at least 40% digits
     }
-    case Field::Owner: {
+    case Kind::Name: {
         if (value.size() < 2 || value.size() > 80) return false;
         if (!has_alpha(value)) return false;
         if (str::contains(value, "$")) return false;
         return digit_count(value) * 2 <= value.size(); // names are mostly letters
     }
-    case Field::Address: {
+    case Kind::Address: {
         if (value.size() < 5 || value.size() > 120) return false;
         if (!has_alpha(value)) return false;
         const std::string lowered = str::to_lower(value);
@@ -291,56 +328,56 @@ bool validate(Field f, std::string_view raw) {
         // A leading or embedded street number.
         return digit_count(value) >= 1 && digit_count(value) * 2 <= value.size();
     }
-    case Field::AmountDue:
-    case Field::AssessedValue:
-    case Field::SalePrice: {
+    case Kind::Money: {
         const std::optional<double> money = parse_money(value);
         return money.has_value() && *money >= 0.0 && *money < 1e10;
     }
-    case Field::EventDate:
-    case Field::AuctionDate: return parse_date(value).has_value();
-    case Field::CaseNumber: {
-        if (value.size() < 3 || value.size() > 30) return false;
-        if (str::contains(value, "$")) return false;
-        if (parse_date(value).has_value()) return false;
-        return digit_count(value) >= 2;
-    }
-    case Field::Status: return value.size() <= 60 && has_alpha(value);
-    case Field::Description: return value.size() >= 3;
+    case Kind::Date: return parse_date(value).has_value();
+    case Kind::Status: return value.size() <= 60 && has_alpha(value);
+    case Kind::Text: return value.size() >= 3;
     }
     return false;
 }
 
-std::string normalize(Field f, std::string_view raw) {
+std::string normalize(const FieldDef& field, std::string_view raw) {
     const std::string value = str::trim(raw);
-    switch (f) {
-    case Field::AmountDue:
-    case Field::AssessedValue:
-    case Field::SalePrice: {
+    switch (field.kind) {
+    case Kind::Money: {
         const std::optional<double> money = parse_money(value);
         if (!money.has_value()) return value;
         char buffer[32];
         std::snprintf(buffer, sizeof(buffer), "%.2f", *money);
         return std::string{buffer};
     }
-    case Field::EventDate:
-    case Field::AuctionDate: {
+    case Kind::Date: {
         const std::optional<std::string> date = parse_date(value);
         return date.has_value() ? *date : value;
     }
-    case Field::ParcelId: return str::to_upper(value);
-    case Field::Owner:
-    case Field::Address:
-    case Field::CaseNumber:
-    case Field::Status:
-    case Field::Description: return str::collapse_ws(value);
+    case Kind::Id: return str::to_upper(str::collapse_ws(value));
+    case Kind::Name:
+    case Kind::Address:
+    case Kind::Status:
+    case Kind::Text: return str::collapse_ws(value);
     }
     return value;
 }
 
-const FieldMapping* Mapping::find(Field f) const {
+// ------------------------------------------------------------- mapping -----
+
+double score_label(const FieldDef& field, const std::string& label) {
+    const std::string slug = str::slug(label);
+    const std::vector<std::string> tokens = str::tokenize_words(label);
+    double best = 0.0;
+    for (const std::string& synonym : field.synonyms) {
+        best = std::max(best, label_synonym_similarity(slug, tokens, synonym));
+        if (best >= 1.0) break;
+    }
+    return best;
+}
+
+const FieldMapping* Mapping::find(std::string_view field) const {
     for (const FieldMapping& fm : fields) {
-        if (fm.field == f) return &fm;
+        if (fm.field == field) return &fm;
     }
     return nullptr;
 }
@@ -353,7 +390,7 @@ std::string Mapping::serialize() const {
     w.begin_array();
     for (const FieldMapping& fm : fields) {
         w.begin_object();
-        w.field("field", field_name(fm.field));
+        w.field("field", fm.field);
         w.field("source_label", fm.source_label);
         w.field("label_similarity", fm.label_similarity);
         w.field("value_pass_rate", fm.value_pass_rate);
@@ -375,16 +412,10 @@ Mapping Mapping::deserialize(const std::string& text) {
     for (const json::Value& entry : fields->items()) {
         FieldMapping fm;
         const json::Value* name = entry.find("field");
-        if (name == nullptr) throw Error("schema: mapping field without name");
-        bool found = false;
-        for (Field f : all_fields()) {
-            if (field_name(f) == name->as_string()) {
-                fm.field = f;
-                found = true;
-                break;
-            }
+        if (name == nullptr || name->as_string().empty()) {
+            throw Error("schema: mapping field without name");
         }
-        if (!found) continue; // a future schema version's field: ignore
+        fm.field = name->as_string();
         const json::Value* label = entry.find("source_label");
         if (label != nullptr) fm.source_label = label->as_string();
         const json::Value* sim = entry.find("label_similarity");
@@ -398,9 +429,9 @@ Mapping Mapping::deserialize(const std::string& text) {
     return out;
 }
 
-Mapping infer_mapping(const doc::Model& model) {
+Mapping infer_mapping(const Registry& registry, const doc::Model& model) {
     struct Candidate {
-        Field field;
+        const FieldDef* field;
         std::string label;
         double label_sim;
         double pass_rate;
@@ -416,20 +447,20 @@ Mapping infer_mapping(const doc::Model& model) {
             const doc::Cell* cell = record.find(label);
             if (cell != nullptr && !cell->value.empty()) samples.push_back(cell->value);
         }
-        for (const FieldSpec& spec : specs()) {
-            const double sim = label_similarity(spec, label);
+        for (const FieldDef& field : registry.fields()) {
+            const double sim = score_label(field, label);
             double pass = 0.0;
             if (!samples.empty()) {
                 std::size_t good = 0;
                 for (const std::string& sample : samples) {
-                    if (validate(spec.field, sample)) ++good;
+                    if (validate(field, sample)) ++good;
                 }
                 pass = static_cast<double>(good) / static_cast<double>(samples.size());
             }
-            if (validator_is_weak(spec.field) && sim < kWeakValidatorLabelFloor) continue;
+            if (validator_is_weak(field.kind) && sim < kWeakValidatorLabelFloor) continue;
             const double combined = kLabelWeight * sim + kValueWeight * pass;
             if (combined >= kAcceptThreshold && pass > 0.0) {
-                candidates.push_back(Candidate{spec.field, label, sim, pass, combined});
+                candidates.push_back(Candidate{&field, label, sim, pass, combined});
             }
         }
     }
@@ -441,22 +472,21 @@ Mapping infer_mapping(const doc::Model& model) {
     Mapping mapping;
     std::vector<std::string> used_labels;
     for (const Candidate& c : candidates) {
-        if (mapping.find(c.field) != nullptr) continue;
+        if (mapping.find(c.field->name) != nullptr) continue;
         if (std::find(used_labels.begin(), used_labels.end(), c.label) != used_labels.end()) {
             continue;
         }
         mapping.fields.push_back(
-            FieldMapping{c.field, c.label, c.label_sim, c.pass_rate, c.combined});
+            FieldMapping{c.field->name, c.label, c.label_sim, c.pass_rate, c.combined});
         used_labels.push_back(c.label);
     }
-    std::sort(mapping.fields.begin(), mapping.fields.end(),
-              [](const FieldMapping& a, const FieldMapping& b) {
-                  return static_cast<int>(a.field) < static_cast<int>(b.field);
-              });
+    sort_by_schema_order(registry, mapping.fields);
 
     const bool has_identity =
-        std::any_of(mapping.fields.begin(), mapping.fields.end(),
-                    [](const FieldMapping& fm) { return is_identity_field(fm.field); });
+        std::any_of(mapping.fields.begin(), mapping.fields.end(), [&](const FieldMapping& fm) {
+            const FieldDef* def = registry.find(fm.field);
+            return def != nullptr && def->identity;
+        });
     if (!has_identity) {
         // Without an identity field records cannot be resolved to properties;
         // report that as an unusable mapping rather than a half-working one.
@@ -465,32 +495,18 @@ Mapping infer_mapping(const doc::Model& model) {
         return mapping;
     }
 
-    double total = 0.0;
-    for (const FieldMapping& fm : mapping.fields) total += fm.confidence;
-    mapping.confidence =
-        mapping.fields.empty() ? 0.0 : total / static_cast<double>(mapping.fields.size());
+    mapping.confidence = mean_confidence(mapping.fields);
     return mapping;
 }
 
-double score_label(Field f, const std::string& label) {
-    return label_similarity(spec_for(f), label);
-}
-
-Mapping apply_overrides(const Mapping& mapping,
+Mapping apply_overrides(const Registry& registry, const Mapping& mapping,
                         const std::map<std::string, std::string>& overrides,
                         const doc::Model& model) {
     Mapping out = mapping;
     for (const auto& [name, label] : overrides) {
-        const FieldSpec* spec = nullptr;
-        for (const FieldSpec& s : specs()) {
-            if (s.name == name) {
-                spec = &s;
-                break;
-            }
-        }
-        if (spec == nullptr) continue; // not a canonical field name
-        const Field field = spec->field;
-        std::erase_if(out.fields, [&](const FieldMapping& fm) { return fm.field == field; });
+        const FieldDef* field = registry.find(name);
+        if (field == nullptr) continue; // not a canonical field in this schema
+        std::erase_if(out.fields, [&](const FieldMapping& fm) { return fm.field == name; });
         if (label.empty()) continue; // force-unmap
         if (std::find(model.labels.begin(), model.labels.end(), label) == model.labels.end()) {
             continue; // pinned label absent from this document: stay unmapped
@@ -499,48 +515,51 @@ Mapping apply_overrides(const Mapping& mapping,
         std::erase_if(out.fields,
                       [&](const FieldMapping& fm) { return fm.source_label == label; });
         FieldMapping fm;
-        fm.field = field;
+        fm.field = name;
         fm.source_label = label;
-        fm.label_similarity = label_similarity(*spec, label);
-        fm.value_pass_rate = measured_pass_rate(field, label, model);
+        fm.label_similarity = score_label(*field, label);
+        fm.value_pass_rate = measured_pass_rate(*field, label, model);
         fm.confidence = kLabelWeight * fm.label_similarity + kValueWeight * fm.value_pass_rate;
         out.fields.push_back(std::move(fm));
     }
-    std::sort(out.fields.begin(), out.fields.end(),
-              [](const FieldMapping& a, const FieldMapping& b) {
-                  return static_cast<int>(a.field) < static_cast<int>(b.field);
-              });
-    double total = 0.0;
-    for (const FieldMapping& fm : out.fields) total += fm.confidence;
-    out.confidence = out.fields.empty() ? 0.0 : total / static_cast<double>(out.fields.size());
+    sort_by_schema_order(registry, out.fields);
+    out.confidence = mean_confidence(out.fields);
     return out;
 }
 
-ExtractionResult apply_mapping(const Mapping& mapping, const doc::Model& model) {
+ExtractionResult apply_mapping(const Registry& registry, const Mapping& mapping,
+                               const doc::Model& model) {
     ExtractionResult out;
     if (mapping.fields.empty() || model.records.empty()) return out;
 
     std::map<std::string, std::size_t> field_hits;
+    std::size_t known_fields = 0;
+    for (const FieldMapping& fm : mapping.fields) {
+        if (registry.find(fm.field) != nullptr) ++known_fields;
+    }
+    if (known_fields == 0) return out;
+
     for (const doc::RawRecord& record : model.records) {
         CanonicalRecord canonical;
         std::size_t valid = 0;
         for (const FieldMapping& fm : mapping.fields) {
+            const FieldDef* field = registry.find(fm.field);
+            if (field == nullptr) continue; // mapping from another schema version
             const doc::Cell* cell = record.find(fm.source_label);
             if (cell == nullptr) continue;
-            if (!validate(fm.field, cell->value)) continue;
-            canonical.values[std::string{field_name(fm.field)}] = normalize(fm.field, cell->value);
-            ++field_hits[std::string{field_name(fm.field)}];
+            if (!validate(*field, cell->value)) continue;
+            canonical.values[fm.field] = normalize(*field, cell->value);
+            ++field_hits[fm.field];
             ++valid;
         }
-        canonical.completeness =
-            static_cast<double>(valid) / static_cast<double>(mapping.fields.size());
+        canonical.completeness = static_cast<double>(valid) / static_cast<double>(known_fields);
         out.records.push_back(std::move(canonical));
     }
 
     const double n = static_cast<double>(model.records.size());
     for (const FieldMapping& fm : mapping.fields) {
-        const std::string name{field_name(fm.field)};
-        out.field_rates[name] = static_cast<double>(field_hits[name]) / n;
+        if (registry.find(fm.field) == nullptr) continue;
+        out.field_rates[fm.field] = static_cast<double>(field_hits[fm.field]) / n;
     }
     double total = 0.0;
     for (const CanonicalRecord& r : out.records) total += r.completeness;
