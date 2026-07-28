@@ -55,13 +55,9 @@ else()
   message(WARNING "zlib not found: compressed PDF streams will be skipped")
 endif()
 
-add_executable(datadiver src/app/main.cpp)
+add_executable(datadiver src/app/main.cpp src/app/render.cpp)
 target_link_libraries(datadiver PRIVATE dd_engine)
 target_compile_options(datadiver PRIVATE -Wall -Wextra -Wpedantic)
-
-add_executable(dd_train src/app/train_main.cpp)
-target_link_libraries(dd_train PRIVATE dd_engine)
-target_compile_options(dd_train PRIVATE -Wall -Wextra -Wpedantic)
 
 enable_testing()
 add_executable(dd_tests tests/tests.cpp)
