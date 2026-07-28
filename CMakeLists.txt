@@ -22,6 +22,7 @@ add_library(dd_engine STATIC
   src/ml/features.cpp
   src/ml/model.cpp
   src/ml/classify.cpp
+  src/ml/columns.cpp
   src/engine/schema.cpp
   src/engine/bench.cpp
   src/engine/entity.cpp

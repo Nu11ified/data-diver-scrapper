@@ -2,7 +2,9 @@
 // through its public interface only; ctest runs this binary from the source
 // tree so fixtures resolve by relative path.
 
+#include <random>
 #include "dd/ml/classify.hpp"
+#include "dd/ml/columns.hpp"
 #include "dd/core/core.hpp"
 #include "dd/parse/csv.hpp"
 #include "dd/parse/document.hpp"
@@ -706,6 +708,131 @@ TEST(bench_scores_mapping_against_answer_key) {
     CHECK_EQ(missing.tp, std::size_t{1});
 }
 
+// ------------------------------------------------------- column model -----
+
+dd::columns::Hyper tiny_hyper() {
+    dd::columns::Hyper h;
+    h.seq_len = 16;
+    h.d_model = 8;
+    h.heads = 2;
+    h.layers = 1;
+    h.d_ffn = 12;
+    return h;
+}
+
+std::vector<dd::columns::Example> synthetic_columns(std::size_t per_class,
+                                                    std::uint32_t seed) {
+    std::mt19937 rng{seed};
+    std::vector<dd::columns::Example> out;
+    for (std::size_t i = 0; i < per_class; ++i) {
+        dd::columns::Example digits;
+        digits.name = i % 2 == 0 ? "acct" : "num";
+        for (int v = 0; v < 3; ++v) {
+            digits.values.push_back(std::to_string(1000 + static_cast<int>(rng() % 9000)));
+        }
+        digits.label = "digits";
+        digits.domain = "domain" + std::to_string(i % 7);
+        out.push_back(digits);
+
+        dd::columns::Example words;
+        words.name = i % 2 == 0 ? "person" : "who";
+        for (int v = 0; v < 3; ++v) {
+            static const char* kNames[] = {"maria lopez", "james hill", "ada okafor",
+                                           "chen wei", "sam ortiz"};
+            words.values.push_back(kNames[rng() % 5]);
+        }
+        words.label = "words";
+        words.domain = "domain" + std::to_string(i % 7);
+        out.push_back(words);
+    }
+    return out;
+}
+
+TEST(columns_tokenizer_budgets_name_and_values) {
+    const std::vector<int> ids = dd::columns::tokenize(
+        "Owner Name", {"MARIA LOPEZ", "JAMES HILL"}, 64);
+    CHECK(ids.size() <= 64);
+    CHECK_EQ(ids[0], 1);  // CLS
+    // Lowercasing: 'O' and 'o' tokenize identically.
+    CHECK_EQ(dd::columns::tokenize("O", {}, 8)[1], dd::columns::tokenize("o", {}, 8)[1]);
+    // Truncation to max_len holds even for absurd values.
+    CHECK_EQ(dd::columns::tokenize(std::string(500, 'x'), {std::string(500, 'y')}, 32).size(),
+             std::size_t{32});
+}
+
+TEST(columns_gradients_match_finite_differences) {
+    const std::vector<dd::columns::Example> data = synthetic_columns(4, 11);
+    dd::columns::ColumnModel model{tiny_hyper()};
+    dd::columns::TrainConfig config;
+    config.epochs = 0;
+    config.seed = 3;
+    model.train(data, {}, config);  // initialises weights and classes only
+
+    const dd::columns::Example& probe = data.front();
+    const std::vector<double> grad = model.gradient_for(probe);
+    std::vector<double>& params = model.raw_parameters();
+    CHECK_EQ(grad.size(), params.size());
+
+    std::mt19937 rng{17};
+    const double eps = 1e-6;
+    std::size_t checked = 0;
+    for (int trial = 0; trial < 60; ++trial) {
+        const std::size_t i = rng() % params.size();
+        const double saved = params[i];
+        params[i] = saved + eps;
+        const double up = model.loss_for(probe);
+        params[i] = saved - eps;
+        const double down = model.loss_for(probe);
+        params[i] = saved;
+        const double numeric = (up - down) / (2.0 * eps);
+        if (std::abs(numeric) < 1e-8 && std::abs(grad[i]) < 1e-8) continue;
+        const double rel = std::abs(numeric - grad[i]) /
+                           std::max({std::abs(numeric), std::abs(grad[i]), 1e-8});
+        CHECK(rel < 1e-4);
+        ++checked;
+    }
+    CHECK(checked > 20);
+}
+
+TEST(columns_model_learns_value_shapes) {
+    std::vector<dd::columns::Example> train;
+    std::vector<dd::columns::Example> holdout;
+    dd::columns::split_by_domain(synthetic_columns(40, 5), 4, &train, &holdout);
+    CHECK(!holdout.empty());
+
+    dd::columns::ColumnModel model{tiny_hyper()};
+    dd::columns::TrainConfig config;
+    config.epochs = 12;
+    config.batch = 16;
+    config.threads = 2;
+    const dd::columns::TrainReport train_report = model.train(train, holdout, config);
+    CHECK(train_report.epoch_loss.front() > train_report.epoch_loss.back());
+    CHECK(train_report.holdout_accuracy > 0.9);
+
+    // Generalisation past the lexicon: a header seen in no training example,
+    // decided by the value shape alone.
+    const dd::columns::Prediction digits = model.predict("zzqx", {"4821", "9034", "1187"});
+    CHECK_EQ(digits.label, "digits");
+    const dd::columns::Prediction words = model.predict("zzqx", {"maria lopez", "chen wei"});
+    CHECK_EQ(words.label, "words");
+}
+
+TEST(columns_model_serializes_roundtrip) {
+    std::vector<dd::columns::Example> data = synthetic_columns(6, 9);
+    dd::columns::ColumnModel model{tiny_hyper()};
+    dd::columns::TrainConfig config;
+    config.epochs = 2;
+    model.train(data, {}, config);
+
+    const dd::columns::ColumnModel loaded =
+        dd::columns::ColumnModel::deserialize(model.serialize());
+    const dd::columns::Prediction before = model.predict("acct", {"1234"});
+    const dd::columns::Prediction after = loaded.predict("acct", {"1234"});
+    CHECK_EQ(before.label, after.label);
+    CHECK_NEAR(before.confidence, after.confidence, 1e-12);
+    CHECK_THROWS(dd::columns::ColumnModel::deserialize("{\"kind\":\"other\"}"));
+}
+
 TEST(classifier_trains_with_high_holdout_accuracy) {
     dd::classify::TrainReport train_report;
     const dd::classify::Classifier classifier =
@@ -1041,6 +1168,19 @@ std::string fresh_dir(const std::string& name) {
     std::filesystem::remove_all(dir);
     dd::fileio::ensure_dir(dir);
     return dir;
+}
+
+TEST(columns_corpus_roundtrips_jsonl) {
+    const std::string dir = fresh_dir("columns_corpus");
+    const std::string path = dir + "/corpus.jsonl";
+    std::vector<dd::columns::Example> examples = synthetic_columns(2, 1);
+    dd::columns::append_corpus(path, examples);
+    dd::columns::append_corpus(path, {examples.front()});
+    const std::vector<dd::columns::Example> loaded = dd::columns::load_corpus(path);
+    CHECK_EQ(loaded.size(), examples.size() + 1);
+    CHECK_EQ(loaded.front().name, examples.front().name);
+    CHECK_EQ(loaded.front().values.size(), std::size_t{3});
+    CHECK_EQ(loaded.front().domain, examples.front().domain);
 }
 
 TEST(bench_golden_loads_strings_and_lists) {
