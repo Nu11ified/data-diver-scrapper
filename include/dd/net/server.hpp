@@ -4,6 +4,7 @@
 #include "dd/engine/store.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <string>
 #include <thread>
 
@@ -11,14 +12,17 @@ namespace dd::server {
 
 struct Options {
     std::string host = "127.0.0.1";
-    int port = 8080;          // 0 asks the OS for an ephemeral port
-    std::string web_root = "web";
+    int port = 8080;              // 0 asks the OS for an ephemeral port
+    // Where POST /api/train persists the retrained model; empty skips the
+    // model save (the report is still written to the state root).
+    std::string model_path;
+    std::string corpus_dir = "data/corpus";
+    int auto_refresh_seconds = 0; // re-run all enabled sources; 0 = off
 };
 
-// Minimal HTTP/1.1 server over POSIX sockets: the JSON API plus the static
-// UI. One thread accepts, one thread per connection handles it; every
-// response closes the connection. Built for a local operator console, not
-// for the open internet.
+// Minimal HTTP/1.1 JSON API server over POSIX sockets. One thread accepts,
+// one thread per connection handles it; every response closes the
+// connection. Built for a local operator console, not for the open internet.
 class Server {
 public:
     Server(store::Store& store, pipeline::Pipeline& pipeline, Options options);
@@ -36,6 +40,7 @@ public:
 
 private:
     void accept_loop();
+    void refresh_loop();
     void handle_connection(int client_fd);
 
     store::Store& store_;
@@ -45,6 +50,9 @@ private:
     int bound_port_ = 0;
     std::atomic<bool> running_{false};
     std::thread accept_thread_;
+    std::thread refresh_thread_;
+    std::mutex refresh_mutex_;             // pairs with refresh_cv_ for shutdown
+    std::condition_variable refresh_cv_;
     std::mutex run_mutex_; // one pipeline run at a time
 };
 

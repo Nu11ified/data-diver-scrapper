@@ -162,6 +162,21 @@ bool validator_is_weak(Field f) {
 }
 constexpr double kWeakValidatorLabelFloor = 0.70;
 
+// Fraction of sampled values under `label` that validate for `f`, measured
+// on the actual document the mapping will run against.
+double measured_pass_rate(Field f, const std::string& label, const doc::Model& model) {
+    std::size_t sampled = 0;
+    std::size_t good = 0;
+    for (const doc::RawRecord& record : model.records) {
+        if (sampled >= kSampleLimit) break;
+        const doc::Cell* cell = record.find(label);
+        if (cell == nullptr || cell->value.empty()) continue;
+        ++sampled;
+        if (validate(f, cell->value)) ++good;
+    }
+    return sampled == 0 ? 0.0 : static_cast<double>(good) / static_cast<double>(sampled);
+}
+
 } // namespace
 
 std::string_view field_name(Field f) { return spec_for(f).name; }
@@ -455,6 +470,50 @@ Mapping infer_mapping(const doc::Model& model) {
     mapping.confidence =
         mapping.fields.empty() ? 0.0 : total / static_cast<double>(mapping.fields.size());
     return mapping;
+}
+
+double score_label(Field f, const std::string& label) {
+    return label_similarity(spec_for(f), label);
+}
+
+Mapping apply_overrides(const Mapping& mapping,
+                        const std::map<std::string, std::string>& overrides,
+                        const doc::Model& model) {
+    Mapping out = mapping;
+    for (const auto& [name, label] : overrides) {
+        const FieldSpec* spec = nullptr;
+        for (const FieldSpec& s : specs()) {
+            if (s.name == name) {
+                spec = &s;
+                break;
+            }
+        }
+        if (spec == nullptr) continue; // not a canonical field name
+        const Field field = spec->field;
+        std::erase_if(out.fields, [&](const FieldMapping& fm) { return fm.field == field; });
+        if (label.empty()) continue; // force-unmap
+        if (std::find(model.labels.begin(), model.labels.end(), label) == model.labels.end()) {
+            continue; // pinned label absent from this document: stay unmapped
+        }
+        // The override owns its label: no other field may keep it.
+        std::erase_if(out.fields,
+                      [&](const FieldMapping& fm) { return fm.source_label == label; });
+        FieldMapping fm;
+        fm.field = field;
+        fm.source_label = label;
+        fm.label_similarity = label_similarity(*spec, label);
+        fm.value_pass_rate = measured_pass_rate(field, label, model);
+        fm.confidence = kLabelWeight * fm.label_similarity + kValueWeight * fm.value_pass_rate;
+        out.fields.push_back(std::move(fm));
+    }
+    std::sort(out.fields.begin(), out.fields.end(),
+              [](const FieldMapping& a, const FieldMapping& b) {
+                  return static_cast<int>(a.field) < static_cast<int>(b.field);
+              });
+    double total = 0.0;
+    for (const FieldMapping& fm : out.fields) total += fm.confidence;
+    out.confidence = out.fields.empty() ? 0.0 : total / static_cast<double>(out.fields.size());
+    return out;
 }
 
 ExtractionResult apply_mapping(const Mapping& mapping, const doc::Model& model) {

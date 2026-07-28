@@ -1,48 +1,5 @@
 [
   {
-    "id": "millbrook_tax",
-    "name": "Millbrook County Tax Roll",
-    "url": "var/local/millbrook_roll.html",
-    "jurisdiction": "Millbrook County",
-    "seed_from": "data/fixtures/millbrook_tax.html"
-  },
-  {
-    "id": "millbrook_assessor",
-    "name": "Millbrook County Assessment Roll",
-    "url": "data/fixtures/millbrook_assessor.html",
-    "jurisdiction": "Millbrook County"
-  },
-  {
-    "id": "millbrook_code",
-    "name": "Millbrook County Code Enforcement",
-    "url": "data/fixtures/millbrook_code_enforcement.html",
-    "jurisdiction": "Millbrook County"
-  },
-  {
-    "id": "harborview_foreclosures",
-    "name": "Harborview Foreclosure Docket API",
-    "url": "data/fixtures/harborview_foreclosures.json",
-    "jurisdiction": "Harborview County"
-  },
-  {
-    "id": "crestline_auctions",
-    "name": "Crestline Trustee Sale Schedule",
-    "url": "data/fixtures/crestline_auctions.csv",
-    "jurisdiction": "Crestline County"
-  },
-  {
-    "id": "ashford_permits",
-    "name": "City of Ashford Building Permits",
-    "url": "data/fixtures/ashford_permits.html",
-    "jurisdiction": "City of Ashford"
-  },
-  {
-    "id": "eldridge_tax_pdf",
-    "name": "Eldridge County Delinquent Roll (PDF)",
-    "url": "data/fixtures/eldridge_delinquent.pdf",
-    "jurisdiction": "Eldridge County"
-  },
-  {
     "id": "norfolk_delinquent",
     "name": "Norfolk VA Delinquent Property Taxes",
     "url": "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,sum(taxdue) as tax_due,sum(penaltydue) as penalty,sum(interestdue) as interest,sum(total) as total_due&$group=account,owner_name,address&$order=total_due DESC&$limit=50",
@@ -59,5 +16,35 @@
     "name": "Chicago Building Violations",
     "url": "https://data.cityofchicago.org/resource/22u3-xenr.json?$order=violation_last_modified_date DESC&$limit=50",
     "jurisdiction": "City of Chicago IL"
+  },
+  {
+    "id": "nola_violations",
+    "name": "New Orleans LA Code Enforcement Violations",
+    "url": "https://data.nola.gov/resource/3ehi-je3s.json?$select=caseno as case_number,location as address,violationdate as date,codesection as code_section,violation,description&$order=violationdate DESC&$limit=50",
+    "jurisdiction": "City of New Orleans LA"
+  },
+  {
+    "id": "nola_sheriff_sales",
+    "name": "New Orleans LA Sheriff Sales - Lien Foreclosures",
+    "url": "https://data.nola.gov/resource/d52w-8nva.json?$select=casetitle,cdccasenumber as case_number,plaintiff,defendant,propertyaddress,saleamount,saledate,salestatus as status&$order=cdccasenumber DESC&$limit=50",
+    "jurisdiction": "City of New Orleans LA"
+  },
+  {
+    "id": "seattle_permits",
+    "name": "Seattle WA Building Permits",
+    "url": "https://cos-data.seattle.gov/resource/76t5-zqzr.json?$select=permitnum as permit_number,originaladdress1 as address,permitclass,description,estprojectcost as valuation,issueddate as issued_date,statuscurrent as status&$order=issueddate DESC&$limit=50",
+    "jurisdiction": "City of Seattle WA"
+  },
+  {
+    "id": "nyc_property_sales",
+    "name": "NYC Citywide Rolling Calendar Property Sales",
+    "url": "https://data.cityofnewyork.us/resource/usep-8jbt.json?$select=address,zip_code,sale_price as consideration,sale_date as recorded&$order=sale_date DESC&$limit=50",
+    "jurisdiction": "City of New York NY"
+  },
+  {
+    "id": "norfolk_assessments",
+    "name": "Norfolk VA Property Assessments FY25",
+    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,legal_description,acreage,property_use,current_total_value as total_assessed_value&$order=transfer_date DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
   }
 ]

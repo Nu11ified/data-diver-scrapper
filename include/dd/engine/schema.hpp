@@ -65,6 +65,21 @@ struct Mapping {
 // clears the threshold. Each source label maps to at most one field.
 Mapping infer_mapping(const doc::Model& model);
 
+// Lexicon similarity of one (field, label) pair, in [0,1]: the same scorer
+// infer_mapping uses to weigh a source label against a canonical field.
+double score_label(Field f, const std::string& label);
+
+// Applies operator overrides (canonical field name -> source label; empty
+// label = force-unmap) on top of an inferred or healed mapping. An
+// overridden field maps to its label when the document carries it, with the
+// label similarity from the lexicon and the value pass rate measured on this
+// document; when the pinned label is absent the field stays unmapped rather
+// than falling back to inference. Per-field and overall confidence are
+// recomputed the same way infer_mapping computes them.
+Mapping apply_overrides(const Mapping& mapping,
+                        const std::map<std::string, std::string>& overrides,
+                        const doc::Model& model);
+
 // One record after mapping: canonical field -> normalized value.
 struct CanonicalRecord {
     std::map<std::string, std::string> values;

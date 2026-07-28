@@ -6,3 +6,10 @@ var/
 compile_commands.json
 .cache/
 .playwright-mcp/
+
+# console (Next.js) artifacts — console/.env.example stays tracked
+console/node_modules/
+console/.next/
+console/.env
+console/next-env.d.ts
+console/*.tsbuildinfo

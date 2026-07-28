@@ -1,6 +1,6 @@
 // datadiver: the engine's front door.
 //
-//   datadiver serve   [--port N] [--state DIR] [--model FILE] [--web DIR] [--seeds FILE]
+//   datadiver serve   [--port N] [--refresh SECONDS] [--state DIR] [--model FILE] [--seeds FILE]
 //   datadiver ingest  (--all | SOURCE_ID) [--state DIR] [--model FILE] [--seeds FILE]
 //   datadiver sources [--state DIR] [--seeds FILE]
 
@@ -63,7 +63,7 @@ void print_run(const dd::store::RunRecord& run) {
 int usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  datadiver serve   [--port N] [--state DIR] [--model FILE] [--web DIR] [--seeds FILE]\n"
+                 "  datadiver serve   [--port N] [--refresh SECONDS] [--state DIR] [--model FILE] [--seeds FILE]\n"
                  "  datadiver ingest  (--all | SOURCE_ID) [--state DIR] [--model FILE] [--seeds FILE]\n"
                  "  datadiver sources [--state DIR] [--seeds FILE]\n");
     return 2;
@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
 
             dd::server::Options options;
             options.port = std::atoi(flag(args, "port", "8080").c_str());
-            options.web_root = flag(args, "web", "web");
+            options.model_path = model_path;
+            options.auto_refresh_seconds = std::atoi(flag(args, "refresh", "0").c_str());
             dd::server::Server server{store, pipeline, options};
             server.start();
             std::printf("Data Diver serving on http://127.0.0.1:%d (state: %s)\n",

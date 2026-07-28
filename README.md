@@ -6,7 +6,7 @@ resolves records to properties, and maintains an evidence-backed property
 lifecycle. When a source changes shape, it detects the drift and attempts to
 repair the extraction mapping automatically.
 
-It is not a demo. Every path reachable from the web console runs the real
+It is not a demo. Every path reachable from the operator console runs the real
 pipeline against real bytes, and every number shown is a measurement taken
 during a run.
 
@@ -21,15 +21,21 @@ ctest --test-dir build --output-on-failure
 ./build/datadiver serve
 ```
 
-Open http://127.0.0.1:8080. The console is organized by county. It ships with
-seven fixture sources across five dialects (HTML table, JSON API, CSV export,
-labelled HTML blocks, legacy 1990s markup, PDF report) plus three live
-government endpoints fetched over the network: Norfolk VA delinquent property
-taxes, the Cook County IL annual tax sale, and Chicago building violations.
-Ingest everything, open a county, then open a source to walk its pipeline:
-fetch measurements, the classifier's posterior, the learned field mapping with
-its evidence, and the extracted canonical records. Add your own source with
-any http(s) URL or a local file path.
+The engine serves a JSON API on http://127.0.0.1:8080; `GET /` returns a
+service descriptor listing every endpoint. The Next.js console under
+`console/` is the UI: it calls this API and mirrors results into Postgres
+(see `docs/architecture.md` for the full contract). Add a source with any
+http(s) URL or a local file path, run it, review the learned mapping, pin or
+unmap fields with operator overrides (`POST /api/mapping`), and approve or
+reject queued drift repairs (`POST /api/repairs/resolve`). Pass
+`--refresh SECONDS` to `serve` and the engine re-ingests every enabled source
+on that interval.
+
+Every successful fetch caches its body verbatim at `var/cache/<source_id>`
+with a JSON sidecar `<source_id>.meta` carrying the content type, fetch time
+and byte count. `POST /api/benchmark` replays those cached bytes through the
+full pipeline, so scale tests never hammer public endpoints; sources without
+a cache yet are counted in the response's `skipped` field.
 
 Millbrook County demonstrates cross-referencing: three independent sources
 (tax roll, assessment roll, code enforcement) resolve onto the same six
@@ -48,10 +54,7 @@ CLI equivalents:
 
 The Millbrook tax roll's bytes live at `var/local/millbrook_roll.html`, seeded
 on first start, so they can change the way a real county site's bytes change.
-On that source's page the demo buttons do it in one click: "change the page
-shape" writes the redesigned page over the working copy and runs the pipeline;
-"restore original page" writes the old bytes back and the engine heals in the
-other direction. The same thing from the CLI:
+From the CLI:
 
 ```
 cp data/fixtures/millbrook_tax_v2.html var/local/millbrook_roll.html
@@ -62,8 +65,9 @@ The v2 page renames every label (`Owner Name` becomes a `data-field="taxpayer"`
 attribute, the table becomes repeated blocks) and adds one newly delinquent
 parcel. The engine detects that its stored mapping collapsed, searches the new
 structure for a replacement, validates the values it extracts, auto-accepts the
-repair above the confidence bar, and records the whole thing with its before
-and after. The run reports exactly one new event: the new parcel. The Mapping
+repair above the confidence bar (below the bar it queues as `pending` for a
+human to approve or reject), and records the whole thing with its before and
+after. The run reports exactly one new event: the new parcel. The Mapping
 repairs section of the console shows the field-by-field diff.
 
 ## How it works
@@ -92,7 +96,7 @@ Layout (`include/dd/<layer>`, `src/<layer>`):
 | --- | --- | --- |
 | `core` | `core`, `json`, `metrics` | strings, time, files, hashing, JSON, OS metrics |
 | `parse` | `html`, `csv`, `pdf`, `document` | in-house parsers and the unified record model with provenance |
-| `net` | `fetch`, `server` | libcurl transport plus local files; HTTP/1.1 API and console |
+| `net` | `fetch`, `server` | libcurl transport plus local files; the HTTP/1.1 JSON API |
 | `ml` | `features`, `model`, `classify` | feature bags, multinomial naive Bayes, source classifier |
 | `engine` | `schema`, `entity`, `events`, `store`, `heal`, `pipeline` | canonical mapping, property resolution, lifecycle, state, drift healing, orchestration |
 | `app` | `main`, `train_main` | the `datadiver` and `dd_train` binaries |
@@ -102,7 +106,11 @@ Layout (`include/dd/<layer>`, `src/<layer>`):
 `data/model/source_classifier.json` is trained by `dd_train` from
 `data/corpus`: 40 curated county-style documents across 8 record types and 5
 dialects each. Training measures leave-one-out accuracy and refuses to write a
-model under 0.85 (the shipped model measures 1.000 on that corpus). Classifier
+model under 0.85 (the shipped model measures 1.000 on that corpus).
+`POST /api/train` does the same in-process — per-example LOO predictions feed
+the per-class and confusion sections of the returned report, the live
+classifier hot-swaps, and the report persists at `var/training_report.json`
+(served by `GET /api/train/report`). Classifier
 confidence shown in the UI is the model's posterior for the winning class;
 mapping confidence combines label similarity with measured validator pass
 rates. No confidence anywhere is a constant.
@@ -110,10 +118,13 @@ rates. No confidence anywhere is a constant.
 ## State
 
 Everything the engine learns and records lives under `var/` (gitignored):
-`sources.json`, per-source learned state in `state/`, append-only
-`runs.jsonl`, `events.jsonl`, `repairs.jsonl`, the latest canonical records
-per source in `records/`, and demo working copies in `local/`. Delete `var/`
-to start fresh.
+`sources.json`, per-source learned state (mapping, baseline, operator
+overrides) in `state/`, append-only `runs.jsonl`, `events.jsonl`,
+`repairs.jsonl`, the latest canonical records per source in `records/`,
+cached fetch bodies in `cache/`, the last training report, and seeded working
+copies in `local/`. Deleting a source removes its learned state, snapshot and
+cache but keeps its historical runs, events and repairs. Delete `var/` to
+start fresh.
 
 ## Working rules
 

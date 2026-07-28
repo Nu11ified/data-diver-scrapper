@@ -138,6 +138,10 @@ double update_baseline(double baseline, int good_runs, double rate) {
 Pipeline::Pipeline(store::Store& store, classify::Classifier classifier)
     : store_{store}, classifier_{std::move(classifier)} {}
 
+void Pipeline::set_classifier(classify::Classifier classifier) {
+    classifier_ = std::move(classifier);
+}
+
 store::RunRecord Pipeline::run_source_id(const std::string& source_id) {
     const std::optional<store::Source> source = store_.find_source(source_id);
     if (!source.has_value()) throw Error("pipeline: unknown source: " + source_id);
@@ -153,6 +157,50 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     run.source_id = source.id;
     run.started_at = timeutil::iso_now();
 
+    // ------------------------------------------------------------ fetch ----
+    const fetch::Result fetched = fetch::get(source.url);
+    run.http_status = fetched.http_status;
+    run.bytes = fetched.bytes;
+    run.fetch_ms = fetched.total_ms;
+    if (!fetched.ok) {
+        run.ok = false;
+        run.stage = "fetch";
+        run.error = fetched.error;
+        run.total_ms = total_watch.elapsed_ms();
+        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
+        run.rss_bytes = metrics::current_rss_bytes();
+        store_.record_run(run);
+        return run;
+    }
+    store_.save_fetch_cache(source.id, fetched.content_type, fetched.body);
+
+    return ingest(source, std::move(run), total_watch, cpu_before, fetched.content_type,
+                  fetched.body);
+}
+
+store::RunRecord Pipeline::run_cached(const store::Source& source) {
+    const Stopwatch total_watch;
+    const double cpu_before = metrics::cpu_time_ms();
+
+    store::RunRecord run;
+    run.id = new_run_id(source.id);
+    run.source_id = source.id;
+    run.started_at = timeutil::iso_now();
+
+    // The "fetch" is the cache read: measured, like every other number.
+    const Stopwatch cache_watch;
+    const std::optional<store::CachedFetch> cached = store_.fetch_cache(source.id);
+    if (!cached.has_value()) throw Error("pipeline: no fetch cache for " + source.id);
+    run.fetch_ms = cache_watch.elapsed_ms();
+    run.bytes = static_cast<std::int64_t>(cached->body.size());
+
+    return ingest(source, std::move(run), total_watch, cpu_before, cached->content_type,
+                  cached->body);
+}
+
+store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord run,
+                                  const Stopwatch& total_watch, double cpu_before,
+                                  const std::string& content_type, const std::string& body) {
     auto finish = [&](bool ok, const std::string& stage, const std::string& error) {
         run.ok = ok;
         run.stage = stage;
@@ -164,18 +212,11 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
         return run;
     };
 
-    // ------------------------------------------------------------ fetch ----
-    const fetch::Result fetched = fetch::get(source.url);
-    run.http_status = fetched.http_status;
-    run.bytes = fetched.bytes;
-    run.fetch_ms = fetched.total_ms;
-    if (!fetched.ok) return finish(false, "fetch", fetched.error);
-
     // ------------------------------------------------- detect and extract --
     const Stopwatch parse_watch;
     doc::Model model;
     try {
-        model = doc::build_auto(fetched.content_type, fetched.body);
+        model = doc::build_auto(content_type, body);
     } catch (const Error& e) {
         run.parse_ms = parse_watch.elapsed_ms();
         return finish(false, "parse", e.what());
@@ -233,15 +274,13 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
             repair.after_rate = proposal.result.rate;
             repair.confidence = proposal.confidence;
             repair.accepted = proposal.acceptable;
+            repair.resolution = proposal.acceptable ? "auto" : "pending";
             repair.changes = proposal.changes;
             store_.add_repair(repair);
 
             if (proposal.acceptable) {
                 run.repair_accepted = true;
                 mapping = proposal.candidate;
-                extraction = proposal.result;
-                state.mapping = mapping;
-                state.has_mapping = true;
                 // The source changed shape: the old baseline no longer
                 // describes this structure. Restart it from the repair.
                 state.good_runs = 0;
@@ -258,17 +297,26 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
         }
     } else {
         mapping = schema::infer_mapping(model);
-        if (mapping.fields.empty()) {
-            run.map_ms = map_watch.elapsed_ms();
-            return finish(false, "map",
-                          "could not learn a mapping with an identity field from this document");
+        if (!mapping.fields.empty()) {
+            state.good_runs = 0;
+            logging::info("pipeline: learned initial mapping for " + source.id);
         }
-        extraction = schema::apply_mapping(mapping, model);
-        state.mapping = mapping;
-        state.has_mapping = true;
-        state.good_runs = 0;
-        logging::info("pipeline: learned initial mapping for " + source.id);
     }
+
+    // Operator overrides win over inference and healing, every run: a pinned
+    // field maps to its label with the pass rate measured on this document,
+    // and a force-unmapped field stays out.
+    if (!state.overrides.empty()) {
+        mapping = schema::apply_overrides(mapping, state.overrides, model);
+    }
+    if (mapping.fields.empty()) {
+        run.map_ms = map_watch.elapsed_ms();
+        return finish(false, "map",
+                      "could not learn a mapping with an identity field from this document");
+    }
+    extraction = schema::apply_mapping(mapping, model);
+    state.mapping = mapping;
+    state.has_mapping = true;
     run.map_ms = map_watch.elapsed_ms();
     run.extraction_rate = extraction.rate;
     run.mapping_confidence = mapping.confidence;

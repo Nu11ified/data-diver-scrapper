@@ -34,18 +34,28 @@ std::vector<Example> load_corpus(const std::string& corpus_dir) {
     return examples;
 }
 
-double leave_one_out(const std::vector<Example>& examples) {
-    std::size_t correct = 0;
+std::vector<LooPrediction> leave_one_out(const std::vector<Example>& examples) {
+    std::vector<LooPrediction> out;
+    out.reserve(examples.size());
     for (std::size_t held = 0; held < examples.size(); ++held) {
         model::NaiveBayes bayes;
         for (std::size_t i = 0; i < examples.size(); ++i) {
             if (i != held) bayes.add_example(examples[i].label, examples[i].bag);
         }
         const std::vector<model::Scored> scored = bayes.predict(examples[held].bag);
-        if (!scored.empty() && scored.front().label == examples[held].label) ++correct;
+        out.push_back(LooPrediction{examples[held].label,
+                                    scored.empty() ? std::string{} : scored.front().label});
     }
-    return examples.empty() ? 0.0
-                            : static_cast<double>(correct) / static_cast<double>(examples.size());
+    return out;
+}
+
+double accuracy_of(const std::vector<LooPrediction>& predictions) {
+    if (predictions.empty()) return 0.0;
+    std::size_t correct = 0;
+    for (const LooPrediction& p : predictions) {
+        if (p.actual == p.predicted) ++correct;
+    }
+    return static_cast<double>(correct) / static_cast<double>(predictions.size());
 }
 
 } // namespace
@@ -58,7 +68,8 @@ Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainRep
     }
 
     Classifier out;
-    out.trained_accuracy_ = leave_one_out(examples);
+    std::vector<LooPrediction> predictions = leave_one_out(examples);
+    out.trained_accuracy_ = accuracy_of(predictions);
     for (const Example& example : examples) {
         out.bayes_.add_example(example.label, example.bag);
     }
@@ -68,6 +79,7 @@ Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainRep
         report->examples = examples.size();
         report->classes = out.bayes_.class_count();
         report->leave_one_out_accuracy = out.trained_accuracy_;
+        report->predictions = std::move(predictions);
     }
     return out;
 }

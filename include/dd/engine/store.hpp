@@ -37,6 +37,27 @@ struct SourceState {
     int good_runs = 0;
     std::string classification;
     std::string updated_at;
+    // Operator overrides: canonical field name -> source label. An empty
+    // label force-unmaps the field. Applied after inference and healing on
+    // every run, so they win over both.
+    std::map<std::string, std::string> overrides;
+};
+
+// Partial update for one source; unset fields keep their current value.
+struct SourceUpdate {
+    std::optional<std::string> name;
+    std::optional<std::string> url;
+    std::optional<std::string> jurisdiction;
+    std::optional<bool> enabled;
+};
+
+// The body and content type of the last successful fetch, replayed by the
+// benchmark so scale tests never hammer public endpoints. On disk the body
+// lives verbatim at <root>/cache/<source_id>; a JSON sidecar
+// <root>/cache/<source_id>.meta carries the content type and fetch time.
+struct CachedFetch {
+    std::string content_type;
+    std::string body;
 };
 
 // One ingestion attempt. Every number here is measured: timings from a
@@ -91,7 +112,11 @@ struct RepairRecord {
     double before_rate = 0.0;
     double after_rate = 0.0;
     double confidence = 0.0;
-    bool accepted = false; // false = queued for human review
+    bool accepted = false; // the auto-accept verdict at repair time
+    // "auto" (accepted at repair time), "pending" (queued for review),
+    // "approved" or "rejected" (a human resolved it). Legacy records without
+    // the field load as accepted -> "auto", else "pending".
+    std::string resolution = "pending";
     std::vector<std::string> changes; // "owner: 'Owner Name' -> 'taxpayer'"
 
     std::string serialize() const;
@@ -114,6 +139,14 @@ public:
     Source add_source(const std::string& name, const std::string& url,
                       const std::string& jurisdiction);
 
+    // Partial update; throws dd::Error for an unknown id or an update that
+    // would blank the name or url.
+    Source update_source(const std::string& id, const SourceUpdate& update);
+
+    // Removes the source, its learned state, snapshot and fetch cache.
+    // Historical runs, events and repairs remain. Throws for an unknown id.
+    void remove_source(const std::string& id);
+
     SourceState source_state(const std::string& source_id) const;
     void save_source_state(const SourceState& state);
 
@@ -124,21 +157,35 @@ public:
     // is what makes re-ingestion idempotent.
     std::size_t add_events(const std::vector<events::PropertyEvent>& batch);
     std::vector<events::PropertyEvent> events_for(const std::string& property_key) const;
+    std::vector<events::PropertyEvent> all_events() const;
     std::vector<std::string> property_keys() const;
     std::size_t event_count() const;
 
     void save_latest_records(const std::string& source_id, const std::string& records_json);
     std::string latest_records(const std::string& source_id) const;
 
+    void save_fetch_cache(const std::string& source_id, const std::string& content_type,
+                          const std::string& body);
+    std::optional<CachedFetch> fetch_cache(const std::string& source_id) const;
+    bool has_fetch_cache(const std::string& source_id) const;
+
     void add_repair(const RepairRecord& repair);
     std::vector<RepairRecord> repairs(const std::string& source_id = "") const;
+
+    // Resolves a pending repair and rewrites repairs.jsonl atomically.
+    // Approval applies the repair's after_mapping to the source state and
+    // restarts its baseline. Throws for an unknown id or a repair that is
+    // not pending.
+    RepairRecord resolve_repair(const std::string& id, bool approved);
 
     const std::string& root() const noexcept { return root_; }
 
 private:
     void load();
     void persist_sources_locked();
+    void save_source_state_locked(const SourceState& state);
     std::string state_path(const std::string& source_id) const;
+    std::string cache_path(const std::string& source_id) const;
 
     std::string root_;
     mutable std::mutex mutex_;

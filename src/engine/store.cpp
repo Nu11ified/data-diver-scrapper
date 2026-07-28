@@ -4,6 +4,7 @@
 #include "dd/core/json.hpp"
 
 #include <algorithm>
+#include <filesystem>
 
 namespace dd::store {
 namespace {
@@ -115,6 +116,7 @@ std::string RepairRecord::serialize() const {
     w.field("after_rate", after_rate);
     w.field("confidence", confidence);
     w.field("accepted", accepted);
+    w.field("resolution", resolution);
     w.key("changes");
     w.begin_array();
     for (const std::string& change : changes) w.string_value(change);
@@ -138,6 +140,11 @@ RepairRecord RepairRecord::deserialize(const std::string& text) {
     r.after_rate = get_number(v, "after_rate");
     r.confidence = get_number(v, "confidence");
     r.accepted = get_bool(v, "accepted");
+    const json::Value* resolution = v.find("resolution");
+    // Legacy records predate the resolution field: auto-accepted repairs were
+    // "auto", everything else was waiting for review.
+    r.resolution = resolution == nullptr ? (r.accepted ? "auto" : "pending")
+                                         : resolution->as_string();
     const json::Value* changes = v.find("changes");
     if (changes != nullptr && changes->is_array()) {
         for (const json::Value& item : changes->items()) r.changes.push_back(item.as_string());
@@ -152,6 +159,7 @@ Store::Store(std::string root) : root_{std::move(root)} {
     fileio::ensure_dir(root_);
     fileio::ensure_dir(root_ + "/state");
     fileio::ensure_dir(root_ + "/records");
+    fileio::ensure_dir(root_ + "/cache");
     fileio::ensure_dir(root_ + "/local");
     load();
 }
@@ -215,6 +223,12 @@ void Store::load() {
             if (mapping != nullptr && !mapping->is_null()) {
                 state.mapping = schema::Mapping::deserialize(mapping->serialize());
                 state.has_mapping = !state.mapping.fields.empty();
+            }
+            const json::Value* overrides = v.find("overrides");
+            if (overrides != nullptr && overrides->is_object()) {
+                for (const auto& [field, label] : overrides->members()) {
+                    state.overrides[field] = label.as_string();
+                }
             }
             states_[state.source_id] = std::move(state);
         } catch (const Error& e) {
@@ -299,8 +313,47 @@ Source Store::add_source(const std::string& name, const std::string& url,
     return s;
 }
 
+Source Store::update_source(const std::string& id, const SourceUpdate& update) {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    for (Source& s : sources_) {
+        if (s.id != id) continue;
+        if (update.name.has_value()) {
+            if (str::trim(*update.name).empty()) throw Error("store: source name cannot be empty");
+            s.name = str::trim(*update.name);
+        }
+        if (update.url.has_value()) {
+            if (str::trim(*update.url).empty()) throw Error("store: source url cannot be empty");
+            s.url = str::trim(*update.url);
+        }
+        if (update.jurisdiction.has_value()) s.jurisdiction = str::trim(*update.jurisdiction);
+        if (update.enabled.has_value()) s.enabled = *update.enabled;
+        persist_sources_locked();
+        return s;
+    }
+    throw Error("store: unknown source: " + id);
+}
+
+void Store::remove_source(const std::string& id) {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    const auto it = std::find_if(sources_.begin(), sources_.end(),
+                                 [&](const Source& s) { return s.id == id; });
+    if (it == sources_.end()) throw Error("store: unknown source: " + id);
+    sources_.erase(it);
+    persist_sources_locked();
+    states_.erase(id);
+    std::error_code ec; // best effort: a missing file is already gone
+    std::filesystem::remove(state_path(id), ec);
+    std::filesystem::remove(root_ + "/records/" + id + ".json", ec);
+    std::filesystem::remove(cache_path(id), ec);
+    std::filesystem::remove(cache_path(id) + ".meta", ec);
+}
+
 std::string Store::state_path(const std::string& source_id) const {
     return root_ + "/state/" + source_id + ".json";
+}
+
+std::string Store::cache_path(const std::string& source_id) const {
+    return root_ + "/cache/" + source_id;
 }
 
 SourceState Store::source_state(const std::string& source_id) const {
@@ -314,6 +367,10 @@ SourceState Store::source_state(const std::string& source_id) const {
 
 void Store::save_source_state(const SourceState& state) {
     const std::lock_guard<std::mutex> lock{mutex_};
+    save_source_state_locked(state);
+}
+
+void Store::save_source_state_locked(const SourceState& state) {
     json::Writer w;
     w.begin_object();
     w.field("source_id", state.source_id);
@@ -328,6 +385,10 @@ void Store::save_source_state(const SourceState& state) {
         w.key("mapping");
         w.null_value();
     }
+    w.key("overrides");
+    w.begin_object();
+    for (const auto& [field, label] : state.overrides) w.field(field, label);
+    w.end_object();
     w.end_object();
     fileio::write_file_atomic(state_path(state.source_id), w.str());
     states_[state.source_id] = state;
@@ -372,6 +433,11 @@ std::vector<events::PropertyEvent> Store::events_for(const std::string& property
     return out;
 }
 
+std::vector<events::PropertyEvent> Store::all_events() const {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    return events_;
+}
+
 std::vector<std::string> Store::property_keys() const {
     const std::lock_guard<std::mutex> lock{mutex_};
     std::vector<std::string> keys;
@@ -400,6 +466,37 @@ std::string Store::latest_records(const std::string& source_id) const {
     return fileio::read_file(path);
 }
 
+void Store::save_fetch_cache(const std::string& source_id, const std::string& content_type,
+                             const std::string& body) {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    fileio::write_file_atomic(cache_path(source_id), body);
+    json::Writer w;
+    w.begin_object();
+    w.field("content_type", content_type);
+    w.field("fetched_at", timeutil::iso_now());
+    w.field("bytes", static_cast<std::int64_t>(body.size()));
+    w.end_object();
+    fileio::write_file_atomic(cache_path(source_id) + ".meta", w.str());
+}
+
+std::optional<CachedFetch> Store::fetch_cache(const std::string& source_id) const {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    const std::string path = cache_path(source_id);
+    if (!fileio::exists(path)) return std::nullopt;
+    CachedFetch cached;
+    cached.body = fileio::read_file(path);
+    if (fileio::exists(path + ".meta")) {
+        const json::Value meta = json::parse(fileio::read_file(path + ".meta"));
+        cached.content_type = get_string(meta, "content_type");
+    }
+    return cached;
+}
+
+bool Store::has_fetch_cache(const std::string& source_id) const {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    return fileio::exists(cache_path(source_id));
+}
+
 void Store::add_repair(const RepairRecord& repair) {
     const std::lock_guard<std::mutex> lock{mutex_};
     fileio::append_line(root_ + "/repairs.jsonl", repair.serialize());
@@ -414,6 +511,35 @@ std::vector<RepairRecord> Store::repairs(const std::string& source_id) const {
         out.push_back(*it);
     }
     return out;
+}
+
+RepairRecord Store::resolve_repair(const std::string& id, bool approved) {
+    const std::lock_guard<std::mutex> lock{mutex_};
+    const auto it = std::find_if(repairs_.begin(), repairs_.end(),
+                                 [&](const RepairRecord& r) { return r.id == id; });
+    if (it == repairs_.end()) throw Error("store: unknown repair: " + id);
+    if (it->resolution != "pending") {
+        throw Error("store: repair " + id + " is already resolved (" + it->resolution + ")");
+    }
+    it->resolution = approved ? "approved" : "rejected";
+
+    std::string lines;
+    for (const RepairRecord& r : repairs_) lines += r.serialize() + "\n";
+    fileio::write_file_atomic(root_ + "/repairs.jsonl", lines);
+
+    if (approved && !it->after_mapping_json.empty()) {
+        SourceState state;
+        const auto found = states_.find(it->source_id);
+        if (found != states_.end()) state = found->second;
+        state.source_id = it->source_id;
+        state.mapping = schema::Mapping::deserialize(it->after_mapping_json);
+        state.has_mapping = !state.mapping.fields.empty();
+        // The source changed shape; the old baseline no longer describes it.
+        state.good_runs = 0;
+        state.updated_at = timeutil::iso_now();
+        save_source_state_locked(state);
+    }
+    return *it;
 }
 
 } // namespace dd::store

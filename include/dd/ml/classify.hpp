@@ -14,10 +14,18 @@ struct Prediction {
     std::vector<model::Scored> distribution;  // full posterior, sorted
 };
 
+// One leave-one-out probe: what the corpus says the document is, and what a
+// model trained on every other document called it.
+struct LooPrediction {
+    std::string actual;
+    std::string predicted;
+};
+
 struct TrainReport {
     std::size_t examples = 0;
     std::size_t classes = 0;
     double leave_one_out_accuracy = 0.0;
+    std::vector<LooPrediction> predictions; // one per corpus document
 };
 
 // Source-type classifier: what kind of public-record document is this?
