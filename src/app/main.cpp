@@ -13,6 +13,7 @@
 // Common flags: --schema FILE (default data/schema.json), --model FILE,
 // --state DIR, --seeds FILE.
 
+#include "commands.hpp"
 #include "render.hpp"
 
 #include "dd/core/core.hpp"
@@ -323,12 +324,53 @@ void print_schema(const dd::schema::Registry& registry) {
     dd::render::table({"field", "kind", "role", "identity", "lexicon"}, rows);
 }
 
-int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier) {
+std::vector<std::string> shell_tokens(const std::string& input) {
+    std::vector<std::string> out;
+    std::string current;
+    bool quoted = false;
+    for (char c : input) {
+        if (c == '"') {
+            quoted = !quoted;
+            continue;
+        }
+        if (c == ' ' && !quoted) {
+            if (!current.empty()) out.push_back(current);
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    if (!current.empty()) out.push_back(current);
+    return out;
+}
+
+void print_run(const dd::store::RunRecord& run);
+
+// Store-backed state, built on first use so pasting a URL stays instant.
+struct ShellState {
+    std::string state_dir;
+    std::string seeds_path;
+    std::string model_path;
+    std::string schema_path;
+    std::optional<dd::store::Store> store;
+    std::optional<dd::pipeline::Pipeline> pipeline;
+
+    dd::pipeline::Pipeline& ensure() {
+        if (!pipeline.has_value()) {
+            store.emplace(state_dir);
+            store->seed(seeds_path);
+            pipeline.emplace(*store, dd::classify::Classifier::load(model_path),
+                             dd::schema::Registry::load(schema_path));
+        }
+        return *pipeline;
+    }
+};
+
+int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier,
+          ShellState& state) {
     std::printf("%s\n", paint("bold", "Data Diver").c_str());
     std::printf("%s\n",
-                paint("dim", "paste a URL (or a local file path) to align it against the "
-                             "schema; 'watch URL [seconds]' to monitor it; 'schema' to see "
-                             "the fields; 'quit' to leave.").c_str());
+                paint("dim", "paste a URL to align it; 'help' lists commands.").c_str());
 
     std::string line;
     while (true) {
@@ -339,10 +381,89 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
         if (input.empty()) continue;
         if (input == "quit" || input == "exit" || input == "q") break;
         if (input == "help") {
-            std::printf("  URL                align a page or API response\n"
-                        "  watch URL [secs]   refetch on an interval, heal on drift\n"
-                        "  schema             show the canonical fields\n"
-                        "  quit               leave\n");
+            std::printf("  URL                    align a page or API response\n"
+                        "  watch URL [secs]       refetch on an interval, heal on drift\n"
+                        "  counties               county list with sources and properties\n"
+                        "  county NAME            the county's properties, filled per schema\n"
+                        "  sources                configured sources\n"
+                        "  add \"County\" \"Name\" URL   add a source\n"
+                        "  run (all | SOURCE_ID)  ingest into the store\n"
+                        "  map SOURCE_ID          learned mapping with sample values\n"
+                        "  review SOURCE_ID       confirm or refuse uncertain matches\n"
+                        "  model                  classifier status\n"
+                        "  train [ALPHA|sweep]    retrain with validation breakdown\n"
+                        "  schema                 the canonical fields\n"
+                        "  quit                   leave\n");
+            continue;
+        }
+        if (input == "counties") {
+            state.ensure();
+            dd::cli::counties(*state.store);
+            continue;
+        }
+        if (input == "sources") {
+            state.ensure();
+            for (const dd::store::Source& s : state.store->sources()) {
+                std::printf("  %-26s %-40s %s\n", s.id.c_str(), s.name.c_str(), s.url.c_str());
+            }
+            continue;
+        }
+        if (input.rfind("county ", 0) == 0) {
+            state.ensure();
+            dd::cli::county_properties(*state.store, state.pipeline->registry(),
+                                       dd::str::trim(input.substr(7)));
+            continue;
+        }
+        if (input.rfind("add ", 0) == 0) {
+            const std::vector<std::string> parts = shell_tokens(input);
+            if (parts.size() != 4) {
+                std::printf("  usage: add \"County Name\" \"Source Name\" URL\n");
+                continue;
+            }
+            state.ensure();
+            const dd::store::Source s =
+                state.store->add_source(parts[2], parts[3], parts[1]);
+            std::printf("  added %s; 'run %s' to ingest it\n", s.id.c_str(), s.id.c_str());
+            continue;
+        }
+        if (input.rfind("run", 0) == 0 && (input == "run" || input[3] == ' ')) {
+            const std::vector<std::string> parts = shell_tokens(input);
+            dd::pipeline::Pipeline& pipeline = state.ensure();
+            if (parts.size() < 2 || parts[1] == "all") {
+                for (const dd::store::Source& s : state.store->sources()) {
+                    if (s.enabled) print_run(pipeline.run_source(s));
+                }
+            } else {
+                try {
+                    print_run(pipeline.run_source_id(parts[1]));
+                } catch (const dd::Error& e) {
+                    std::printf("  %s\n", e.what());
+                }
+            }
+            continue;
+        }
+        if (input.rfind("map ", 0) == 0) {
+            dd::pipeline::Pipeline& pipeline = state.ensure();
+            dd::cli::show_mapping(*state.store, pipeline, dd::str::trim(input.substr(4)));
+            continue;
+        }
+        if (input.rfind("review ", 0) == 0) {
+            dd::pipeline::Pipeline& pipeline = state.ensure();
+            dd::cli::review(*state.store, pipeline, dd::str::trim(input.substr(7)), std::cin);
+            continue;
+        }
+        if (input == "model") {
+            if (state.pipeline.has_value()) dd::cli::model_status(state.pipeline->classifier());
+            else dd::cli::model_status(classifier);
+            continue;
+        }
+        if (input.rfind("train", 0) == 0 && (input == "train" || input[5] == ' ')) {
+            const std::vector<std::string> parts = shell_tokens(input);
+            const bool sweep = parts.size() >= 2 && parts[1] == "sweep";
+            const double alpha =
+                (!sweep && parts.size() >= 2) ? std::atof(parts[1].c_str()) : 1.0;
+            dd::cli::train(state.pipeline.has_value() ? &*state.pipeline : nullptr,
+                           "data/corpus", state.model_path, alpha > 0.0 ? alpha : 1.0, sweep);
             continue;
         }
         if (input == "schema") {
@@ -386,7 +507,12 @@ int usage() {
         "  datadiver watch URL [--interval N] monitor a url, heal on drift\n"
         "  datadiver ingest (--all | ID)      stateful ingestion into var/\n"
         "  datadiver sources                  list configured sources\n"
-        "  datadiver train                    retrain the classifier\n"
+        "  datadiver counties                 county rollup from the store\n"
+        "  datadiver county NAME              a county's properties per schema\n"
+        "  datadiver map SOURCE_ID            learned mapping with sample values\n"
+        "  datadiver review SOURCE_ID         confirm or refuse uncertain matches\n"
+        "  datadiver model                    classifier status\n"
+        "  datadiver train [--alpha A|--sweep] retrain with validation breakdown\n"
         "flags: --schema FILE  --model FILE  --state DIR  --seeds FILE\n");
     return 2;
 }
@@ -402,8 +528,13 @@ int main(int argc, char** argv) {
 
     try {
         if (args.command.empty() || args.command == "shell") {
+            ShellState state;
+            state.state_dir = state_dir;
+            state.seeds_path = seeds_path;
+            state.model_path = model_path;
+            state.schema_path = schema_path;
             return shell(dd::schema::Registry::load(schema_path),
-                         dd::classify::Classifier::load(model_path));
+                         dd::classify::Classifier::load(model_path), state);
         }
 
         if (args.command == "align") {
@@ -463,17 +594,30 @@ int main(int argc, char** argv) {
         }
 
         if (args.command == "train") {
-            dd::classify::TrainReport report;
-            const dd::classify::Classifier classifier = dd::classify::Classifier::train_from_corpus(
-                flag(args, "corpus", "data/corpus"), &report);
-            std::printf("examples: %zu\nclasses: %zu\nleave-one-out accuracy: %.3f\n",
-                        report.examples, report.classes, report.leave_one_out_accuracy);
-            if (report.leave_one_out_accuracy < 0.85) {
-                std::fprintf(stderr, "refusing to save: accuracy below 0.85\n");
-                return 1;
+            const double alpha = std::atof(flag(args, "alpha", "1.0").c_str());
+            return dd::cli::train(nullptr, flag(args, "corpus", "data/corpus"), model_path,
+                                  alpha > 0.0 ? alpha : 1.0, args.flags.count("sweep") != 0);
+        }
+
+        if (args.command == "counties" || args.command == "county" || args.command == "map" ||
+            args.command == "review" || args.command == "model") {
+            dd::store::Store store{state_dir};
+            store.seed(seeds_path);
+            dd::pipeline::Pipeline pipeline{store, dd::classify::Classifier::load(model_path),
+                                            dd::schema::Registry::load(schema_path)};
+            if (args.command == "counties") {
+                dd::cli::counties(store);
+                return 0;
             }
-            classifier.save(model_path);
-            std::printf("model written: %s\n", model_path.c_str());
+            if (args.command == "model") {
+                dd::cli::model_status(pipeline.classifier());
+                return 0;
+            }
+            if (args.positional.empty()) return usage();
+            const std::string target = dd::str::join(args.positional, " ");
+            if (args.command == "county") dd::cli::county_properties(store, pipeline.registry(), target);
+            else if (args.command == "map") dd::cli::show_mapping(store, pipeline, target);
+            else dd::cli::review(store, pipeline, target, std::cin);
             return 0;
         }
 
