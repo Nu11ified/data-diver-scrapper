@@ -12,7 +12,7 @@ resolves records to properties, and maintains an evidence-backed property
 lifecycle. When a source changes shape, it detects the drift and attempts to
 repair the extraction mapping automatically.
 
-It is not a demo. Every path a user can reach from the web UI runs the real
+It is not a demo. Every path a user can reach from the CLI runs the real
 pipeline against real bytes.
 
 ## Rules that follow from that
@@ -34,5 +34,5 @@ pipeline against real bytes.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-./build/datadiver serve
+./build/datadiver
 ```
