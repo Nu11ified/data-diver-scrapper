@@ -18,7 +18,13 @@
 #include "dd/pdf.hpp"
 #include "dd/pipeline.hpp"
 #include "dd/schema.hpp"
+#include "dd/server.hpp"
 #include "dd/store.hpp"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <filesystem>
 
@@ -1214,6 +1220,116 @@ TEST(heal_assessment_ignores_healthy_updates) {
     const dd::heal::Assessment verdict = dd::heal::assess(state, m, extraction);
     CHECK(!verdict.drift);
     CHECK(verdict.fingerprint_changed);
+}
+
+// -------------------------------------------------------------- server -----
+
+struct HttpReply {
+    int status = 0;
+    std::string body;
+};
+
+// Minimal real HTTP client over a socket so the tests exercise the server's
+// actual request parsing, including POST bodies.
+HttpReply http_request(int port, const std::string& method, const std::string& target,
+                       const std::string& body = "") {
+    HttpReply reply;
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return reply;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<std::uint16_t>(port));
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return reply;
+    }
+    std::string request = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+    if (!body.empty()) {
+        request += "Content-Type: application/json\r\nContent-Length: " +
+                   std::to_string(body.size()) + "\r\n";
+    }
+    request += "Connection: close\r\n\r\n" + body;
+    ::send(fd, request.data(), request.size(), 0);
+
+    std::string raw;
+    char buffer[8192];
+    ssize_t n = 0;
+    while ((n = ::recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+        raw.append(buffer, static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+
+    const std::size_t space = raw.find(' ');
+    if (space != std::string::npos) reply.status = std::atoi(raw.c_str() + space + 1);
+    const std::size_t split = raw.find("\r\n\r\n");
+    if (split != std::string::npos) reply.body = raw.substr(split + 4);
+    return reply;
+}
+
+TEST(server_full_flow_over_real_http) {
+    const std::string root = fresh_dir("server_flow");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    dd::server::Server server{store, pipeline, dd::server::Options{"127.0.0.1", 0, "web"}};
+    server.start();
+    CHECK(server.port() > 0);
+
+    // The UI ships.
+    const HttpReply ui = http_request(server.port(), "GET", "/");
+    CHECK_EQ(ui.status, 200);
+    CHECK(dd::str::contains(ui.body, "Data Diver"));
+
+    // Empty overview.
+    const HttpReply overview0 = http_request(server.port(), "GET", "/api/overview");
+    CHECK_EQ(overview0.status, 200);
+    const dd::json::Value parsed0 = dd::json::parse(overview0.body);
+    CHECK_NEAR(parsed0.find("totals")->find("sources")->as_number(), 0.0, 1e-9);
+    CHECK(parsed0.find("engine")->find("rss_bytes")->as_number() > 1e6);
+
+    // Add a site through the API.
+    const HttpReply added = http_request(
+        server.port(), "POST", "/api/sources",
+        R"({"name": "Crestline Auctions", "url": "data/fixtures/crestline_auctions.csv", "jurisdiction": "Crestline County"})");
+    CHECK_EQ(added.status, 200);
+    const std::string source_id = dd::json::parse(added.body).find("id")->as_string();
+    CHECK(!source_id.empty());
+
+    // Bad add is rejected.
+    CHECK_EQ(http_request(server.port(), "POST", "/api/sources", R"({"name": "x"})").status, 400);
+
+    // Run it.
+    const HttpReply ran = http_request(server.port(), "POST", "/api/run?source=" + source_id);
+    CHECK_EQ(ran.status, 200);
+    const dd::json::Value run = dd::json::parse(ran.body);
+    CHECK(run.find("ok")->as_bool());
+    CHECK_EQ(run.find("classification")->as_string(), "trustee_auction");
+
+    // Everything is visible through the API afterwards.
+    const dd::json::Value runs =
+        dd::json::parse(http_request(server.port(), "GET", "/api/runs?limit=5").body);
+    CHECK_EQ(runs.items().size(), std::size_t{1});
+
+    const dd::json::Value props =
+        dd::json::parse(http_request(server.port(), "GET", "/api/properties").body);
+    CHECK_EQ(props.items().size(), std::size_t{4});
+    const std::string key = props.items()[0].find("key")->as_string();
+
+    const HttpReply prop = http_request(
+        server.port(), "GET", "/api/property?key=" + key);
+    CHECK_EQ(prop.status, 200);
+    CHECK(dd::json::parse(prop.body).find("events")->items().size() >= 1);
+
+    const dd::json::Value records = dd::json::parse(
+        http_request(server.port(), "GET", "/api/records?source=" + source_id).body);
+    CHECK_EQ(records.items().size(), std::size_t{4});
+
+    // Unknowns are 404s, not lies.
+    CHECK_EQ(http_request(server.port(), "GET", "/api/nope").status, 404);
+    CHECK_EQ(http_request(server.port(), "POST", "/api/run?source=missing").status, 404);
+    CHECK_EQ(http_request(server.port(), "GET", "/api/property?key=zzz").status, 404);
+
+    server.stop();
 }
 
 } // namespace

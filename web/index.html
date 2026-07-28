@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Diver</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f4e79'/%3E%3Cpath d='M4 11l3-5 2 3 3-4' stroke='%23fff' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ink: #1a1f26; --ink-2: #4a5361; --ink-3: #8a93a1;
+    --line: #e3e7ec; --surface: #ffffff; --page: #f5f7f9;
+    --accent: #1f4e79; --ok: #1a7f4b; --bad: #b3261e; --warn: #8a6d00;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { background: var(--surface); border-bottom: 1px solid var(--line); padding: 14px 24px;
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  header .sub { color: var(--ink-3); font-size: 12px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile .v { font-size: 22px; font-weight: 600; }
+  .tile .k { color: var(--ink-3); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line);
+           font-size: 13px; vertical-align: top; }
+  th { color: var(--ink-2); font-weight: 600; background: #fafbfc; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .wrap { overflow-x: auto; }
+  .status { white-space: nowrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+           padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { background: var(--ink-3); cursor: wait; }
+  button.quiet { background: #eef1f4; color: var(--ink); }
+  form.add { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  form.add input { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+                   font-size: 13px; min-width: 180px; }
+  form.add input.wide { min-width: 320px; }
+  .muted { color: var(--ink-3); }
+  .small { font-size: 12px; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+          padding: 12px 14px; margin-bottom: 10px; }
+  .card ul { margin: 6px 0 0; padding-left: 18px; }
+  #detail { display: none; }
+  .statechip { display: inline-block; border: 1px solid var(--line); border-radius: 12px;
+               padding: 1px 9px; font-size: 12px; background: #fafbfc; white-space: nowrap; }
+  #notice { position: fixed; right: 16px; bottom: 16px; background: var(--ink); color: #fff;
+            padding: 8px 14px; border-radius: 8px; font-size: 13px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Data Diver</h1>
+  <span class="sub" id="engine-line">loading engine stats</span>
+</header>
+<main>
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Site analytics</h2>
+  <p class="muted small">Every number is measured during a run: transfer time and bytes from the fetcher, stage timings from a monotonic clock, memory from the OS.</p>
+  <div class="wrap"><table id="analytics">
+    <thead><tr>
+      <th>Site</th><th>Last run</th><th>Status</th><th>Type</th>
+      <th class="num">Records</th><th class="num">Extraction</th>
+      <th class="num">Bytes</th><th class="num">Fetch ms</th><th class="num">Total ms</th>
+      <th class="num">Runs</th>
+    </tr></thead><tbody></tbody>
+  </table></div>
+
+  <h2>Sites</h2>
+  <form class="add" id="add-form">
+    <input id="add-name" placeholder="Site name" required>
+    <input id="add-url" class="wide" placeholder="URL (https://... or a local file path)" required>
+    <input id="add-jur" placeholder="Jurisdiction (county or city)">
+    <button type="submit">Add site</button>
+    <button type="button" class="quiet" id="run-all">Run all</button>
+  </form>
+  <div class="wrap"><table id="sources">
+    <thead><tr>
+      <th>Name</th><th>URL</th><th>Jurisdiction</th><th>Classified as</th>
+      <th class="num">Mapping conf</th><th class="num">Baseline</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div>
+
+  <h2>Recent runs</h2>
+  <div class="wrap"><table id="runs">
+    <thead><tr>
+      <th>Started</th><th>Site</th><th>Status</th><th>Stage</th><th>Type</th>
+      <th class="num">Conf</th><th class="num">Records</th><th class="num">New events</th>
+      <th class="num">Rate</th><th>Drift</th><th class="num">Total ms</th>
+    </tr></thead><tbody></tbody>
+  </table></div>
+
+  <h2>Properties</h2>
+  <div class="wrap"><table id="properties">
+    <thead><tr>
+      <th>Parcel</th><th>Owner</th><th>Address</th><th>State</th>
+      <th class="num">Events</th><th>Last event</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div>
+
+  <div id="detail" class="card"></div>
+
+  <h2>Mapping repairs</h2>
+  <p class="muted small">When a source changes shape and extraction collapses, the engine proposes a replacement mapping, validates it against the new values, and applies it automatically only above the confidence bar. Everything is recorded with its before and after.</p>
+  <div id="repairs"></div>
+</main>
+<div id="notice"></div>
+<script>
+"use strict";
+
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+function fmtMs(n) { return (Number(n) || 0).toFixed(1); }
+function fmtPct(n) { return ((Number(n) || 0) * 100).toFixed(0) + "%"; }
+function fmtTime(iso) { return iso ? iso.replace("T", " ").replace("Z", " UTC") : ""; }
+function statusCell(ok, label) {
+  const cls = ok ? "ok" : "bad";
+  const text = label || (ok ? "ok" : "failed");
+  return '<span class="status"><span class="dot ' + cls + '"></span>' + esc(text) + "</span>";
+}
+
+function notify(text) {
+  const el = $("#notice");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(notify.timer);
+  notify.timer = setTimeout(() => { el.style.display = "none"; }, 4000);
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
+async function refreshOverview() {
+  const o = await api("/api/overview");
+  $("#engine-line").textContent =
+    "memory " + fmtBytes(o.engine.rss_bytes) +
+    " (peak " + fmtBytes(o.engine.peak_rss_bytes) + ")" +
+    " | cpu " + (o.engine.cpu_ms / 1000).toFixed(1) + "s" +
+    " | classifier: " + o.model.examples + " examples, holdout accuracy " +
+    fmtPct(o.model.leave_one_out_accuracy) +
+    (o.engine.http_transport ? "" : " | http transport unavailable");
+
+  const t = o.totals;
+  $("#tiles").innerHTML = [
+    ["Sites", t.sources], ["Runs", t.runs], ["Events", t.events],
+    ["Properties", t.properties], ["Repairs", t.repairs],
+  ].map(([k, v]) => '<div class="tile"><div class="v">' + v + '</div><div class="k">' + k + "</div></div>").join("");
+
+  const rows = o.per_source.map((s) => {
+    const last = s.last_run;
+    return "<tr>" +
+      "<td>" + esc(s.name) + "</td>" +
+      "<td>" + (last ? fmtTime(last.started_at) : '<span class="muted">never</span>') + "</td>" +
+      "<td>" + (last ? statusCell(last.ok, last.ok ? "ok" : "failed: " + last.stage) : "") + "</td>" +
+      "<td>" + (last ? esc(last.classification) : "") + "</td>" +
+      '<td class="num">' + (last ? last.records_extracted : "") + "</td>" +
+      '<td class="num">' + (last ? fmtPct(last.extraction_rate) : "") + "</td>" +
+      '<td class="num">' + (last ? fmtBytes(last.bytes) : "") + "</td>" +
+      '<td class="num">' + (last ? fmtMs(last.fetch_ms) : "") + "</td>" +
+      '<td class="num">' + (last ? fmtMs(last.total_ms) : "") + "</td>" +
+      '<td class="num">' + s.runs + "</td>" +
+      "</tr>";
+  });
+  $("#analytics tbody").innerHTML = rows.join("") ||
+    '<tr><td colspan="10" class="muted">no sites yet</td></tr>';
+}
+
+async function refreshSources() {
+  const sources = await api("/api/sources");
+  $("#sources tbody").innerHTML = sources.map((s) =>
+    "<tr>" +
+    "<td>" + esc(s.name) + "</td>" +
+    '<td class="mono">' + esc(s.url) + "</td>" +
+    "<td>" + esc(s.jurisdiction) + "</td>" +
+    "<td>" + (s.classification ? esc(s.classification) : '<span class="muted">not yet run</span>') + "</td>" +
+    '<td class="num">' + (s.has_mapping ? fmtPct(s.mapping_confidence) : "") + "</td>" +
+    '<td class="num">' + (s.good_runs > 0 ? fmtPct(s.baseline_rate) : "") + "</td>" +
+    '<td><button data-run="' + esc(s.id) + '">Run</button></td>' +
+    "</tr>"
+  ).join("") || '<tr><td colspan="7" class="muted">no sites yet</td></tr>';
+
+  document.querySelectorAll("#sources button[data-run]").forEach((btn) => {
+    btn.addEventListener("click", () => runSource(btn.dataset.run, btn));
+  });
+}
+
+async function refreshRuns() {
+  const runs = await api("/api/runs?limit=25");
+  $("#runs tbody").innerHTML = runs.map((r) =>
+    "<tr>" +
+    "<td>" + fmtTime(r.started_at) + "</td>" +
+    "<td>" + esc(r.source_id) + "</td>" +
+    "<td>" + statusCell(r.ok) + "</td>" +
+    "<td>" + esc(r.stage) + (r.error ? ' <span class="muted small">' + esc(r.error) + "</span>" : "") + "</td>" +
+    "<td>" + esc(r.classification) + "</td>" +
+    '<td class="num">' + fmtPct(r.class_confidence) + "</td>" +
+    '<td class="num">' + r.records_extracted + "</td>" +
+    '<td class="num">' + r.events_new + "</td>" +
+    '<td class="num">' + fmtPct(r.extraction_rate) + "</td>" +
+    "<td>" + (r.drift_detected
+      ? (r.repair_accepted ? statusCell(true, "healed")
+         : '<span class="status"><span class="dot warn"></span>review</span>')
+      : "") + "</td>" +
+    '<td class="num">' + fmtMs(r.total_ms) + "</td>" +
+    "</tr>"
+  ).join("") || '<tr><td colspan="11" class="muted">no runs yet</td></tr>';
+}
+
+async function refreshProperties() {
+  const props = await api("/api/properties");
+  $("#properties tbody").innerHTML = props.map((p) =>
+    "<tr>" +
+    '<td class="mono">' + esc(p.parcel_id) + "</td>" +
+    "<td>" + esc(p.owner) + "</td>" +
+    "<td>" + esc(p.address) + "</td>" +
+    '<td><span class="statechip">' + esc(p.state) + "</span></td>" +
+    '<td class="num">' + p.events + "</td>" +
+    "<td>" + esc(p.last_event_date) + "</td>" +
+    '<td><button class="quiet" data-key="' + esc(p.key) + '">History</button></td>' +
+    "</tr>"
+  ).join("") || '<tr><td colspan="7" class="muted">no properties yet; run a site</td></tr>';
+
+  document.querySelectorAll("#properties button[data-key]").forEach((btn) => {
+    btn.addEventListener("click", () => showProperty(btn.dataset.key));
+  });
+}
+
+async function showProperty(key) {
+  const p = await api("/api/property?key=" + encodeURIComponent(key));
+  const events = p.events.map((e) => {
+    const details = Object.entries(e.details)
+      .map(([k, v]) => esc(k) + ": " + esc(v)).join(", ");
+    return "<tr>" +
+      "<td>" + esc(e.event_date || "(no date)") + "</td>" +
+      "<td>" + esc(e.kind) + "</td>" +
+      '<td class="num">' + fmtPct(e.confidence) + "</td>" +
+      "<td>" + esc(e.source_id) + "</td>" +
+      '<td class="small">' + details + "</td>" +
+      "</tr>";
+  }).join("");
+  const transitions = p.transitions.map((t) =>
+    '<span class="statechip">' + esc(t.event_date || "?") + " " + esc(t.state) + "</span>"
+  ).join(" <span class=\"muted\">then</span> ") || '<span class="muted">no state changes</span>';
+
+  const detail = $("#detail");
+  detail.style.display = "block";
+  detail.innerHTML =
+    "<strong>Property history</strong> <span class=\"mono\">" + esc(p.key) + "</span>" +
+    '<div style="margin:8px 0">Lifecycle: ' + transitions +
+    ' <span class="muted">now</span> <span class="statechip">' + esc(p.state) + "</span></div>" +
+    '<div class="wrap"><table><thead><tr><th>Date</th><th>Event</th>' +
+    '<th class="num">Confidence</th><th>Source</th><th>Details</th></tr></thead>' +
+    "<tbody>" + events + "</tbody></table></div>";
+  detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function refreshRepairs() {
+  const repairs = await api("/api/repairs");
+  $("#repairs").innerHTML = repairs.map((r) => {
+    const changes = (r.changes || []).map((c) => "<li>" + esc(c) + "</li>").join("");
+    return '<div class="card">' +
+      "<div>" + statusCell(r.accepted, r.accepted ? "auto accepted" : "queued for review") +
+      ' <span class="muted small">' + fmtTime(r.at) + " | " + esc(r.source_id) + "</span></div>" +
+      '<div class="small" style="margin-top:4px">' + esc(r.reason) + "</div>" +
+      '<div class="small">extraction before ' + fmtPct(r.before_rate) +
+      ", after " + fmtPct(r.after_rate) +
+      ", repair confidence " + fmtPct(r.confidence) + "</div>" +
+      "<ul class=\"small\">" + changes + "</ul>" +
+      "</div>";
+  }).join("") || '<p class="muted small">no repairs recorded</p>';
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([refreshOverview(), refreshSources(), refreshRuns(),
+                       refreshProperties(), refreshRepairs()]);
+  } catch (e) {
+    notify("refresh failed: " + e.message);
+  }
+}
+
+async function runSource(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Running"; }
+  try {
+    const run = await api("/api/run?source=" + encodeURIComponent(id), { method: "POST" });
+    notify(run.ok
+      ? "Run ok: " + run.records_extracted + " records, " + run.events_new + " new events" +
+        (run.repair_accepted ? ", mapping healed" : "")
+      : "Run failed at " + run.stage + ": " + run.error);
+  } catch (e) {
+    notify("run failed: " + e.message);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "Run"; }
+  refreshAll();
+}
+
+$("#add-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: $("#add-name").value,
+        url: $("#add-url").value,
+        jurisdiction: $("#add-jur").value,
+      }),
+    });
+    $("#add-name").value = ""; $("#add-url").value = ""; $("#add-jur").value = "";
+    notify("site added");
+    refreshAll();
+  } catch (e) {
+    notify("add failed: " + e.message);
+  }
+});
+
+$("#run-all").addEventListener("click", async () => {
+  const btn = $("#run-all");
+  btn.disabled = true; btn.textContent = "Running all";
+  try {
+    const runs = await api("/api/run_all", { method: "POST" });
+    const ok = runs.filter((r) => r.ok).length;
+    notify("Ran " + runs.length + " sites, " + ok + " ok");
+  } catch (e) {
+    notify("run all failed: " + e.message);
+  }
+  btn.disabled = false; btn.textContent = "Run all";
+  refreshAll();
+});
+
+refreshAll();
+setInterval(refreshOverview, 15000);
+</script>
+</body>
+</html>

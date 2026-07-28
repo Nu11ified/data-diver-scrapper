@@ -28,6 +28,7 @@ add_library(dd_engine STATIC
   src/store.cpp
   src/heal.cpp
   src/pipeline.cpp
+  src/server.cpp
 )
 
 target_include_directories(dd_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -54,6 +55,10 @@ if(ZLIB_FOUND)
 else()
   message(WARNING "zlib not found: compressed PDF streams will be skipped")
 endif()
+
+add_executable(datadiver src/main.cpp)
+target_link_libraries(datadiver PRIVATE dd_engine)
+target_compile_options(datadiver PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(dd_train src/train_main.cpp)
 target_link_libraries(dd_train PRIVATE dd_engine)
