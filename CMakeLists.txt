@@ -15,6 +15,10 @@ add_library(dd_engine STATIC
   src/json.cpp
   src/html.cpp
   src/csv.cpp
+  src/pdf.cpp
+  src/document.cpp
+  src/fetch.cpp
+  src/metrics.cpp
 )
 
 target_include_directories(dd_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -22,6 +26,25 @@ target_compile_options(dd_engine PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
 
 find_package(Threads REQUIRED)
 target_link_libraries(dd_engine PUBLIC Threads::Threads)
+
+# libcurl gives us http(s). Without it the engine still runs against file://
+# and local fixtures, and reports the missing transport instead of pretending.
+find_package(CURL)
+if(CURL_FOUND)
+  target_link_libraries(dd_engine PUBLIC CURL::libcurl)
+  target_compile_definitions(dd_engine PUBLIC DD_HAVE_CURL=1)
+else()
+  message(WARNING "libcurl not found: http(s) sources will be rejected at fetch time")
+endif()
+
+# zlib lets the PDF reader inflate FlateDecode content streams.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+  target_link_libraries(dd_engine PUBLIC ZLIB::ZLIB)
+  target_compile_definitions(dd_engine PUBLIC DD_HAVE_ZLIB=1)
+else()
+  message(WARNING "zlib not found: compressed PDF streams will be skipped")
+endif()
 
 enable_testing()
 add_executable(dd_tests tests/tests.cpp)

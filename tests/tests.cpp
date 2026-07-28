@@ -4,8 +4,16 @@
 
 #include "dd/core.hpp"
 #include "dd/csv.hpp"
+#include "dd/document.hpp"
+#include "dd/fetch.hpp"
 #include "dd/html.hpp"
 #include "dd/json.hpp"
+#include "dd/metrics.hpp"
+#include "dd/pdf.hpp"
+
+#if defined(DD_HAVE_ZLIB)
+#include <zlib.h>
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -294,6 +302,263 @@ TEST(csv_headerless_numeric_first_row) {
     const dd::csv::Table t = dd::csv::parse("123,Smith\n456,Jones\n");
     CHECK(t.header.empty());
     CHECK_EQ(t.rows.size(), std::size_t{2});
+}
+
+// ------------------------------------------------------------- metrics -----
+
+TEST(metrics_report_real_values) {
+    CHECK(dd::metrics::current_rss_bytes() > 1024 * 1024);
+    CHECK(dd::metrics::peak_rss_bytes() >= dd::metrics::current_rss_bytes() / 2);
+    CHECK(dd::metrics::cpu_time_ms() > 0.0);
+}
+
+// --------------------------------------------------------------- fetch -----
+
+TEST(fetch_local_file) {
+    const std::string dir = "build/test_tmp";
+    dd::fileio::ensure_dir(dir);
+    const std::string path = dir + "/fetch_me.txt";
+    dd::fileio::write_file_atomic(path, "payload bytes");
+    const dd::fetch::Result r = dd::fetch::get(path);
+    CHECK(r.ok);
+    CHECK_EQ(r.body, "payload bytes");
+    CHECK_EQ(r.bytes, std::int64_t{13});
+    CHECK(r.total_ms >= 0.0);
+    CHECK(!r.fetched_at.empty());
+
+    const dd::fetch::Result via_scheme = dd::fetch::get("file://" + path);
+    CHECK(via_scheme.ok);
+    CHECK_EQ(via_scheme.body, "payload bytes");
+}
+
+TEST(fetch_missing_file_reports_error) {
+    const dd::fetch::Result r = dd::fetch::get("build/test_tmp/does_not_exist.txt");
+    CHECK(!r.ok);
+    CHECK(!r.error.empty());
+    CHECK_EQ(r.bytes, std::int64_t{0});
+}
+
+TEST(fetch_rejects_unknown_scheme) {
+    const dd::fetch::Result r = dd::fetch::get("gopher://example.org/1");
+    CHECK(!r.ok);
+    CHECK(dd::str::contains(r.error, "scheme"));
+}
+
+// ----------------------------------------------------------------- pdf -----
+
+namespace pdfgen {
+
+// Builds a minimal one-page PDF whose content stream is `content`,
+// optionally Flate compressed. Real header, real objects, real layout.
+std::string make_pdf(const std::string& content, bool compress) {
+    std::string stream_data = content;
+    std::string filter;
+#if defined(DD_HAVE_ZLIB)
+    if (compress) {
+        uLongf bound = compressBound(static_cast<uLong>(content.size()));
+        std::string packed(bound, '\0');
+        if (compress2(reinterpret_cast<Bytef*>(packed.data()), &bound,
+                      reinterpret_cast<const Bytef*>(content.data()),
+                      static_cast<uLong>(content.size()), 6) == Z_OK) {
+            packed.resize(bound);
+            stream_data = packed;
+            filter = " /Filter /FlateDecode";
+        }
+    }
+#else
+    (void)compress;
+#endif
+    std::string pdf = "%PDF-1.4\n";
+    pdf += "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+    pdf += "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+    pdf += "3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n";
+    pdf += "4 0 obj << /Length " + std::to_string(stream_data.size()) + filter +
+           " >>\nstream\n";
+    pdf += stream_data;
+    pdf += "\nendstream\nendobj\n";
+    pdf += "%%EOF\n";
+    return pdf;
+}
+
+} // namespace pdfgen
+
+TEST(pdf_rejects_non_pdf) { CHECK_THROWS(dd::pdf::extract_text_lines("<html></html>")); }
+
+TEST(pdf_plain_stream_text) {
+    const std::string content =
+        "BT /F1 10 Tf 72 720 Td (Delinquent Tax List) Tj 0 -14 Td (Parcel  Owner) Tj "
+        "0 -14 Td [(123-456) -500 (Jane Smith)] TJ ET";
+    const std::string pdf = pdfgen::make_pdf(content, false);
+    const std::vector<std::string> lines = dd::pdf::extract_text_lines(pdf);
+    CHECK_EQ(lines.size(), std::size_t{3});
+    CHECK_EQ(lines[0], "Delinquent Tax List");
+    CHECK(dd::str::contains(lines[2], "123-456"));
+    CHECK(dd::str::contains(lines[2], "Jane Smith"));
+    // The -500 kern must render as a column gap, not the number itself.
+    CHECK(!dd::str::contains(lines[2], "500"));
+}
+
+#if defined(DD_HAVE_ZLIB)
+TEST(pdf_flate_stream_text) {
+    const std::string content = "BT (Compressed Roll) Tj 0 -12 Td (Parcel 42) Tj ET";
+    const std::string pdf = pdfgen::make_pdf(content, true);
+    CHECK(dd::str::contains(pdf, "FlateDecode"));
+    const std::vector<std::string> lines = dd::pdf::extract_text_lines(pdf);
+    CHECK_EQ(lines.size(), std::size_t{2});
+    CHECK_EQ(lines[0], "Compressed Roll");
+    CHECK_EQ(lines[1], "Parcel 42");
+}
+#endif
+
+TEST(pdf_string_escapes) {
+    const std::string content = "BT (Smith \\(Jane\\) \\\\ Co \\052) Tj ET";
+    const std::string pdf = pdfgen::make_pdf(content, false);
+    const std::vector<std::string> lines = dd::pdf::extract_text_lines(pdf);
+    CHECK_EQ(lines.size(), std::size_t{1});
+    CHECK_EQ(lines[0], "Smith (Jane) \\ Co *");
+}
+
+// ------------------------------------------------------------- document ----
+
+TEST(document_detects_formats) {
+    using dd::doc::Format;
+    CHECK(dd::doc::detect_format("", "%PDF-1.4 xxxxxxxx") == Format::Pdf);
+    CHECK(dd::doc::detect_format("", "{\"a\": 1}") == Format::Json);
+    CHECK(dd::doc::detect_format("", "[1, 2]") == Format::Json);
+    CHECK(dd::doc::detect_format("", "<!DOCTYPE html><html></html>") == Format::Html);
+    CHECK(dd::doc::detect_format("", "<div>x</div>") == Format::Html);
+    CHECK(dd::doc::detect_format("", "a,b,c\n1,2,3\n4,5,6\n") == Format::Csv);
+    CHECK(dd::doc::detect_format("text/csv", "weird single line") == Format::Csv);
+    CHECK(dd::doc::detect_format("", "just words here") == Format::Text);
+    // Malformed JSON falls through to text rather than claiming success.
+    CHECK(dd::doc::detect_format("", "{broken") == Format::Text);
+}
+
+TEST(document_html_table_records) {
+    const std::string page =
+        "<html><head><title>Delinquency</title></head><body><h2>Tax Roll</h2>"
+        "<table class=\"roll\">"
+        "<tr><th>Parcel Number</th><th>Owner Name</th><th>Amount Due</th></tr>"
+        "<tr><td>123-456-789</td><td>Jane Smith</td><td>$8,421.37</td></tr>"
+        "<tr><td>987-654-321</td><td>Bob Ray</td><td>$120.00</td></tr>"
+        "</table></body></html>";
+    const dd::doc::Model m = dd::doc::build_auto("text/html", page);
+    CHECK(m.format == dd::doc::Format::Html);
+    CHECK_EQ(m.title, "Delinquency");
+    CHECK_EQ(m.records.size(), std::size_t{2});
+    CHECK_EQ(m.labels.size(), std::size_t{3});
+    const dd::doc::Cell* owner = m.records[0].find("Owner Name");
+    CHECK(owner != nullptr);
+    CHECK_EQ(owner->value, "Jane Smith");
+    CHECK(!m.records[0].cells[0].path.empty());
+    CHECK(dd::str::contains(m.container_signature, "table"));
+}
+
+TEST(document_html_repeated_blocks) {
+    std::string page = "<html><body><div id=\"list\">";
+    const char* owners[] = {"Jane Smith", "Bob Ray", "Ann Lee"};
+    const char* parcels[] = {"111-222", "333-444", "555-666"};
+    for (int i = 0; i < 3; ++i) {
+        page += std::string{"<div class=\"case\">"} +
+                "<span class=\"owner-name\">" + owners[i] + "</span>" +
+                "<span class=\"parcel-id\">" + parcels[i] + "</span>" +
+                "<div><b>Status:</b> Delinquent</div>" +
+                "</div>";
+    }
+    page += "</div></body></html>";
+    const dd::doc::Model m = dd::doc::build_auto("text/html", page);
+    CHECK_EQ(m.records.size(), std::size_t{3});
+    const dd::doc::Cell* owner = m.records[1].find("owner-name");
+    CHECK(owner != nullptr);
+    CHECK_EQ(owner->value, "Bob Ray");
+    const dd::doc::Cell* status = m.records[0].find("Status");
+    CHECK(status != nullptr);
+    CHECK_EQ(status->value, "Delinquent");
+}
+
+TEST(document_html_data_attributes) {
+    std::string page = "<body>";
+    for (int i = 0; i < 3; ++i) {
+        page += "<div class=\"r\"><span data-field=\"taxpayer\">P" + std::to_string(i) +
+                "</span><span data-field=\"account\">A" + std::to_string(i) + "</span></div>";
+    }
+    page += "</body>";
+    const dd::doc::Model m = dd::doc::build_auto("text/html", page);
+    CHECK_EQ(m.records.size(), std::size_t{3});
+    const dd::doc::Cell* taxpayer = m.records[2].find("taxpayer");
+    CHECK(taxpayer != nullptr);
+    CHECK_EQ(taxpayer->value, "P2");
+}
+
+TEST(document_json_records) {
+    const std::string body = R"({
+      "meta": {"count": 2},
+      "results": [
+        {"apn": "123", "owner": {"name": "Jane"}, "tags": ["a", "b"], "due": 42.5},
+        {"apn": "456", "owner": {"name": "Bob"}, "tags": [], "due": 7}
+      ]
+    })";
+    const dd::doc::Model m = dd::doc::build_auto("application/json", body);
+    CHECK(m.format == dd::doc::Format::Json);
+    CHECK_EQ(m.records.size(), std::size_t{2});
+    const dd::doc::Cell* name = m.records[0].find("owner.name");
+    CHECK(name != nullptr);
+    CHECK_EQ(name->value, "Jane");
+    const dd::doc::Cell* tags = m.records[0].find("tags");
+    CHECK(tags != nullptr);
+    CHECK_EQ(tags->value, "a; b");
+    const dd::doc::Cell* due = m.records[1].find("due");
+    CHECK(due != nullptr);
+    CHECK_EQ(due->value, "7");
+    CHECK(dd::str::contains(m.container_signature, "results"));
+}
+
+TEST(document_json_single_object) {
+    const dd::doc::Model m =
+        dd::doc::build_auto("application/json", R"({"parcel": "1", "owner": "X"})");
+    CHECK_EQ(m.records.size(), std::size_t{1});
+    CHECK_EQ(m.records[0].cells.size(), std::size_t{2});
+}
+
+TEST(document_csv_records) {
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv", "Account,Taxpayer,Balance\nA1,Jane,100.5\nA2,Bob,7\n");
+    CHECK(m.format == dd::doc::Format::Csv);
+    CHECK_EQ(m.records.size(), std::size_t{2});
+    const dd::doc::Cell* who = m.records[1].find("Taxpayer");
+    CHECK(who != nullptr);
+    CHECK_EQ(who->value, "Bob");
+}
+
+TEST(document_text_columns) {
+    const std::string body =
+        "County Tax Report\n"
+        "Parcel      Owner        Due\n"
+        "111-22      Jane Smith   500.00\n"
+        "333-44      Bob Ray      75.10\n"
+        "555-66      Ann Lee      20.00\n";
+    const dd::doc::Model m = dd::doc::build_auto("text/plain", body);
+    CHECK(m.format == dd::doc::Format::Text);
+    CHECK_EQ(m.records.size(), std::size_t{3});
+    const dd::doc::Cell* owner = m.records[0].find("Owner");
+    CHECK(owner != nullptr);
+    CHECK_EQ(owner->value, "Jane Smith");
+}
+
+TEST(document_fingerprint_tracks_shape) {
+    const std::string a = "Parcel,Owner\n1,Jane\n";
+    const std::string b = "Parcel,Owner\n2,Bob\n3,Sue\n";
+    const std::string c = "APN,Taxpayer\n1,Jane\n";
+    const dd::doc::Model ma = dd::doc::build_auto("text/csv", a);
+    const dd::doc::Model mb = dd::doc::build_auto("text/csv", b);
+    const dd::doc::Model mc = dd::doc::build_auto("text/csv", c);
+    CHECK_EQ(ma.structure_fingerprint(), mb.structure_fingerprint());
+    CHECK(ma.structure_fingerprint() != mc.structure_fingerprint());
+}
+
+TEST(document_empty_yields_no_records) {
+    const dd::doc::Model m = dd::doc::build_auto("text/html", "<html><body></body></html>");
+    CHECK(m.records.empty());
 }
 
 } // namespace
