@@ -3,7 +3,6 @@
 // tree so fixtures resolve by relative path.
 
 #include "dd/ml/classify.hpp"
-#include "dd/ml/llm.hpp"
 #include "dd/core/core.hpp"
 #include "dd/parse/csv.hpp"
 #include "dd/parse/document.hpp"
@@ -705,44 +704,6 @@ TEST(bench_scores_mapping_against_answer_key) {
         dd::bench::score_mapping(golden, registry, {{"b", "col_y"}});
     CHECK_EQ(missing.missing, std::size_t{1});
     CHECK_EQ(missing.tp, std::size_t{1});
-}
-
-TEST(bench_parses_llm_answers_and_rejects_prose) {
-    const dd::bench::LlmAnswer fenced = dd::bench::parse_llm_answer(
-        "```json\n{\"classification\": \"code_violation\", "
-        "\"mapping\": {\"address\": \"full_address\", \"zip\": \"\"}}\n```");
-    CHECK(fenced.ok);
-    CHECK_EQ(fenced.classification, "code_violation");
-    CHECK_EQ(fenced.mapping.at("address"), "full_address");
-    CHECK_EQ(fenced.mapping.at("zip"), "");
-
-    CHECK(!dd::bench::parse_llm_answer("The mapping is probably address -> addr.").ok);
-    CHECK(!dd::bench::parse_llm_answer("{\"classification\": \"x\"}").ok);
-}
-
-TEST(llm_request_and_response_shapes) {
-    dd::llm::Config config;
-    config.model = "test-model";
-    const std::string body = dd::llm::request_body(config, "say \"hi\"");
-    const dd::json::Value parsed = dd::json::parse(body);
-    CHECK_EQ(parsed.find("model")->as_string(), "test-model");
-    CHECK_EQ(parsed.find("messages")->items().front().find("content")->as_string(),
-             "say \"hi\"");
-    CHECK_NEAR(parsed.find("temperature")->as_number(), 0.0, 1e-12);
-
-    const dd::llm::Completion ok = dd::llm::parse_response(
-        R"({"choices": [{"message": {"role": "assistant", "content": "{}"}}],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 30}})");
-    CHECK(ok.ok);
-    CHECK_EQ(ok.text, "{}");
-    CHECK_EQ(ok.tokens_in, std::int64_t{120});
-    CHECK_EQ(ok.tokens_out, std::int64_t{30});
-
-    const dd::llm::Completion err = dd::llm::parse_response(
-        R"({"error": {"message": "invalid api key"}})");
-    CHECK(!err.ok);
-    CHECK_EQ(err.error, "invalid api key");
-    CHECK(!dd::llm::parse_response("<html>gateway timeout</html>").ok);
 }
 
 TEST(classifier_trains_with_high_holdout_accuracy) {

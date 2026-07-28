@@ -61,8 +61,8 @@ another URL, or:
 - `add "County" "Name" URL` - onboard a new source from inside the shell.
 - `model` - classifier status: algorithm, alpha, corpus size, leave-one-out
   accuracy, and each class's most discriminative vocabulary by lift.
-- `bench [llm]` - score the engine against the hand-verified answer key
-  (see "Proving it"), optionally head-to-head with an LLM baseline.
+- `bench` - score the engine against the hand-verified answer key
+  (see "Proving it").
 - `train [ALPHA|sweep]` - retrain at one smoothing alpha or sweep a grid,
   with per-class validation results and confusion pairs; the best model is
   saved only above 0.85 accuracy and hot-swapped into the running shell.
@@ -150,18 +150,10 @@ measured:
    bytes: classification accuracy, mapping precision/recall/F1 per source,
    and measured compute. The engine currently scores 14/14 classification
    and 0.96 mapping F1 in about 4 ms per document at zero marginal cost.
-4. The baseline: `bench llm` sends the same documents, the same schema and
-   the same answer key through any OpenAI-compatible endpoint
-   (`DD_LLM_ENDPOINT`, `DD_LLM_KEY`, `DD_LLM_MODEL`, optional
-   `DD_LLM_PRICE_IN`/`DD_LLM_PRICE_OUT` dollars per 1M tokens) and prints
-   both scoreboards side by side with latency and token cost measured. The
-   comparison is honest by construction: shared scorer, shared key, and the
-   baseline's answers are parsed strictly - prose is a failure, not a guess.
-
-The point is not that a frontier model cannot match the mapping accuracy; it
-is that this engine does it deterministically, explainably (`map`, `review`),
-offline, in milliseconds, at zero marginal cost - and the benchmark makes
-that trade measurable instead of asserted.
+An LLM API could attempt the same mapping, but this engine does it
+deterministically, explainably (`map`, `review`), offline, in milliseconds,
+at zero marginal cost per document - and the benchmark keeps that claim
+measured instead of asserted.
 
 ## Layout
 

@@ -9,8 +9,7 @@
 #include <vector>
 
 // The validity benchmark: a hand-verified answer key (data/golden) scored
-// against whatever produced a classification and a mapping - this engine or
-// an LLM baseline. Scoring is shared so both sit in the same table.
+// against the engine's classification and mapping.
 namespace dd::bench {
 
 // One source's answer key. `classifications` lists every acceptable class.
@@ -39,21 +38,5 @@ bool classification_ok(const Golden& golden, const std::string& predicted);
 
 MappingScore score_mapping(const Golden& golden, const schema::Registry& registry,
                            const std::map<std::string, std::string>& mapped);
-
-// The baseline's task, stated once: same document labels with sample values,
-// same schema, same classes; strict-JSON answer.
-std::string llm_prompt(const schema::Registry& registry,
-                       const std::vector<std::string>& classes, const doc::Model& model);
-
-struct LlmAnswer {
-    bool ok = false;
-    std::string classification;
-    std::map<std::string, std::string> mapping;
-    std::string error;
-};
-
-// Tolerates a markdown code fence around the JSON; anything else non-JSON
-// is an error that shows up in the run, never a guessed answer.
-LlmAnswer parse_llm_answer(std::string_view text);
 
 } // namespace dd::bench

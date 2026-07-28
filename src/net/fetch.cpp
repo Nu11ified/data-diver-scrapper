@@ -65,9 +65,7 @@ std::string encode_spaces(const std::string& url) {
     return str::replace_all(url, " ", "%20");
 }
 
-Result fetch_http(const std::string& url, const Options& options,
-                  const std::string* post_body = nullptr,
-                  const std::string* bearer = nullptr) {
+Result fetch_http(const std::string& url, const Options& options) {
     global_init_once();
     Result r;
     r.url = url;
@@ -95,17 +93,6 @@ Result fetch_http(const std::string& url, const Options& options,
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // ask for gzip and let curl inflate
 
-    curl_slist* headers = nullptr;
-    if (post_body != nullptr) {
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        if (bearer != nullptr && !bearer->empty()) {
-            headers = curl_slist_append(headers, ("Authorization: Bearer " + *bearer).c_str());
-        }
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_body->c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(post_body->size()));
-    }
-
     const Stopwatch watch;
     const CURLcode rc = curl_easy_perform(curl);
     r.total_ms = watch.elapsed_ms();
@@ -129,7 +116,6 @@ Result fetch_http(const std::string& url, const Options& options,
     } else {
         r.error = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(rc);
     }
-    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     return r;
 }
@@ -170,22 +156,6 @@ Result get(const std::string& url, const Options& options) {
     r.final_url = url;
     r.fetched_at = timeutil::iso_now();
     r.error = "unsupported url scheme";
-    return r;
-}
-
-Result post_json(const std::string& url, const std::string& body, const std::string& bearer,
-                 const Options& options) {
-    if (has_prefix(url, "http://") || has_prefix(url, "https://")) {
-#if defined(DD_HAVE_CURL)
-        return fetch_http(url, options, &body, &bearer);
-#endif
-    }
-    Result r;
-    r.url = url;
-    r.final_url = url;
-    r.fetched_at = timeutil::iso_now();
-    r.error = http_supported() ? "post_json requires an http(s) url"
-                               : "engine built without libcurl: cannot post";
     return r;
 }
 

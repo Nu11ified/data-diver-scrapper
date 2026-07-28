@@ -390,7 +390,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  run (all | SOURCE_ID)  ingest into the store\n"
                         "  map SOURCE_ID          learned mapping with sample values\n"
                         "  review SOURCE_ID       confirm or refuse uncertain matches\n"
-                        "  bench [llm]            score against the hand-verified answer key\n"
+                        "  bench                  score against the hand-verified answer key\n"
                         "  model                  classifier status\n"
                         "  train [ALPHA|sweep]    retrain with validation breakdown\n"
                         "  schema                 the canonical fields\n"
@@ -453,10 +453,9 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             dd::cli::review(*state.store, pipeline, dd::str::trim(input.substr(7)), std::cin);
             continue;
         }
-        if (input.rfind("bench", 0) == 0 && (input == "bench" || input[5] == ' ')) {
+        if (input == "bench") {
             dd::pipeline::Pipeline& pipeline = state.ensure();
-            dd::cli::bench(*state.store, pipeline, "data/golden/golden.json",
-                           dd::str::contains(input, "llm"));
+            dd::cli::bench(*state.store, pipeline, "data/golden/golden.json");
             continue;
         }
         if (input == "model") {
@@ -519,7 +518,7 @@ int usage() {
         "  datadiver map SOURCE_ID            learned mapping with sample values\n"
         "  datadiver review SOURCE_ID         confirm or refuse uncertain matches\n"
         "  datadiver model                    classifier status\n"
-        "  datadiver bench [--llm]            score engine (and LLM baseline) vs answer key\n"
+        "  datadiver bench                    score the engine against the answer key\n"
         "  datadiver train [--alpha A|--sweep] retrain with validation breakdown\n"
         "flags: --schema FILE  --model FILE  --state DIR  --seeds FILE\n");
     return 2;
@@ -623,8 +622,7 @@ int main(int argc, char** argv) {
             }
             if (args.command == "bench") {
                 return dd::cli::bench(store, pipeline,
-                                      flag(args, "golden", "data/golden/golden.json"),
-                                      args.flags.count("llm") != 0);
+                                      flag(args, "golden", "data/golden/golden.json"));
             }
             if (args.positional.empty()) return usage();
             const std::string target = dd::str::join(args.positional, " ");
