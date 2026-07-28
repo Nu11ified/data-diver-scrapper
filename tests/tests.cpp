@@ -3,6 +3,7 @@
 // tree so fixtures resolve by relative path.
 
 #include "dd/ml/classify.hpp"
+#include "dd/ml/llm.hpp"
 #include "dd/core/core.hpp"
 #include "dd/parse/csv.hpp"
 #include "dd/parse/document.hpp"
@@ -17,6 +18,7 @@
 #include "dd/ml/model.hpp"
 #include "dd/parse/pdf.hpp"
 #include "dd/engine/pipeline.hpp"
+#include "dd/engine/bench.hpp"
 #include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
 
@@ -672,6 +674,77 @@ TEST(model_rejects_bad_serialization) {
 
 // ------------------------------------------------------------ classify -----
 
+// -------------------------------------------------------------- bench -----
+
+TEST(bench_scores_mapping_against_answer_key) {
+    const dd::schema::Registry registry = dd::schema::Registry::from_json(R"({"fields": [
+        {"name": "a", "kind": "id", "identity": true, "synonyms": ["a"]},
+        {"name": "b", "kind": "text", "synonyms": ["b"]},
+        {"name": "c", "kind": "text", "synonyms": ["c"]}
+    ]})");
+    dd::bench::Golden golden;
+    golden.source_id = "s";
+    golden.classifications = {"tax_delinquency", "trustee_auction"};
+    golden.fields["a"] = {"col_x"};
+    golden.fields["b"] = {"col_y", ""};
+
+    CHECK(dd::bench::classification_ok(golden, "trustee_auction"));
+    CHECK(!dd::bench::classification_ok(golden, "probate_case"));
+
+    // a correct, b left unmapped (acceptable), c mapped where the key forbids.
+    const dd::bench::MappingScore score = dd::bench::score_mapping(
+        golden, registry, {{"a", "col_x"}, {"c", "col_z"}});
+    CHECK_EQ(score.tp, std::size_t{1});
+    CHECK_EQ(score.spurious, std::size_t{1});
+    CHECK_EQ(score.missing, std::size_t{0});
+    CHECK_NEAR(score.precision(), 0.5, 1e-9);
+    CHECK_NEAR(score.recall(), 1.0, 1e-9);
+
+    // a unmapped is a miss: the key requires a label there.
+    const dd::bench::MappingScore missing =
+        dd::bench::score_mapping(golden, registry, {{"b", "col_y"}});
+    CHECK_EQ(missing.missing, std::size_t{1});
+    CHECK_EQ(missing.tp, std::size_t{1});
+}
+
+TEST(bench_parses_llm_answers_and_rejects_prose) {
+    const dd::bench::LlmAnswer fenced = dd::bench::parse_llm_answer(
+        "```json\n{\"classification\": \"code_violation\", "
+        "\"mapping\": {\"address\": \"full_address\", \"zip\": \"\"}}\n```");
+    CHECK(fenced.ok);
+    CHECK_EQ(fenced.classification, "code_violation");
+    CHECK_EQ(fenced.mapping.at("address"), "full_address");
+    CHECK_EQ(fenced.mapping.at("zip"), "");
+
+    CHECK(!dd::bench::parse_llm_answer("The mapping is probably address -> addr.").ok);
+    CHECK(!dd::bench::parse_llm_answer("{\"classification\": \"x\"}").ok);
+}
+
+TEST(llm_request_and_response_shapes) {
+    dd::llm::Config config;
+    config.model = "test-model";
+    const std::string body = dd::llm::request_body(config, "say \"hi\"");
+    const dd::json::Value parsed = dd::json::parse(body);
+    CHECK_EQ(parsed.find("model")->as_string(), "test-model");
+    CHECK_EQ(parsed.find("messages")->items().front().find("content")->as_string(),
+             "say \"hi\"");
+    CHECK_NEAR(parsed.find("temperature")->as_number(), 0.0, 1e-12);
+
+    const dd::llm::Completion ok = dd::llm::parse_response(
+        R"({"choices": [{"message": {"role": "assistant", "content": "{}"}}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 30}})");
+    CHECK(ok.ok);
+    CHECK_EQ(ok.text, "{}");
+    CHECK_EQ(ok.tokens_in, std::int64_t{120});
+    CHECK_EQ(ok.tokens_out, std::int64_t{30});
+
+    const dd::llm::Completion err = dd::llm::parse_response(
+        R"({"error": {"message": "invalid api key"}})");
+    CHECK(!err.ok);
+    CHECK_EQ(err.error, "invalid api key");
+    CHECK(!dd::llm::parse_response("<html>gateway timeout</html>").ok);
+}
+
 TEST(classifier_trains_with_high_holdout_accuracy) {
     dd::classify::TrainReport train_report;
     const dd::classify::Classifier classifier =
@@ -1007,6 +1080,26 @@ std::string fresh_dir(const std::string& name) {
     std::filesystem::remove_all(dir);
     dd::fileio::ensure_dir(dir);
     return dir;
+}
+
+TEST(bench_golden_loads_strings_and_lists) {
+    const std::string dir = fresh_dir("bench_golden");
+    const std::string path = dir + "/golden.json";
+    dd::fileio::write_file_atomic(path, R"({"sources": [
+        {"id": "one", "classification": "tax_delinquency",
+         "fields": {"parcel_id": "pin", "amount_due": ["total", ""]}},
+        {"id": "two", "classification": ["a", "b"]}
+    ]})");
+    const std::vector<dd::bench::Golden> golden = dd::bench::load_golden(path);
+    CHECK_EQ(golden.size(), std::size_t{2});
+    CHECK_EQ(golden[0].fields.at("parcel_id").size(), std::size_t{1});
+    CHECK_EQ(golden[0].fields.at("amount_due")[1], "");
+    CHECK_EQ(golden[1].classifications.size(), std::size_t{2});
+    CHECK(golden[1].fields.empty());
+
+    CHECK_THROWS(dd::bench::load_golden(dir + "/absent.json"));
+    dd::fileio::write_file_atomic(path, R"({"sources": [{"id": "x"}]})");
+    CHECK_THROWS(dd::bench::load_golden(path));
 }
 
 TEST(store_sources_persist_across_reopen) {

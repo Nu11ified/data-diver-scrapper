@@ -34,6 +34,11 @@ struct Result {
 // fabricated body.
 Result get(const std::string& url, const Options& options = {});
 
+// POST a JSON body. bearer, when non-empty, is sent as an Authorization
+// header. Used by the benchmark's LLM baseline; http(s) only.
+Result post_json(const std::string& url, const std::string& body, const std::string& bearer,
+                 const Options& options = {});
+
 bool is_local(const std::string& url);
 bool http_supported();
 
