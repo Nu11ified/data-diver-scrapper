@@ -1,0 +1,5 @@
+{"assessment_year": 2026, "parcels": [
+ {"apn": "115-30-221", "owner_name": "Drummond, Celia", "land_value": 74000, "improvement_value": 199500, "assessed_value": 273500, "exemption": "homestead", "acreage": 0.21, "legal_description": "LOT 14 BLK 3 ORCHARD PARK"},
+ {"apn": "115-30-240", "owner_name": "Vann, Gregory", "land_value": 81000, "improvement_value": 0, "assessed_value": 81000, "exemption": "none", "acreage": 0.25, "legal_description": "LOT 22 BLK 3 ORCHARD PARK"},
+ {"apn": "115-31-006", "owner_name": "Mistry, Anand", "land_value": 60500, "improvement_value": 240800, "assessed_value": 301300, "exemption": "veteran", "acreage": 0.18, "legal_description": "LOT 2 BLK 4 ORCHARD PARK"}
+]}

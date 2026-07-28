@@ -1,0 +1,5 @@
+{"court": "probate_division", "estates": [
+ {"case_number": "PB-26-3302", "decedent": "Ferris, Howard", "date_of_death": "2026-03-11", "executor": "Ferris, Miriam", "estate_value": 415000, "will_admitted": true, "heirs": 3},
+ {"case_number": "PB-26-3318", "decedent": "Calloway, Bess", "date_of_death": "2026-02-27", "executor": null, "administrator": "Public Administrator", "estate_value": 88000, "will_admitted": false, "heirs": 0},
+ {"case_number": "PB-26-3327", "decedent": "Yamada, Kenji", "date_of_death": "2026-04-05", "executor": "Yamada, Aiko", "estate_value": 232500, "will_admitted": true, "heirs": 2}
+]}

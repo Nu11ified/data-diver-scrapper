@@ -1,0 +1,5 @@
+{"venue": "courthouse steps", "auctions": [
+ {"sale_id": "A-26-771", "parcel": "052-110-33", "address": "17 Beacon Ct", "auction_date": "2026-08-12", "opening_bid": 96000, "trustee": "Summit Fiduciary", "postponed": false, "sold_to": null},
+ {"sale_id": "A-26-780", "parcel": "052-118-02", "address": "406 Larkspur Dr", "auction_date": "2026-08-12", "opening_bid": 210500, "trustee": "Coastal Trustee Services", "postponed": true, "sold_to": null},
+ {"sale_id": "A-26-742", "parcel": "051-990-15", "address": "12 Weaver Ln", "auction_date": "2026-07-08", "opening_bid": 64000, "trustee": "Summit Fiduciary", "postponed": false, "sold_to": "third party bidder"}
+]}

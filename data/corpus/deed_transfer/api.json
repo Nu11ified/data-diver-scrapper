@@ -1,0 +1,5 @@
+{"office": "register_of_deeds", "recordings": [
+ {"document_number": "2026R-88110", "grantor": "Tidewater Homes Inc", "grantee": "Poole, Adrian", "parcel": "090-441-22", "deed_type": "warranty deed", "consideration": 337900, "recorded": "2026-06-24", "transfer_tax": 1013.70},
+ {"document_number": "2026R-88134", "grantor": "Klein, Sofia", "grantee": "Klein Living Trust", "parcel": "090-455-08", "deed_type": "quitclaim deed", "consideration": 0, "recorded": "2026-06-25", "transfer_tax": 0},
+ {"document_number": "2026R-88160", "grantor": "Barrow, Nelson", "grantee": "Frey, Camille", "parcel": "091-002-14", "deed_type": "warranty deed", "consideration": 189000, "recorded": "2026-06-26", "transfer_tax": 567.00}
+]}

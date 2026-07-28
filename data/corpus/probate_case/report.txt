@@ -1,0 +1,7 @@
+PROBATE COURT WEEKLY CASE REPORT
+Estates of deceased persons opened for administration. The petition lists known heirs and the personal representative appointed by the court.
+Case          Decedent           Representative      Estate Value
+PB-7701       Antrim, Cecil      Antrim, Joyce       198,000
+PB-7710       Marsh, Vivian      Public Admin        41,200
+PB-7718       Okafor, Chidi      Okafor, Amara       503,000
+Letters testamentary or letters of administration issue upon qualification.

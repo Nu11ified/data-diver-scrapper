@@ -1,0 +1,8 @@
+MONTHLY PERMIT ISSUANCE REPORT
+Department of Buildings
+Permits issued for construction, alteration and repair. Valuation is the applicant declared cost of work. Final inspection closes the permit.
+Permit        Address          Work                       Valuation
+BLD-9901      6 Larch Ln       basement finish            41,000
+BLD-9912      88 Center St     HVAC replacement           12,700
+BLD-9924      140 Shore Dr     new single family dwelling 385,000
+Contractors must display the permit card at the job site until final approval.

@@ -1,0 +1,5 @@
+{"dataset": "delinquent_tax_accounts", "as_of": "2026-06-30", "records": [
+ {"account_number": "TX-99182", "parcel_id": "115-22-081", "taxpayer_name": "Holt, Rebecca", "amount_due": 4211.09, "tax_year": 2024, "penalty": 421.10, "interest": 96.33, "certificate_sale": true},
+ {"account_number": "TX-99201", "parcel_id": "115-22-113", "taxpayer_name": "Kim, Daniel", "amount_due": 780.00, "tax_year": 2025, "penalty": 78.00, "interest": 12.05, "certificate_sale": false},
+ {"account_number": "TX-99219", "parcel_id": "118-04-006", "taxpayer_name": "Riverbed Holdings", "amount_due": 15533.72, "tax_year": 2022, "penalty": 1553.37, "interest": 702.19, "certificate_sale": true}
+]}

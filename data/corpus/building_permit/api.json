@@ -1,0 +1,5 @@
+{"department": "development_services", "permits": [
+ {"permit_number": "BLD-26-4410", "address": "12 Keel Way", "work_class": "residential addition", "contractor": "Beacon Builders", "valuation": 118000, "issued_date": "2026-06-20", "inspections_passed": 2},
+ {"permit_number": "BLD-26-4415", "address": "740 Foundry Rd", "work_class": "tenant improvement", "contractor": "Corebuild Inc", "valuation": 402000, "issued_date": "2026-06-22", "inspections_passed": 0},
+ {"permit_number": "BLD-26-4431", "address": "8 Myrtle Pl", "work_class": "deck repair", "contractor": "owner builder", "valuation": 9500, "issued_date": "2026-06-27", "inspections_passed": 1}
+]}

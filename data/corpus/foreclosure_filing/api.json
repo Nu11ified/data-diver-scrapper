@@ -1,0 +1,5 @@
+{"court": "Superior Court Civil Division", "docket": "foreclosure", "filings": [
+ {"case_number": "26-FC-1108", "plaintiff": "Bluewater Home Loans", "defendant": "Marsh, Tobias", "parcel": "071-660-12", "judgment_amount": 214880.15, "lis_pendens": "2026-05-20", "status": "default entered"},
+ {"case_number": "26-FC-1121", "plaintiff": "Union Trust Bank", "defendant": "Silva, Carmen", "parcel": "071-661-40", "judgment_amount": 98450.00, "lis_pendens": "2026-05-27", "status": "answer filed"},
+ {"case_number": "26-FC-1140", "plaintiff": "Homestead Savings", "defendant": "Beck, Arthur", "parcel": "072-002-08", "judgment_amount": 156200.44, "lis_pendens": "2026-06-02", "status": "summary judgment"}
+]}

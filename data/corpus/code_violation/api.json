@@ -1,0 +1,5 @@
+{"division": "code_enforcement", "cases": [
+ {"case_id": "CE-26-1180", "address": "410 Willow Bend", "violation_type": "tall grass and weeds", "status": "notice to comply mailed", "inspector": "R. Chen", "opened": "2026-06-02", "fine_assessed": 0},
+ {"case_id": "CE-26-1188", "address": "16 Foundry Rd", "violation_type": "unpermitted structure", "status": "citation issued", "inspector": "M. Kowalski", "opened": "2026-06-05", "fine_assessed": 500},
+ {"case_id": "CE-26-1202", "address": "230 Emerald St", "violation_type": "standing water, mosquito breeding", "status": "abatement scheduled", "inspector": "D. Ferris", "opened": "2026-06-09", "fine_assessed": 250}
+]}

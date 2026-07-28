@@ -2,13 +2,16 @@
 // through its public interface only; ctest runs this binary from the source
 // tree so fixtures resolve by relative path.
 
+#include "dd/classify.hpp"
 #include "dd/core.hpp"
 #include "dd/csv.hpp"
 #include "dd/document.hpp"
+#include "dd/features.hpp"
 #include "dd/fetch.hpp"
 #include "dd/html.hpp"
 #include "dd/json.hpp"
 #include "dd/metrics.hpp"
+#include "dd/model.hpp"
 #include "dd/pdf.hpp"
 
 #if defined(DD_HAVE_ZLIB)
@@ -559,6 +562,123 @@ TEST(document_fingerprint_tracks_shape) {
 TEST(document_empty_yields_no_records) {
     const dd::doc::Model m = dd::doc::build_auto("text/html", "<html><body></body></html>");
     CHECK(m.records.empty());
+}
+
+// ------------------------------------------------------------ features -----
+
+TEST(features_prefix_and_filter) {
+    const std::string page =
+        "<html><head><title>Delinquent Roll</title></head><body><h1>The County List</h1>"
+        "<table><tr><th>Owner Name</th><th>Amount</th></tr>"
+        "<tr><td>Jane</td><td>42</td></tr><tr><td>Bob</td><td>7</td></tr></table></body></html>";
+    const dd::doc::Model m = dd::doc::build_auto("text/html", page);
+    const dd::features::Bag bag = dd::features::extract(m, "https://county.example/tax/delinquent-list");
+    CHECK(bag.count("fmt:html") == 1);
+    CHECK(bag.count("label:owner") == 1);
+    CHECK(bag.count("title:delinquent") == 1);
+    CHECK(bag.count("h:county") == 1);
+    CHECK(bag.count("url:delinquent") == 1);
+    CHECK(bag.count("the") == 0);       // stopword
+    CHECK(bag.count("url:https") == 0); // stopword
+}
+
+// --------------------------------------------------------------- model -----
+
+TEST(model_learns_and_reports_posteriors) {
+    dd::model::NaiveBayes nb;
+    dd::features::Bag apples{{"apple", 3}, {"orchard", 1}};
+    dd::features::Bag apples2{{"apple", 2}, {"cider", 1}};
+    dd::features::Bag boats{{"boat", 3}, {"harbor", 1}};
+    dd::features::Bag boats2{{"boat", 1}, {"sail", 2}};
+    nb.add_example("fruit", apples);
+    nb.add_example("fruit", apples2);
+    nb.add_example("marine", boats);
+    nb.add_example("marine", boats2);
+
+    const std::vector<dd::model::Scored> scored = nb.predict({{"apple", 2}, {"cider", 1}});
+    CHECK_EQ(scored.size(), std::size_t{2});
+    CHECK_EQ(scored[0].label, "fruit");
+    CHECK(scored[0].probability > 0.8);
+    CHECK_NEAR(scored[0].probability + scored[1].probability, 1.0, 1e-9);
+}
+
+TEST(model_serialize_roundtrip) {
+    dd::model::NaiveBayes nb;
+    nb.add_example("a", {{"x", 2}, {"y", 1}});
+    nb.add_example("b", {{"z", 3}});
+    const std::string text = nb.serialize();
+    const dd::model::NaiveBayes loaded = dd::model::NaiveBayes::deserialize(text);
+    const dd::features::Bag probe{{"z", 1}};
+    const auto before = nb.predict(probe);
+    const auto after = loaded.predict(probe);
+    CHECK_EQ(before[0].label, after[0].label);
+    CHECK_NEAR(before[0].probability, after[0].probability, 1e-12);
+}
+
+TEST(model_rejects_bad_serialization) {
+    CHECK_THROWS(dd::model::NaiveBayes::deserialize("{\"kind\":\"other\"}"));
+    CHECK_THROWS(dd::model::NaiveBayes::deserialize(
+        "{\"kind\":\"naive_bayes_multinomial\",\"classes\":[]}"));
+}
+
+// ------------------------------------------------------------ classify -----
+
+TEST(classifier_trains_with_high_holdout_accuracy) {
+    dd::classify::TrainReport train_report;
+    const dd::classify::Classifier classifier =
+        dd::classify::Classifier::train_from_corpus("data/corpus", &train_report);
+    CHECK_EQ(train_report.classes, std::size_t{8});
+    CHECK(train_report.examples >= 40);
+    CHECK(train_report.leave_one_out_accuracy >= 0.85);
+
+    // A document the corpus has never seen, in tax-delinquency dialect.
+    const std::string page =
+        "<html><head><title>Overdue Property Tax Accounts</title></head><body>"
+        "<h1>Delinquent Tax Accounts</h1>"
+        "<p>Unpaid taxes accrue penalty and interest until redemption before the tax sale.</p>"
+        "<table><tr><th>Parcel</th><th>Taxpayer</th><th>Amount Due</th><th>Tax Year</th></tr>"
+        "<tr><td>661-04-118</td><td>Croft, Emily</td><td>$1,203.44</td><td>2025</td></tr>"
+        "<tr><td>661-04-121</td><td>Marsden, Hugh</td><td>$477.10</td><td>2024</td></tr>"
+        "</table></body></html>";
+    const dd::doc::Model m = dd::doc::build_auto("text/html", page);
+    const dd::classify::Prediction p = classifier.classify(m, "https://treasurer.example/delinquent");
+    CHECK_EQ(p.label, "tax_delinquency");
+    CHECK(p.confidence > 0.5);
+    CHECK_EQ(p.distribution.size(), std::size_t{8});
+
+    // And a probate docket must not classify as tax delinquency.
+    const std::string probate =
+        "<html><head><title>Estate Docket</title></head><body><h1>Probate Filings</h1>"
+        "<p>The decedent estates below have petitions for letters testamentary. The executor "
+        "or personal representative administers the estate for the heirs.</p></body></html>";
+    const dd::classify::Prediction p2 =
+        classifier.classify(dd::doc::build_auto("text/html", probate), "");
+    CHECK_EQ(p2.label, "probate_case");
+}
+
+TEST(classifier_save_load_roundtrip) {
+    dd::classify::TrainReport train_report;
+    const dd::classify::Classifier trained =
+        dd::classify::Classifier::train_from_corpus("data/corpus", &train_report);
+    const std::string path = "build/test_tmp/model.json";
+    trained.save(path);
+    const dd::classify::Classifier loaded = dd::classify::Classifier::load(path);
+    CHECK_NEAR(loaded.trained_accuracy(), trained.trained_accuracy(), 1e-12);
+    CHECK_EQ(loaded.example_count(), trained.example_count());
+
+    const dd::doc::Model m = dd::doc::build_auto(
+        "text/csv", "Permit No,Site Address,Description of Work,Valuation\n"
+                    "B1,9 Elm St,garage electrical remodel inspection,12000\n"
+                    "B2,4 Oak Ave,plumbing rough in permit,3300\n");
+    const dd::classify::Prediction a = trained.classify(m, "");
+    const dd::classify::Prediction b = loaded.classify(m, "");
+    CHECK_EQ(a.label, b.label);
+    CHECK_NEAR(a.confidence, b.confidence, 1e-9);
+    CHECK_EQ(a.label, "building_permit");
+}
+
+TEST(classifier_missing_corpus_reports_error) {
+    CHECK_THROWS(dd::classify::Classifier::train_from_corpus("data/no_such_dir", nullptr));
 }
 
 } // namespace
