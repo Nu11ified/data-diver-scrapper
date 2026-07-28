@@ -88,5 +88,11 @@
   "name": "Prince George's County MD Code Violations",
   "url": "https://data.princegeorgescountymd.gov/resource/9hyf-46qb.json?$limit=50",
   "jurisdiction": "Prince George's County MD"
+ },
+ {
+  "id": "tarrant_constable_tax_sale",
+  "name": "Tarrant County TX Constable Tax Sale (HTML)",
+  "url": "https://www.tarrantcountytx.gov/en/constables/constable-3/delinquent-tax-sales/monthly-tax-sales-listings/june-2--2026.html",
+  "jurisdiction": "Tarrant County TX"
  }
 ]

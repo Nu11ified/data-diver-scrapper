@@ -68,6 +68,10 @@ another URL, or:
   corpus, validated on portals held out by domain.
 - `bench` - score the engine against the hand-verified answer key
   (see "Proving it").
+- `export COUNTY [FILE]` - the compiled county as canonical JSON: lifecycle
+  state, every field's latest value with source and as-of provenance,
+  distress signals, and the event log. This is the payload an API would
+  serve.
 - `train [ALPHA|sweep]` - retrain at one smoothing alpha or sweep a grid,
   with per-class validation results and confusion pairs; the best model is
   saved only above 0.85 accuracy and hot-swapped into the running shell.
@@ -152,12 +156,14 @@ dependencies, both validated on data they never saw:
 ## Stateful ingestion
 
 Beyond one-shot alignment, `datadiver ingest --all` (or `run all` in the
-shell) runs configured sources (`data/sources.json` ships fourteen real
-government endpoints across eleven jurisdictions - Norfolk VA taxes,
-assessments and code cases, Cook County IL tax sales, Chicago violations,
-New Orleans violations and sheriff sales, Seattle permits, NYC property
-sales, Kansas City MO and Cincinnati OH violations, Los Angeles CA permits,
-Howard County MD and Prince George's County MD permits) into `var/`: content-hashed events resolve onto
+shell) runs configured sources (`data/sources.json` ships sixteen real
+government sources across twelve jurisdictions - Socrata JSON APIs plus a
+live HTML constable tax-sale page for Tarrant County TX - including an
+enrichment source whose URL carries a `{parcels}` placeholder: at fetch
+time it expands to the parcels already tracked for the jurisdiction, so
+the Norfolk assessor roll is queried for exactly the parcels the
+code-violation feed surfaced, and those properties end up with events
+from both sources) into `var/`: content-hashed events resolve onto
 jurisdiction-scoped properties (re-ingestion is idempotent), a deterministic
 state machine folds events into a property lifecycle (NORMAL ->
 TAX_DELINQUENT -> FORECLOSURE_FILED -> AUCTION_SCHEDULED -> SOLD_AT_AUCTION;
