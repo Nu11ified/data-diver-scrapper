@@ -130,6 +130,7 @@ void write_source(json::Writer& w, const store::Source& s, const store::SourceSt
     w.field("jurisdiction", s.jurisdiction);
     w.field("added_at", s.added_at);
     w.field("enabled", s.enabled);
+    w.field("demo", !s.seed_from.empty());
     w.field("classification", state.classification);
     w.field("has_mapping", state.has_mapping);
     w.field("mapping_confidence", state.has_mapping ? state.mapping.confidence : 0.0);
@@ -357,6 +358,90 @@ void Server::handle_connection(int client_fd) {
         return;
     }
 
+    if (req.path == "/api/counties" && req.method == "GET") {
+        const std::vector<store::Source> sources = store_.sources();
+        const std::vector<store::RunRecord> all_runs = store_.runs(100000);
+        const std::vector<store::RepairRecord> all_repairs = store_.repairs();
+
+        // Group sources by jurisdiction; property keys carry the slug prefix.
+        std::vector<std::string> jurisdictions;
+        for (const store::Source& s : sources) {
+            if (std::find(jurisdictions.begin(), jurisdictions.end(), s.jurisdiction) ==
+                jurisdictions.end()) {
+                jurisdictions.push_back(s.jurisdiction);
+            }
+        }
+
+        json::Writer w;
+        w.begin_array();
+        for (const std::string& jurisdiction : jurisdictions) {
+            const std::string slug = str::slug(jurisdiction);
+            std::vector<std::string> member_ids;
+            for (const store::Source& s : sources) {
+                if (s.jurisdiction == jurisdiction) member_ids.push_back(s.id);
+            }
+
+            std::size_t ok_sources = 0;
+            double rate_sum = 0.0;
+            std::size_t rated = 0;
+            std::string last_run_at;
+            for (const std::string& sid : member_ids) {
+                for (const store::RunRecord& r : all_runs) {
+                    if (r.source_id != sid) continue;
+                    if (r.started_at > last_run_at) last_run_at = r.started_at;
+                    if (r.ok) {
+                        ++ok_sources;
+                        rate_sum += r.extraction_rate;
+                        ++rated;
+                    }
+                    break; // newest first: only the latest run per source counts
+                }
+            }
+
+            std::size_t properties = 0;
+            std::size_t corroborated = 0;
+            std::size_t events = 0;
+            for (const std::string& key : store_.property_keys()) {
+                if (key.rfind(slug + "|", 0) != 0) continue;
+                ++properties;
+                const std::vector<events::PropertyEvent> evs = store_.events_for(key);
+                events += evs.size();
+                std::vector<std::string> distinct;
+                for (const events::PropertyEvent& e : evs) {
+                    if (std::find(distinct.begin(), distinct.end(), e.source_id) ==
+                        distinct.end()) {
+                        distinct.push_back(e.source_id);
+                    }
+                }
+                if (distinct.size() > 1) ++corroborated;
+            }
+
+            std::size_t repairs = 0;
+            for (const store::RepairRecord& r : all_repairs) {
+                if (std::find(member_ids.begin(), member_ids.end(), r.source_id) !=
+                    member_ids.end()) {
+                    ++repairs;
+                }
+            }
+
+            w.begin_object();
+            w.field("jurisdiction", jurisdiction);
+            w.field("slug", slug);
+            w.field("sources", static_cast<std::int64_t>(member_ids.size()));
+            w.field("ok_sources", static_cast<std::int64_t>(ok_sources));
+            w.field("properties", static_cast<std::int64_t>(properties));
+            w.field("corroborated", static_cast<std::int64_t>(corroborated));
+            w.field("events", static_cast<std::int64_t>(events));
+            w.field("repairs", static_cast<std::int64_t>(repairs));
+            w.field("avg_extraction", rated == 0 ? 0.0 : rate_sum / static_cast<double>(rated));
+            w.field("last_run_at", last_run_at);
+            w.end_object();
+        }
+        w.end_array();
+        respond_json(client_fd, 200, w.str());
+        return;
+    }
+
     if (req.path == "/api/model" && req.method == "GET") {
         const classify::Classifier& classifier = pipeline_.classifier();
         json::Writer w;
@@ -429,7 +514,8 @@ void Server::handle_connection(int client_fd) {
 
         // A scale test is just the real pipeline, measured: every run below
         // fetches, parses, classifies, maps and resolves exactly as a
-        // scheduled ingest would.
+        // scheduled ingest would. Only local sources take part so repeated
+        // rounds never hammer public government endpoints.
         const std::int64_t rss_before = metrics::current_rss_bytes();
         const double cpu_before = metrics::cpu_time_ms();
         std::int64_t runs = 0;
@@ -442,7 +528,7 @@ void Server::handle_connection(int client_fd) {
             const std::lock_guard<std::mutex> lock{run_mutex_};
             for (std::size_t round = 0; round < rounds; ++round) {
                 for (const store::Source& s : sources) {
-                    if (!s.enabled) continue;
+                    if (!s.enabled || !fetch::is_local(s.url)) continue;
                     const store::RunRecord r = pipeline_.run_source(s);
                     ++runs;
                     if (r.ok) ++ok;

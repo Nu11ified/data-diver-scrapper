@@ -1508,6 +1508,54 @@ TEST(server_demo_drift_and_reset) {
     server.stop();
 }
 
+TEST(document_survives_bespoke_legacy_markup) {
+    // 1990s county CMS output: uppercase tags, unclosed rows and cells, FONT
+    // soup, nbsp entities. Extraction must still find the case table.
+    const std::string body = dd::fileio::read_file("data/fixtures/millbrook_code_enforcement.html");
+    const dd::doc::Model m = dd::doc::build_auto("text/html", body);
+    CHECK_EQ(m.records.size(), std::size_t{3});
+    const dd::doc::Cell* parcel = m.records[0].find("Parcel");
+    CHECK(parcel != nullptr);
+    CHECK_EQ(parcel->value, "04-118-002");
+    const dd::doc::Cell* case_no = m.records[0].find("Case No");
+    CHECK(case_no != nullptr);
+    CHECK_EQ(case_no->value, "CE-26-0771");
+}
+
+TEST(server_counties_aggregate_cross_references) {
+    const std::string root = fresh_dir("server_counties");
+    dd::store::Store store{root};
+    dd::pipeline::Pipeline pipeline{store, test_classifier()};
+    const dd::store::Source tax =
+        store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
+    const dd::store::Source assessor = store.add_source(
+        "Millbrook Assessor", "data/fixtures/millbrook_assessor.html", "Millbrook County");
+    const dd::store::Source code = store.add_source(
+        "Millbrook Code", "data/fixtures/millbrook_code_enforcement.html", "Millbrook County");
+    const dd::store::Source other = store.add_source(
+        "Crestline", "data/fixtures/crestline_auctions.csv", "Crestline County");
+    for (const auto& s : {tax, assessor, code, other}) CHECK(pipeline.run_source(s).ok);
+
+    dd::server::Server server{store, pipeline, dd::server::Options{"127.0.0.1", 0, "web"}};
+    server.start();
+    const dd::json::Value counties =
+        dd::json::parse(http_request(server.port(), "GET", "/api/counties").body);
+    CHECK_EQ(counties.items().size(), std::size_t{2});
+    const dd::json::Value* millbrook = nullptr;
+    for (const dd::json::Value& c : counties.items()) {
+        if (c.find("jurisdiction")->as_string() == "Millbrook County") millbrook = &c;
+    }
+    CHECK(millbrook != nullptr);
+    CHECK_NEAR(millbrook->find("sources")->as_number(), 3.0, 1e-9);
+    CHECK_NEAR(millbrook->find("ok_sources")->as_number(), 3.0, 1e-9);
+    CHECK_NEAR(millbrook->find("properties")->as_number(), 6.0, 1e-9);
+    // All six parcels appear in tax and assessor; three also in code cases.
+    CHECK_NEAR(millbrook->find("corroborated")->as_number(), 6.0, 1e-9);
+    CHECK_NEAR(millbrook->find("events")->as_number(), 15.0, 1e-9);
+    CHECK(millbrook->find("avg_extraction")->as_number() > 0.9);
+    server.stop();
+}
+
 // Real government open-data endpoints. Needs a network; when the fetch fails
 // the test reports itself skipped instead of failing the suite, but a
 // successful fetch must classify and extract correctly.

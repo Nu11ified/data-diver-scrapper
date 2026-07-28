@@ -4,225 +4,185 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data Diver</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230f766e'/%3E%3Cpath d='M4 11l3-5 2 3 3-4' stroke='%23e6fffb' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230e6e5f'/%3E%3Cpath d='M4 11l3-5 2 3 3-4' stroke='%23f4f6f3' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
 <style>
   :root {
-    --bg: #0c1118; --bg-2: #0f1621;
-    --card: #131c28; --card-2: #182333;
-    --border: #223045; --border-2: #2c3d57;
-    --ink: #e9eef5; --ink-2: #a7b4c4; --ink-3: #6d7b8d;
-    --accent: #4da3ff; --accent-2: #39d0c4;
-    --ok: #3fbf7f; --bad: #ff6b5e; --warn: #e0b64c;
+    --paper: #f4f6f3; --sheet: #fcfdfb; --well: #eef1ec;
+    --ink: #1c2823; --ink-2: #55635b; --ink-3: #8b968f;
+    --rule: #dde3dc; --rule-2: #c8d1c8;
+    --teal: #0e6e5f; --teal-soft: #e2efec;
+    --stamp: #b5382e; --stamp-soft: #f6e7e5;
+    --amber: #92690f; --amber-soft: #f4ecd8;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --serif: Georgia, "Times New Roman", serif;
   }
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         -webkit-font-smoothing: antialiased; }
-  a { color: var(--ink-2); text-decoration: none; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+         font: 14px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: inherit; text-decoration: none; }
 
-  /* ------------------------------------------------------------ header --- */
-  header { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(10px);
-           background: color-mix(in srgb, var(--bg) 82%, transparent);
-           border-bottom: 1px solid var(--border);
-           display: flex; align-items: center; gap: 20px; padding: 0 26px; height: 54px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700;
-           font-size: 15px; letter-spacing: .2px; }
-  .brand svg { display: block; }
-  nav { display: flex; gap: 2px; margin-left: 8px; }
-  nav a { padding: 6px 11px; border-radius: 7px; font-size: 12.5px; color: var(--ink-2); }
-  nav a:hover { background: var(--card-2); color: var(--ink); }
+  header { position: sticky; top: 0; z-index: 20; background: var(--paper);
+           border-bottom: 1px solid var(--rule-2);
+           display: flex; align-items: center; gap: 18px; padding: 0 28px; height: 52px; }
+  .wordmark { font-family: var(--serif); font-size: 17px; font-weight: 700;
+              letter-spacing: .2px; display: flex; align-items: center; gap: 9px; }
+  nav { display: flex; gap: 2px; }
+  nav a { padding: 5px 11px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); }
+  nav a:hover { background: var(--well); color: var(--ink); }
+  nav a.on { background: var(--ink); color: var(--paper); }
   .spacer { flex: 1; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);
-          background: var(--card); border-radius: 20px; padding: 3px 11px;
-          font-size: 11.5px; color: var(--ink-2); font-variant-numeric: tabular-nums;
-          white-space: nowrap; }
-  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
-           animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  .enginepill { font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+                display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--teal);
+           animation: pulse 2.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse { animation: none; }
+    .spec-row { animation: none !important; opacity: 1 !important; }
+  }
 
-  main { max-width: 1280px; margin: 0 auto; padding: 26px 26px 80px; }
+  main { max-width: 1120px; margin: 0 auto; padding: 30px 28px 90px; }
+  h1 { font-family: var(--serif); font-size: 32px; line-height: 1.2; font-weight: 700;
+       margin: 6px 0 10px; max-width: 21em; }
+  .sub { color: var(--ink-2); font-size: 14px; max-width: 46em; margin: 0 0 26px; }
+  h2 { font-family: var(--serif); font-size: 20px; font-weight: 700; margin: 34px 0 4px; }
+  .note { color: var(--ink-3); font-size: 12px; margin: 0 0 12px; }
+  .eyebrow { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.4px;
+             color: var(--teal); font-weight: 700; }
 
-  /* ------------------------------------------------------------- tiles --- */
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-           gap: 12px; margin-bottom: 8px; }
-  .tile { background: linear-gradient(160deg, var(--card-2), var(--card));
-          border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
-          transition: border-color .15s; }
-  .tile:hover { border-color: var(--border-2); }
-  .tile .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums;
-             background: linear-gradient(90deg, var(--accent), var(--accent-2));
-             -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .tile .k { color: var(--ink-3); font-size: 11.5px; margin-top: 2px;
-             text-transform: uppercase; letter-spacing: .7px; }
+  .sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; }
+  .pad { padding: 16px 18px; }
 
-  /* ----------------------------------------------------------- section --- */
-  section { background: var(--card); border: 1px solid var(--border);
-            border-radius: 14px; padding: 18px 20px; margin-top: 18px;
-            scroll-margin-top: 70px; }
-  section > h2 { margin: 0 0 4px; font-size: 15px; font-weight: 650; }
-  section > p.lead { margin: 0 0 12px; color: var(--ink-3); font-size: 12.5px; }
+  /* stamps: how a records office marks a document */
+  .stamp { display: inline-block; font-family: var(--mono); font-size: 10.5px;
+           font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+           border: 1.5px solid var(--teal); color: var(--teal); border-radius: 4px;
+           padding: 1px 8px; background: transparent; white-space: nowrap; }
+  .stamp.bad { border-color: var(--stamp); color: var(--stamp); }
+  .stamp.warn { border-color: var(--amber); color: var(--amber); }
+  .stamp.dim { border-color: var(--rule-2); color: var(--ink-3); }
+  .stamp.tilt { transform: rotate(-.7deg); }
 
-  /* ------------------------------------------------------------ tables --- */
-  .wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--border);
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule);
            vertical-align: top; }
-  th { color: var(--ink-3); font-weight: 600; font-size: 11px; text-transform: uppercase;
-       letter-spacing: .6px; background: var(--bg-2); white-space: nowrap;
-       position: sticky; top: 0; }
-  tbody tr { transition: background .12s; }
-  tbody tr:hover { background: color-mix(in srgb, var(--card-2) 70%, transparent); }
+  th { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px;
+       color: var(--ink-3); font-weight: 700; white-space: nowrap; }
   tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--well); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-
-  /* -------------------------------------------------------- primitives --- */
-  .status { white-space: nowrap; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
-  .dot.warn { background: var(--warn); }
-  button { background: linear-gradient(180deg, #2f6fb5, #275d99); color: #fff; border: 0;
-           border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600;
-           cursor: pointer; transition: filter .12s, transform .05s; }
-  button:hover { filter: brightness(1.15); }
-  button:active { transform: translateY(1px); }
-  button:disabled { background: #33404f; color: var(--ink-3); cursor: wait; }
-  button.quiet { background: var(--card-2); color: var(--ink-2);
-                 border: 1px solid var(--border-2); font-weight: 500; }
-  button.quiet:hover { color: var(--ink); }
-  input { padding: 7px 11px; border: 1px solid var(--border-2); border-radius: 8px;
-          font-size: 12.5px; background: var(--bg-2); color: var(--ink); outline: none; }
-  input:focus { border-color: var(--accent); }
-  input::placeholder { color: var(--ink-3); }
-  input.wide { min-width: 320px; }
-  input.rounds { width: 58px; }
-  form.add { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; align-items: center; }
-  .muted { color: var(--ink-3); }
-  .small { font-size: 11.5px; }
+  .wrap { overflow-x: auto; }
   .mono { font-family: var(--mono); font-size: 11.5px; }
-  .meter { display: inline-block; width: 68px; height: 6px; background: #202b3a;
-           border-radius: 4px; vertical-align: middle; margin-left: 7px; overflow: hidden; }
-  .meter i { display: block; height: 100%; border-radius: 4px;
-             background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
-  .chip { display: inline-block; border: 1px solid var(--border-2); border-radius: 6px;
-          padding: 1px 8px; font-size: 11px; background: var(--bg-2); color: var(--ink-2);
-          margin: 2px 3px 2px 0; white-space: nowrap; font-family: var(--mono); }
-  .chip.link { background: #14324a; border-color: #1d4a6e; color: #8fc7ff; }
-  .statechip { display: inline-block; border-radius: 6px; padding: 2px 9px; font-size: 11px;
-               font-weight: 600; letter-spacing: .4px; white-space: nowrap;
-               background: var(--bg-2); border: 1px solid var(--border-2); color: var(--ink-2); }
-  .statechip.hot { background: #3a1f1d; border-color: #5c2f2b; color: #ffb0a8; }
-  .statechip.mid { background: #3a3014; border-color: #5c4c22; color: #eed491; }
-  .subcard { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
-             padding: 12px 14px; margin: 10px 0 0; }
-  #schema-panel, #detail { display: none; }
-  #notice { position: fixed; right: 18px; bottom: 18px; background: var(--card-2);
-            border: 1px solid var(--border-2); color: var(--ink); padding: 10px 16px;
-            border-radius: 10px; font-size: 12.5px; display: none; z-index: 30;
-            box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+
+  .meter { display: inline-block; width: 62px; height: 6px; background: var(--well);
+           border: 1px solid var(--rule); border-radius: 3px; vertical-align: 1px;
+           margin-left: 7px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--teal); }
+
+  button { background: var(--ink); color: var(--paper); border: 0; border-radius: 7px;
+           padding: 7px 15px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #2c3b34; }
+  button:disabled { background: var(--ink-3); cursor: wait; }
+  button.quiet { background: transparent; color: var(--ink); border: 1px solid var(--rule-2); }
+  button.quiet:hover { background: var(--well); }
+  input { padding: 7px 11px; border: 1px solid var(--rule-2); border-radius: 7px;
+          font-size: 12.5px; background: var(--sheet); color: var(--ink); outline: none; }
+  input:focus { border-color: var(--teal); }
+  input.wide { min-width: 300px; }
+  form.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+
+  /* ------------------------------------------------ translation specimen -- */
+  .specimen { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0;
+              border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
+              background: var(--sheet); }
+  .spec-col { padding: 14px 16px; }
+  .spec-col.left { background: var(--well); border-right: 1px solid var(--rule); }
+  .spec-col.right { border-left: 1px solid var(--rule); }
+  .spec-mid { display: flex; flex-direction: column; justify-content: center;
+              padding: 14px 10px; gap: 6px; }
+  .spec-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.2px;
+               color: var(--ink-3); font-weight: 700; margin-bottom: 9px; }
+  .spec-row { display: flex; justify-content: space-between; gap: 12px;
+              font-family: var(--mono); font-size: 11.5px; padding: 3px 0;
+              animation: specin .4s both; }
+  .spec-row .k { color: var(--ink-2); }
+  .spec-row .v { text-align: right; word-break: break-word; }
+  .spec-arrow { font-family: var(--mono); font-size: 10.5px; color: var(--teal);
+                white-space: nowrap; text-align: center; animation: specin .4s both; }
+  @keyframes specin { from { opacity: 0; transform: translateY(4px); } }
+  .spec-foot { border-top: 1px solid var(--rule); padding: 10px 16px; display: flex;
+               gap: 10px; align-items: center; flex-wrap: wrap; grid-column: 1 / -1;
+               background: var(--sheet); font-size: 12px; color: var(--ink-2); }
+  @media (max-width: 800px) {
+    .specimen { grid-template-columns: 1fr; }
+    .spec-col.left, .spec-col.right { border: none; border-bottom: 1px solid var(--rule); }
+    .spec-mid { display: none; }
+  }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px;
+          padding: 15px 17px; transition: border-color .15s; display: block; }
+  .card:hover { border-color: var(--rule-2); }
+  .card h3 { margin: 0 0 2px; font-size: 14.5px; }
+  .bignum { font-family: var(--serif); font-size: 30px; font-weight: 700; }
+
+  /* per-site stage list: real pipeline order, so numbering is information */
+  .stage { display: grid; grid-template-columns: 44px 1fr; gap: 0; margin-top: 14px; }
+  .stage-no { font-family: var(--serif); font-size: 19px; color: var(--ink-3);
+              border-top: 1px solid var(--rule-2); padding-top: 10px; }
+  .stage-body { border-top: 1px solid var(--rule-2); padding: 10px 0 4px; }
+  .stage-body h3 { margin: 0 0 2px; font-size: 15px; }
+  .stage-body .what { color: var(--ink-3); font-size: 12px; margin: 0 0 10px; }
+  .kv { display: flex; gap: 26px; flex-wrap: wrap; font-size: 12.5px; margin: 6px 0; }
+  .kv div span { display: block; }
+  .kv .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px;
+           color: var(--ink-3); font-weight: 700; }
+  .kv .v { font-variant-numeric: tabular-nums; }
+  .chips { line-height: 2; }
+  .chip { display: inline-block; border: 1px solid var(--rule-2); border-radius: 5px;
+          padding: 0 7px; font-size: 11px; background: var(--sheet); color: var(--ink-2);
+          margin-right: 4px; white-space: nowrap; font-family: var(--mono); }
+  .chip.hit { border-color: var(--teal); color: var(--teal); background: var(--teal-soft); }
+
+  .dist { max-width: 460px; }
+  .dist-row { display: grid; grid-template-columns: 150px 1fr 46px; gap: 10px;
+              align-items: center; font-size: 12px; padding: 2px 0; }
+  .dist-bar { height: 8px; background: var(--well); border: 1px solid var(--rule);
+              border-radius: 3px; overflow: hidden; }
+  .dist-bar i { display: block; height: 100%; background: var(--teal); }
+  .dist-row .pct { text-align: right; font-variant-numeric: tabular-nums; }
+
+  #notice { position: fixed; right: 18px; bottom: 18px; background: var(--ink);
+            color: var(--paper); padding: 10px 16px; border-radius: 9px; font-size: 12.5px;
+            display: none; z-index: 30; max-width: 420px; }
+  .backlink { font-size: 12px; color: var(--ink-2); display: inline-block; margin-bottom: 4px; }
+  .backlink:hover { color: var(--ink); }
+  .clickrow { cursor: pointer; }
 </style>
 </head>
 <body>
 <header>
-  <div class="brand">
-    <svg width="20" height="20" viewBox="0 0 16 16"><rect width="16" height="16" rx="3.5" fill="#0f766e"/><path d="M4 11l3-5 2 3 3-4" stroke="#e6fffb" stroke-width="1.6" fill="none"/></svg>
+  <a class="wordmark" href="#/">
+    <svg width="19" height="19" viewBox="0 0 16 16"><rect width="16" height="16" rx="3.5" fill="#0e6e5f"/><path d="M4 11l3-5 2 3 3-4" stroke="#f4f6f3" stroke-width="1.6" fill="none"/></svg>
     Data Diver
-  </div>
-  <nav>
-    <a href="#model">Model</a><a href="#sites">Sites</a><a href="#perf">Performance</a>
-    <a href="#runs">Runs</a><a href="#props">Properties</a><a href="#repairs">Repairs</a>
+  </a>
+  <nav id="nav">
+    <a href="#/" data-view="home">Counties</a>
+    <a href="#/properties" data-view="properties">Properties</a>
+    <a href="#/model" data-view="model">Model</a>
+    <a href="#/performance" data-view="performance">Performance</a>
   </nav>
   <div class="spacer"></div>
-  <span class="pill"><span class="pulse"></span><span id="engine-line">connecting</span></span>
+  <span class="enginepill"><span class="pulse"></span><span id="engine-line"></span></span>
 </header>
-<main>
-  <div class="tiles" id="tiles"></div>
-
-  <section id="model">
-    <h2>Classifier model</h2>
-    <p class="lead">What the engine learned to recognize. Vocabulary is ranked by lift: how much more often a token appears in a class than in the corpus.</p>
-    <div class="subcard" id="model-meta" style="margin:0 0 12px"></div>
-    <div class="wrap"><table id="model-classes">
-      <thead><tr><th>Class</th><th class="num">Examples</th><th class="num">Tokens</th>
-      <th>Learned vocabulary</th></tr></thead><tbody></tbody>
-    </table></div>
-  </section>
-
-  <section id="sites">
-    <h2>Sites</h2>
-    <p class="lead">Each site is a dialect. The engine learns its schema on first contact and heals the mapping when the site changes shape.</p>
-    <form class="add" id="add-form">
-      <input id="add-name" placeholder="Name" required>
-      <input id="add-url" class="wide" placeholder="URL or local file path" required>
-      <input id="add-jur" placeholder="Jurisdiction">
-      <button type="submit">Add site</button>
-      <button type="button" class="quiet" id="run-all">Run all</button>
-    </form>
-    <div class="wrap"><table id="sources">
-      <thead><tr>
-        <th>Name</th><th>Type</th><th>Status</th>
-        <th class="num">Records</th><th class="num">Extraction</th>
-        <th class="num">Mapping conf</th><th></th>
-      </tr></thead><tbody></tbody>
-    </table></div>
-    <div id="schema-panel" class="subcard"></div>
-  </section>
-
-  <section id="perf">
-    <h2>Speed and resources</h2>
-    <p class="lead">Per-stage wall time from a monotonic clock, bytes from the fetcher, memory from the OS. Nothing estimated.</p>
-    <div class="wrap"><table id="perf-table">
-      <thead><tr>
-        <th>Site</th><th class="num">Bytes</th>
-        <th class="num">Fetch ms</th><th class="num">Parse ms</th>
-        <th class="num">Classify ms</th><th class="num">Map ms</th><th class="num">Total ms</th>
-        <th class="num">Records/s</th><th class="num">Runs</th>
-      </tr></thead><tbody></tbody>
-    </table></div>
-    <form class="add" style="margin:12px 0 0">
-      <button type="button" id="bench">Scale test</button>
-      <label class="small muted">rounds <input class="rounds" id="bench-rounds" value="10"></label>
-      <span class="small muted">runs the full pipeline on every site N times and measures it</span>
-    </form>
-    <div id="bench-result"></div>
-  </section>
-
-  <section id="runs">
-    <h2>Runs</h2>
-    <p class="lead">Live. Every ingestion attempt lands here with its measurements; failures name the stage.</p>
-    <div class="wrap"><table id="runs-table">
-      <thead><tr>
-        <th>Started</th><th>Site</th><th>Status</th><th>Type</th>
-        <th class="num">Conf</th><th class="num">Records</th><th class="num">New events</th>
-        <th class="num">Extraction</th><th>Drift</th><th class="num">Total ms</th>
-      </tr></thead><tbody></tbody>
-    </table></div>
-  </section>
-
-  <section id="props">
-    <h2>Properties and relations</h2>
-    <p class="lead">Records from every source resolve onto jurisdiction-scoped properties; events fold into a deterministic lifecycle.</p>
-    <div class="wrap"><table id="properties">
-      <thead><tr>
-        <th>Parcel</th><th>Owner</th><th>Address</th><th>State</th>
-        <th class="num">Events</th><th class="num">Sources</th><th>Last event</th><th></th>
-      </tr></thead><tbody></tbody>
-    </table></div>
-    <div id="detail" class="subcard"></div>
-  </section>
-
-  <section id="repairs">
-    <h2>Mapping repairs</h2>
-    <p class="lead">Drift detected, replacement proposed, values revalidated. Auto-applied only above the confidence bar; otherwise queued for review.</p>
-    <div id="repairs-list"></div>
-  </section>
-</main>
+<main id="view"></main>
 <div id="notice"></div>
+
 <script>
 "use strict";
 
-const $ = (sel) => document.querySelector(sel);
+// ------------------------------------------------------------- utilities ---
+
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -232,28 +192,34 @@ function fmtBytes(n) {
   if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
   return n + " B";
 }
-function fmtMs(n) { return (Number(n) || 0).toFixed(1); }
-function fmtPct(n) { return ((Number(n) || 0) * 100).toFixed(0) + "%"; }
-function fmtTime(iso) { return iso ? iso.replace("T", " ").replace("Z", "") : ""; }
-function meter(v) {
-  const pct = Math.max(0, Math.min(100, (Number(v) || 0) * 100));
-  return '<span class="meter"><i style="width:' + pct + '%"></i></span>';
+const fmtMs = (n) => (Number(n) || 0).toFixed(1);
+const fmtPct = (n) => ((Number(n) || 0) * 100).toFixed(0) + "%";
+const fmtTime = (iso) => (iso ? iso.replace("T", " ").replace("Z", "") : "");
+const meter = (v) => '<span class="meter"><i style="width:' +
+  Math.max(0, Math.min(100, (Number(v) || 0) * 100)) + '%"></i></span>';
+
+function stamp(kind, text, tilt) {
+  const cls = { ok: "", bad: "bad", warn: "warn", dim: "dim" }[kind] || "";
+  return '<span class="stamp ' + cls + (tilt ? " tilt" : "") + '">' + esc(text) + "</span>";
 }
-function statusCell(ok, label) {
-  return '<span class="status"><span class="dot ' + (ok ? "ok" : "bad") + '"></span>' +
-         esc(label || (ok ? "ok" : "failed")) + "</span>";
+function runStamp(r) {
+  if (!r) return stamp("dim", "not run");
+  if (!r.ok) return stamp("bad", "failed: " + r.stage);
+  if (r.repair_accepted) return stamp("ok", "healed");
+  if (r.drift_detected) return stamp("warn", "review");
+  return stamp("ok", "ok");
 }
-function stateChip(state) {
-  const hot = { SOLD_AT_AUCTION: 1, AUCTION_SCHEDULED: 1, FORECLOSURE_FILED: 1 };
-  const cls = hot[state] ? "hot" : (state === "TAX_DELINQUENT" ? "mid" : "");
-  return '<span class="statechip ' + cls + '">' + esc(state) + "</span>";
+function stateStamp(s) {
+  const bad = { SOLD_AT_AUCTION: 1, AUCTION_SCHEDULED: 1, FORECLOSURE_FILED: 1 };
+  const kind = bad[s] ? "bad" : (s === "TAX_DELINQUENT" ? "warn" : "dim");
+  return stamp(kind, s);
 }
 function notify(text) {
-  const el = $("#notice");
+  const el = document.getElementById("notice");
   el.textContent = text;
   el.style.display = "block";
   clearTimeout(notify.timer);
-  notify.timer = setTimeout(() => { el.style.display = "none"; }, 4000);
+  notify.timer = setTimeout(() => { el.style.display = "none"; }, 4500);
 }
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -261,27 +227,474 @@ async function api(path, options) {
   if (!response.ok) throw new Error(body.error || response.statusText);
   return body;
 }
+async function post(path) { return api(path, { method: "POST" }); }
 
-// ------------------------------------------------------------ overview -----
+async function refreshEngine() {
+  try {
+    const o = await api("/api/overview");
+    document.getElementById("engine-line").textContent =
+      "rss " + fmtBytes(o.engine.rss_bytes) + " · cpu " +
+      (o.engine.cpu_ms / 1000).toFixed(1) + "s";
+    return o;
+  } catch (e) { return null; }
+}
 
-async function refreshOverview() {
+// ---------------------------------------------------------------- router ---
+
+const routes = {};
+let current = { name: "", arg: "" };
+
+function navigate() {
+  const hash = location.hash || "#/";
+  const parts = hash.slice(2).split("/");
+  const name = parts[0] || "home";
+  current = { name: routes[name] ? name : "home", arg: decodeURIComponent(parts[1] || "") };
+  document.querySelectorAll("#nav a").forEach((a) => {
+    const family = { site: "home", county: "home", sites: "home", property: "properties" };
+    a.classList.toggle("on", a.dataset.view === (family[current.name] || current.name));
+  });
+  render();
+}
+async function render() {
+  const view = document.getElementById("view");
+  try {
+    view.innerHTML = await routes[current.name](current.arg);
+    wire(view);
+  } catch (e) {
+    view.innerHTML = '<p class="note">could not load: ' + esc(e.message) + "</p>";
+  }
+}
+window.addEventListener("hashchange", navigate);
+
+// Buttons carry data-action attributes; one wiring pass per render.
+function wire(root) {
+  root.querySelectorAll("[data-action]").forEach((el) => {
+    el.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const was = el.textContent;
+      el.disabled = true;
+      el.textContent = el.dataset.busy || "Working";
+      try { await actions[el.dataset.action](el.dataset.arg); }
+      catch (e) { notify(e.message); }
+      el.disabled = false;
+      el.textContent = was;
+      render();
+      refreshEngine();
+    });
+  });
+  root.querySelectorAll("tr[data-href]").forEach((tr) => {
+    tr.classList.add("clickrow");
+    tr.addEventListener("click", () => { location.hash = tr.dataset.href; });
+  });
+  const form = root.querySelector("#add-form");
+  if (form) form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const s = await api("/api/sources", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: form.querySelector("#add-name").value,
+          url: form.querySelector("#add-url").value,
+          jurisdiction: form.querySelector("#add-jur").value,
+        }),
+      });
+      notify("Site added. Run it to learn its schema.");
+      location.hash = "#/site/" + s.id;
+    } catch (e) { notify("Add failed: " + e.message); }
+  });
+}
+
+const actions = {
+  run: async (id) => {
+    const r = await post("/api/run?source=" + encodeURIComponent(id));
+    notify(r.ok
+      ? "Run ok: " + r.records_extracted + " records, " + r.events_new + " new events" +
+        (r.repair_accepted ? ". Drift detected and mapping healed." : "")
+      : "Run failed at " + r.stage + ": " + r.error);
+  },
+  runall: async () => {
+    const rs = await post("/api/run_all");
+    notify(rs.filter((r) => r.ok).length + " of " + rs.length + " sites ran ok");
+  },
+  drift: async (id) => {
+    const r = await post("/api/demo/drift?source=" + encodeURIComponent(id));
+    notify(r.repair_accepted
+      ? "The page changed shape. Extraction collapsed, the engine relearned the mapping and accepted it at " +
+        fmtPct(r.mapping_confidence) + " confidence."
+      : "Drift run finished: " + (r.ok ? "ok" : r.error));
+  },
+  reset: async (id) => {
+    const r = await post("/api/demo/reset?source=" + encodeURIComponent(id));
+    notify("Original page restored." +
+      (r.repair_accepted ? " The engine healed back to the original mapping." : ""));
+  },
+  bench: async () => {
+    const rounds = parseInt(document.getElementById("bench-rounds").value, 10) || 10;
+    const b = await post("/api/benchmark?rounds=" + rounds);
+    window._bench = b;
+  },
+};
+
+// ------------------------------------------------------------- specimen ----
+
+function specimen(snap, mappingBySource) {
+  const raw = snap.raw_sample || [];
+  const canonical = (snap.records && snap.records[0]) || {};
+  const pairs = (snap.mapping && snap.mapping.fields) || [];
+  let delay = 0;
+  const style = () => ' style="animation-delay:' + (delay += 60) + 'ms"';
+
+  const left = raw.map((c) =>
+    '<div class="spec-row"' + style() + '><span class="k">' + esc(c.label) +
+    '</span><span class="v">' + esc(c.value) + "</span></div>").join("");
+  delay = 0;
+  const mid = pairs.map((f) =>
+    '<div class="spec-arrow"' + style() + '>' + fmtPct(f.confidence) + " &rarr;</div>").join("");
+  delay = 0;
+  const right = Object.entries(canonical).filter(([k]) => k !== "_completeness").map(([k, v]) =>
+    '<div class="spec-row"' + style() + '><span class="k">' + esc(k) +
+    '</span><span class="v">' + esc(v) + "</span></div>").join("");
+
+  return '<div class="specimen">' +
+    '<div class="spec-col left"><div class="spec-head">What the source publishes</div>' + left + "</div>" +
+    '<div class="spec-mid">' + mid + "</div>" +
+    '<div class="spec-col right"><div class="spec-head">Canonical record</div>' + right + "</div>" +
+    '<div class="spec-foot">' +
+    stamp("ok", snap.classification.label + " " + fmtPct(snap.classification.confidence), true) +
+    "<span>classified by the model, mapped field by field, values validated. " +
+    "One record from the latest run of <strong>" + esc(mappingBySource) + "</strong>.</span></div>" +
+    "</div>";
+}
+
+// ----------------------------------------------------------------- views ---
+
+const slugify = (s) => (s.toLowerCase().match(/[a-z0-9]+/g) || []).join("_");
+
+routes.home = async () => {
+  const [o, counties, sources, modelInfo, repairs] = await Promise.all([
+    api("/api/overview"), api("/api/counties"), api("/api/sources"),
+    api("/api/model"), api("/api/repairs")]);
+
+  const cards = counties.map((c) => {
+    const live = sources.some((s) => s.jurisdiction === c.jurisdiction && s.url.startsWith("http"));
+    return '<a class="card" href="#/county/' + esc(c.slug) + '">' +
+      "<h3>" + esc(c.jurisdiction) + "</h3>" +
+      '<div class="note" style="margin:0 0 8px">' + c.sources +
+      (c.sources === 1 ? " source" : " sources") +
+      (live ? " &middot; live endpoint" : "") + "</div>" +
+      "<div>" +
+      (c.ok_sources === c.sources && c.sources > 0
+        ? stamp("ok", "all sources ok")
+        : stamp(c.ok_sources > 0 ? "warn" : "dim", c.ok_sources + "/" + c.sources + " ingested")) +
+      (c.corroborated > 0 ? " " + stamp("ok", c.corroborated + " cross-referenced") : "") +
+      (c.repairs > 0 ? " " + stamp("warn", c.repairs + (c.repairs === 1 ? " repair" : " repairs")) : "") +
+      "</div>" +
+      '<div class="note" style="margin:8px 0 0">' +
+      (c.properties > 0
+        ? c.properties + " properties &middot; " + c.events + " events &middot; extraction " +
+          fmtPct(c.avg_extraction) + meter(c.avg_extraction)
+        : "not ingested yet") + "</div>" +
+      (c.last_run_at ? '<div class="note" style="margin:4px 0 0">last ingest ' +
+        fmtTime(c.last_run_at) + "</div>" : "") +
+      "</a>";
+  }).join("");
+
+  const lastRepair = repairs[0];
+  return (
+    '<span class="eyebrow">Public-record ingestion engine</span>' +
+    "<h1>Counties</h1>" +
+    '<p class="sub">One county, many sites, one schema. Paste a county source below: the engine ' +
+    "fetches the real bytes, classifies the record type, learns the field mapping with validated " +
+    "evidence, and keeps it healed when the site changes shape.</p>" +
+    '<form class="row" id="add-form">' +
+    '<input id="add-jur" placeholder="County (e.g. Travis County TX)" required>' +
+    '<input id="add-name" placeholder="Source name" required>' +
+    '<input id="add-url" class="wide" placeholder="https://... or a local file path" required>' +
+    "<button type=\"submit\">Add source</button>" +
+    '<button type="button" class="quiet" data-action="runall" data-busy="Ingesting">Ingest everything</button>' +
+    "</form>" +
+    '<div class="cards">' + cards + "</div>" +
+    "<h2>Why trust it</h2>" +
+    '<div class="cards">' +
+    '<a class="card" href="#/model"><span class="eyebrow">Held-out accuracy</span>' +
+    '<div class="bignum">' + fmtPct(modelInfo.leave_one_out_accuracy) + "</div>" +
+    '<p class="note" style="margin:0">leave-one-out over ' + modelInfo.examples +
+    " labeled documents. The model page shows the vocabulary it learned.</p></a>" +
+    '<a class="card" href="#/properties"><span class="eyebrow">Cross-referencing</span>' +
+    '<div class="bignum">' + counties.reduce((a, c) => a + c.corroborated, 0) + "</div>" +
+    '<p class="note" style="margin:0">properties corroborated by two or more independent sources ' +
+    "in the same county.</p></a>" +
+    '<a class="card" href="' + (lastRepair ? "#/site/" + lastRepair.source_id : "#/") + '">' +
+    '<span class="eyebrow">Self-healing</span>' +
+    '<div class="bignum">' + (lastRepair ? fmtPct(lastRepair.after_rate) : "&mdash;") + "</div>" +
+    '<p class="note" style="margin:0">' + (lastRepair
+      ? "extraction after the last site redesign; the repair was validated and accepted at " +
+        fmtPct(lastRepair.confidence) + " confidence."
+      : "no drift yet. Open the Millbrook tax roll and use the demo controls to redesign the page.") +
+    "</p></a></div>" +
+    '<p class="note" style="margin-top:14px">' + o.totals.runs + " runs &middot; " +
+    o.totals.events + " events &middot; " + o.totals.properties + " properties &middot; " +
+    o.totals.repairs + " repairs recorded</p>");
+};
+
+routes.sites = async () => routes.home();
+
+routes.county = async (slug) => {
+  const [counties, sources, props, repairs] = await Promise.all([
+    api("/api/counties"), api("/api/sources"), api("/api/properties"), api("/api/repairs")]);
+  const county = counties.find((c) => c.slug === slug);
+  if (!county) return '<p class="note">Unknown county.</p>';
+  const members = sources.filter((s) => s.jurisdiction === county.jurisdiction);
+  const mine = props.filter((p) => p.key.startsWith(slug + "|"));
+  const my_ids = new Set(members.map((s) => s.id));
+  const my_repairs = repairs.filter((r) => my_ids.has(r.source_id));
+
+  const site_cards = members.map((s) => {
+    const last = s.last_run;
+    return '<a class="card" href="#/site/' + esc(s.id) + '">' +
+      "<h3>" + esc(s.name) + "</h3>" +
+      '<div class="mono note" style="margin:0 0 8px;word-break:break-all">' + esc(s.url) + "</div>" +
+      "<div>" + runStamp(last) + " " +
+      (s.classification ? stamp("dim", s.classification) : "") +
+      (s.demo ? " " + stamp("dim", "drift demo") : "") + "</div>" +
+      (last && last.ok
+        ? '<div class="note" style="margin:8px 0 0">' + last.records_extracted +
+          " records &middot; extraction " + fmtPct(last.extraction_rate) + " &middot; " +
+          fmtBytes(last.bytes) + " in " + fmtMs(last.total_ms) + " ms</div>"
+        : '<div class="note" style="margin:8px 0 0">not ingested yet</div>') +
+      "</a>";
+  }).join("");
+
+  const prop_rows = mine.map((p) =>
+    '<tr data-href="#/property/' + encodeURIComponent(p.key) + '">' +
+    '<td class="mono">' + esc(p.parcel_id) + "</td>" +
+    "<td>" + esc(p.owner) + "</td><td>" + esc(p.address) + "</td>" +
+    "<td>" + stateStamp(p.state) + "</td>" +
+    '<td class="num">' + p.events + "</td>" +
+    '<td class="num">' + (p.sources > 1 ? stamp("ok", p.sources + " sources") : p.sources) +
+    "</td><td>" + esc(p.last_event_date) + "</td></tr>").join("");
+
+  return (
+    '<a class="backlink" href="#/">&larr; all counties</a>' +
+    '<h2 style="margin:0 0 2px">' + esc(county.jurisdiction) + "</h2>" +
+    '<p class="note">' + county.sources + " sources &middot; " + county.properties +
+    " properties &middot; " + county.events + " events &middot; " + county.corroborated +
+    " properties corroborated by multiple sources</p>" +
+    '<div class="cards" style="margin-top:10px">' + site_cards + "</div>" +
+    "<h2>Properties in this county</h2>" +
+    '<p class="note">Every source in the county resolves onto the same property keys, so two feeds ' +
+    "describing one parcel become one property with corroborating events.</p>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Parcel</th><th>Owner</th><th>Address</th>' +
+    '<th>State</th><th class="num">Events</th><th class="num">Sources</th><th>Last event</th>' +
+    "</tr></thead><tbody>" + (prop_rows ||
+      '<tr><td colspan="7" class="note">nothing ingested yet</td></tr>') + "</tbody></table></div>" +
+    (my_repairs.length ? "<h2>Repairs in this county</h2>" + my_repairs.map((r) =>
+      '<div class="sheet pad" style="margin-bottom:10px">' +
+      stamp(r.accepted ? "ok" : "warn", r.accepted ? "auto accepted" : "queued for review") +
+      ' <span class="note">' + fmtTime(r.at) + " &middot; " + esc(r.source_id) + "</span>" +
+      '<div class="note" style="margin:5px 0 0">' + esc(r.reason) + "</div></div>").join("") : ""));
+};
+
+routes.site = async (id) => {
+  const [detail, sources, runs, repairs] = await Promise.all([
+    api("/api/schema?source=" + encodeURIComponent(id)),
+    api("/api/sources"),
+    api("/api/runs?source=" + encodeURIComponent(id) + "&limit=12"),
+    api("/api/repairs?source=" + encodeURIComponent(id))]);
+  const source = sources.find((s) => s.id === id);
+  if (!source) return '<p class="note">Unknown site.</p>';
+  const last = source.last_run;
+  const snap = detail.snapshot;
+
+  const head =
+    '<a class="backlink" href="#/county/' + esc(slugify(source.jurisdiction)) +
+    '">&larr; ' + esc(source.jurisdiction) + "</a>" +
+    "<h2 style=\"margin:0 0 2px\">" + esc(source.name) + "</h2>" +
+    '<div class="note" style="margin-bottom:2px">' + esc(source.jurisdiction) +
+    " &middot; <span class=\"mono\">" + esc(source.url) + "</span></div>" +
+    '<form class="row">' +
+    '<button data-action="run" data-arg="' + esc(id) + '" data-busy="Running">Run now</button>' +
+    (source.demo
+      ? '<button class="quiet" data-action="drift" data-arg="' + esc(id) +
+        '" data-busy="Changing the page">Demo: change the page shape</button>' +
+        '<button class="quiet" data-action="reset" data-arg="' + esc(id) +
+        '" data-busy="Restoring">Demo: restore original page</button>'
+      : "") +
+    "</form>";
+
+  if (!last) {
+    return head + '<div class="sheet pad"><p class="note" style="margin:0">' +
+      "This site has not been ingested. Run it to fetch the real bytes and learn its schema.</p></div>";
+  }
+
+  // Stage 1: fetch
+  let out = head + '<div class="stage"><div class="stage-no">1</div><div class="stage-body">' +
+    "<h3>Fetch " + runStamp(last.ok || last.stage !== "fetch" ? { ok: true } : last) + "</h3>" +
+    '<p class="what">Real bytes over ' + (source.url.startsWith("http") ? "https" : "the filesystem") + ".</p>" +
+    '<div class="kv">' +
+    '<div><span class="k">bytes</span><span class="v">' + fmtBytes(last.bytes) + "</span></div>" +
+    '<div><span class="k">transfer</span><span class="v">' + fmtMs(last.fetch_ms) + " ms</span></div>" +
+    '<div><span class="k">parse</span><span class="v">' + fmtMs(last.parse_ms) + " ms</span></div>" +
+    '<div><span class="k">format</span><span class="v">' + esc(last.format) + "</span></div>" +
+    '<div><span class="k">last run</span><span class="v">' + fmtTime(last.started_at) + "</span></div>" +
+    "</div></div></div>";
+
+  if (!last.ok && last.stage === "fetch") {
+    return out + '<div class="sheet pad" style="margin-top:12px">' + stamp("bad", "fetch failed") +
+      ' <span class="note">' + esc(last.error) + "</span></div>";
+  }
+
+  // Stage 2: classify
+  if (snap && snap.classification) {
+    const dist = snap.classification.distribution.map((d) =>
+      '<div class="dist-row"><span class="mono">' + esc(d.label) + "</span>" +
+      '<span class="dist-bar"><i style="width:' + (d.probability * 100) + '%"></i></span>' +
+      '<span class="pct">' + fmtPct(d.probability) + "</span></div>").join("");
+    out += '<div class="stage"><div class="stage-no">2</div><div class="stage-body">' +
+      "<h3>Classify " + stamp("ok", snap.classification.label) + "</h3>" +
+      '<p class="what">The trained model reads the document and produces a posterior over record types.</p>' +
+      '<div class="dist">' + dist + "</div></div></div>";
+  }
+
+  // Stage 3: match
+  if (snap && snap.mapping) {
+    const mapped = new Set(snap.mapping.fields.map((f) => f.source_label));
+    const rows = snap.mapping.fields.map((f) => {
+      const rate = (snap.field_rates || {})[f.field];
+      return "<tr>" +
+        '<td class="mono">' + esc(f.field) + "</td>" +
+        '<td class="mono">' + esc(f.source_label) + "</td>" +
+        '<td class="num">' + fmtPct(f.label_similarity) + meter(f.label_similarity) + "</td>" +
+        '<td class="num">' + fmtPct(f.value_pass_rate) + meter(f.value_pass_rate) + "</td>" +
+        '<td class="num">' + fmtPct(f.confidence) + meter(f.confidence) + "</td>" +
+        '<td class="num">' + (rate == null ? "" : fmtPct(rate) + meter(rate)) + "</td></tr>";
+    }).join("");
+    out += '<div class="stage"><div class="stage-no">3</div><div class="stage-body">' +
+      "<h3>Match " + stamp("ok", fmtPct(snap.mapping.confidence) + " confidence") + "</h3>" +
+      '<p class="what">Source labels are scored against the field lexicon; their values are run through ' +
+      "validators. Both scores are shown, nothing is a constant.</p>" +
+      '<div class="chips" style="margin-bottom:8px">' +
+      (snap.labels || []).map((l) =>
+        '<span class="chip' + (mapped.has(l) ? " hit" : "") + '">' + esc(l) + "</span>").join("") +
+      '</div><p class="note">highlighted labels matched a canonical field; the rest carried no usable signal</p>' +
+      '<div class="wrap sheet"><table><thead><tr><th>Canonical</th><th>Source label</th>' +
+      '<th class="num">Label similarity</th><th class="num">Values valid</th>' +
+      '<th class="num">Confidence</th><th class="num">Live rate</th></tr></thead><tbody>' +
+      rows + "</tbody></table></div></div></div>";
+  }
+
+  // Stage 4: extract
+  if (snap && snap.records && snap.records.length) {
+    const fields = Object.keys(snap.records[0]).filter((k) => k !== "_completeness");
+    const head_cells = fields.map((f) => "<th>" + esc(f) + "</th>").join("");
+    const rows = snap.records.slice(0, 12).map((r) =>
+      "<tr>" + fields.map((f) => '<td class="mono">' + esc(r[f] || "") + "</td>").join("") + "</tr>"
+    ).join("");
+    out += '<div class="stage"><div class="stage-no">4</div><div class="stage-body">' +
+      "<h3>Extract " + stamp("ok", last.records_extracted + " records at " +
+        fmtPct(last.extraction_rate)) + "</h3>" +
+      '<p class="what">Normalized canonical records; money as decimals, dates as ISO. ' +
+      "Showing " + Math.min(12, snap.records.length) + " of " + snap.records.length + ".</p>" +
+      '<div class="wrap sheet"><table><thead><tr>' + head_cells + "</tr></thead><tbody>" +
+      rows + "</tbody></table></div></div></div>";
+  }
+
+  // History and repairs
+  out += "<h2>Run history</h2>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Started</th><th>Result</th>' +
+    '<th class="num">Records</th><th class="num">New events</th><th class="num">Extraction</th>' +
+    '<th class="num">Bytes</th><th class="num">Total ms</th></tr></thead><tbody>' +
+    runs.map((r) => "<tr><td>" + fmtTime(r.started_at) + "</td><td>" + runStamp(r) +
+      (r.error ? ' <span class="note">' + esc(r.error) + "</span>" : "") + "</td>" +
+      '<td class="num">' + r.records_extracted + '</td><td class="num">' + r.events_new +
+      '</td><td class="num">' + fmtPct(r.extraction_rate) + '</td><td class="num">' +
+      fmtBytes(r.bytes) + '</td><td class="num">' + fmtMs(r.total_ms) + "</td></tr>").join("") +
+    "</tbody></table></div>";
+
+  if (repairs.length) {
+    out += "<h2>Repair ledger</h2>" + repairs.map((r) =>
+      '<div class="sheet pad" style="margin-bottom:10px">' +
+      stamp(r.accepted ? "ok" : "warn", r.accepted ? "auto accepted" : "queued for review", true) +
+      ' <span class="note">' + fmtTime(r.at) + "</span>" +
+      '<div class="note" style="margin:6px 0 2px">' + esc(r.reason) + "</div>" +
+      '<div style="font-size:12.5px">extraction ' + fmtPct(r.before_rate) + " &rarr; " +
+      fmtPct(r.after_rate) + " &middot; repair confidence " + fmtPct(r.confidence) + "</div>" +
+      '<ul class="mono" style="margin:6px 0 0;padding-left:18px">' +
+      r.changes.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul></div>").join("");
+  }
+  return out;
+};
+
+routes.properties = async () => {
+  const props = await api("/api/properties");
+  const linked = props.filter((p) => p.sources > 1).length;
+  const rows = props.map((p) =>
+    '<tr data-href="#/property/' + encodeURIComponent(p.key) + '">' +
+    '<td class="mono">' + esc(p.parcel_id) + "</td>" +
+    "<td>" + esc(p.owner) + "</td><td>" + esc(p.address) + "</td>" +
+    "<td>" + stateStamp(p.state) + "</td>" +
+    '<td class="num">' + p.events + "</td>" +
+    '<td class="num">' + (p.sources > 1 ? stamp("ok", p.sources + " sources") : p.sources) + "</td>" +
+    "<td>" + esc(p.last_event_date) + "</td></tr>").join("");
+  return (
+    "<h2 style=\"margin-top:6px\">Properties</h2>" +
+    '<p class="note">Records from every source resolve onto one property per jurisdiction. ' +
+    (linked ? linked + " properties are corroborated by more than one source." :
+      "Run the two Millbrook sources to watch two feeds land on the same parcels.") + "</p>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Parcel</th><th>Owner</th><th>Address</th>' +
+    '<th>State</th><th class="num">Events</th><th class="num">Sources</th><th>Last event</th>' +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>");
+};
+
+routes.property = async (key) => {
+  const p = await api("/api/property?key=" + encodeURIComponent(key));
+  const chain = p.transitions.map((t) =>
+    stateStamp(t.state) + ' <span class="note">' + esc(t.event_date || "") + "</span>"
+  ).join(' <span class="note">&rarr;</span> ') || '<span class="note">no state changes</span>';
+  const rows = p.events.map((e) =>
+    "<tr><td>" + esc(e.event_date || "") + '</td><td class="mono">' + esc(e.kind) + "</td>" +
+    "<td>" + esc(e.source_id) + '</td><td class="num">' + fmtPct(e.confidence) + "</td>" +
+    '<td class="mono">' + Object.entries(e.details).map(([k, v]) => esc(k) + ": " + esc(v)).join(", ") +
+    "</td></tr>").join("");
+  return (
+    '<a class="backlink" href="#/properties">&larr; all properties</a>' +
+    '<h2 style="margin:0 0 6px">Property <span class="mono">' + esc(p.key) + "</span></h2>" +
+    '<div style="margin:8px 0 14px">' + chain +
+    ' <span class="note">&rarr; now</span> ' + stateStamp(p.state) + "</div>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Date</th><th>Event</th><th>Source</th>' +
+    '<th class="num">Model conf</th><th>Canonical record</th></tr></thead><tbody>' +
+    rows + "</tbody></table></div>");
+};
+
+routes.model = async () => {
+  const m = await api("/api/model");
+  const rows = m.classes.map((c) =>
+    '<tr><td class="mono">' + esc(c.name) + '</td><td class="num">' + c.documents +
+    '</td><td class="num">' + c.tokens + "</td><td>" +
+    c.top_tokens.map((t) => '<span class="chip" title="count ' + t.count + ", lift " +
+      t.lift.toFixed(1) + '">' + esc(t.token) + "</span>").join("") + "</td></tr>").join("");
+  return (
+    "<h2 style=\"margin-top:6px\">The model</h2>" +
+    '<p class="note">' + esc(m.kind) + ", trained " + fmtTime(m.trained_at) +
+    " UTC on " + m.examples + " labeled county documents, " + m.vocabulary + " token vocabulary. " +
+    "Leave-one-out accuracy <strong>" + fmtPct(m.leave_one_out_accuracy) +
+    "</strong>: every document classified by a model trained on the other " + (m.examples - 1) + ".</p>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Record type</th><th class="num">Examples</th>' +
+    '<th class="num">Tokens</th><th>Discriminative vocabulary (by lift over corpus frequency)</th>' +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+    '<p class="note" style="margin-top:10px">Prefixes mark where a token was seen: label: in a column ' +
+    "or field name, title:/h: in the page title or headings, plain tokens in body text. " +
+    "Retrain with <span class=\"mono\">./build/dd_train</span>; it refuses to save below 85% held-out accuracy.</p>");
+};
+
+routes.performance = async () => {
   const o = await api("/api/overview");
-  $("#engine-line").textContent =
-    "rss " + fmtBytes(o.engine.rss_bytes) +
-    " · cpu " + (o.engine.cpu_ms / 1000).toFixed(1) + "s · " +
-    o.engine.now.replace("T", " ").replace("Z", " UTC");
-
-  const t = o.totals;
-  window._tiles = { Sites: t.sources, Runs: t.runs, Events: t.events,
-                    Properties: t.properties, Repairs: t.repairs };
-  drawTiles();
-
-  $("#perf-table tbody").innerHTML = o.per_source.map((s) => {
+  const rows = o.per_source.map((s) => {
     const last = s.last_run;
     const rps = last && last.total_ms > 0
       ? Math.round(last.records_extracted * 1000 / last.total_ms) : "";
-    return "<tr>" +
-      "<td>" + esc(s.name) + "</td>" +
+    return "<tr><td>" + esc(s.name) + "</td>" +
       '<td class="num">' + (last ? fmtBytes(last.bytes) : "") + "</td>" +
       '<td class="num">' + (last ? fmtMs(last.fetch_ms) : "") + "</td>" +
       '<td class="num">' + (last ? fmtMs(last.parse_ms) : "") + "</td>" +
@@ -289,300 +702,38 @@ async function refreshOverview() {
       '<td class="num">' + (last ? fmtMs(last.map_ms) : "") + "</td>" +
       '<td class="num">' + (last ? fmtMs(last.total_ms) : "") + "</td>" +
       '<td class="num">' + rps + "</td>" +
-      '<td class="num">' + s.runs + "</td>" +
-      "</tr>";
-  }).join("") || '<tr><td colspan="9" class="muted">no runs yet</td></tr>';
-}
-
-function drawTiles() {
-  const tiles = Object.assign({}, window._tiles || {});
-  if (window._linked != null) tiles["Cross-source links"] = window._linked;
-  $("#tiles").innerHTML = Object.entries(tiles).map(([k, v]) =>
-    '<div class="tile"><div class="v">' + v + '</div><div class="k">' + esc(k) + "</div></div>"
-  ).join("");
-}
-
-// --------------------------------------------------------------- model -----
-
-async function refreshModel() {
-  const m = await api("/api/model");
-  $("#model-meta").innerHTML =
-    "<strong>" + esc(m.kind) + "</strong>" +
-    '<span class="small muted"> · trained ' + fmtTime(m.trained_at) + " UTC</span>" +
-    '<div class="small" style="margin-top:5px">' +
-    m.examples + " labeled documents · " + m.vocabulary + " token vocabulary · " +
-    "holdout accuracy (leave-one-out) <strong>" + fmtPct(m.leave_one_out_accuracy) +
-    "</strong>" + meter(m.leave_one_out_accuracy) + "</div>";
-  $("#model-classes tbody").innerHTML = m.classes.map((c) =>
-    "<tr>" +
-    '<td class="mono">' + esc(c.name) + "</td>" +
-    '<td class="num">' + c.documents + "</td>" +
-    '<td class="num">' + c.tokens + "</td>" +
-    "<td>" + c.top_tokens.map((t) =>
-      '<span class="chip" title="count ' + t.count + ', lift ' + t.lift.toFixed(1) + '">' +
-      esc(t.token) + "</span>").join("") + "</td>" +
-    "</tr>"
-  ).join("");
-}
-
-// ------------------------------------------------------------- sources -----
-
-async function refreshSources() {
-  const sources = await api("/api/sources");
-  $("#sources tbody").innerHTML = sources.map((s) => {
-    const last = s.last_run;
-    return "<tr>" +
-      "<td>" + esc(s.name) + '<div class="mono muted">' + esc(s.url) + "</div></td>" +
-      '<td class="mono">' + (s.classification ? esc(s.classification) : '<span class="muted">unrun</span>') + "</td>" +
-      "<td>" + (last ? statusCell(last.ok, last.ok ? "ok" : last.stage) : "") + "</td>" +
-      '<td class="num">' + (last ? last.records_extracted : "") + "</td>" +
-      '<td class="num">' + (last ? fmtPct(last.extraction_rate) + meter(last.extraction_rate) : "") + "</td>" +
-      '<td class="num">' + (s.has_mapping ? fmtPct(s.mapping_confidence) + meter(s.mapping_confidence) : "") + "</td>" +
-      '<td style="white-space:nowrap"><button data-run="' + esc(s.id) + '">Run</button> ' +
-      '<button class="quiet" data-schema="' + esc(s.id) + '">Schema</button></td>' +
-      "</tr>";
-  }).join("") || '<tr><td colspan="7" class="muted">no sites</td></tr>';
-
-  document.querySelectorAll("#sources button[data-run]").forEach((btn) =>
-    btn.addEventListener("click", () => runSource(btn.dataset.run, btn)));
-  document.querySelectorAll("#sources button[data-schema]").forEach((btn) =>
-    btn.addEventListener("click", () => showSchema(btn.dataset.schema)));
-}
-
-// ------------------------------------------------------ schema matching ----
-
-async function showSchema(id) {
-  const s = await api("/api/schema?source=" + encodeURIComponent(id));
-  const panel = $("#schema-panel");
-  panel.style.display = "block";
-  if (!s.snapshot) {
-    panel.innerHTML = "<strong>" + esc(s.name) + "</strong>" +
-      '<div class="muted small">no runs yet; run the site to learn its schema</div>';
-    return;
-  }
-  const snap = s.snapshot;
-  const mapping = snap.mapping || { fields: [] };
-  const mapped = new Set(mapping.fields.map((f) => f.source_label));
-  const unmapped = (snap.labels || []).filter((l) => !mapped.has(l));
-
-  const rows = mapping.fields.map((f) => {
-    const rate = (snap.field_rates || {})[f.field];
-    return "<tr>" +
-      '<td class="mono">' + esc(f.field) + "</td>" +
-      '<td class="mono">' + esc(f.source_label) + "</td>" +
-      '<td class="num">' + fmtPct(f.label_similarity) + meter(f.label_similarity) + "</td>" +
-      '<td class="num">' + fmtPct(f.value_pass_rate) + meter(f.value_pass_rate) + "</td>" +
-      '<td class="num">' + fmtPct(f.confidence) + meter(f.confidence) + "</td>" +
-      '<td class="num">' + (rate == null ? "" : fmtPct(rate) + meter(rate)) + "</td>" +
-      "</tr>";
+      '<td class="num">' + s.runs + "</td></tr>";
   }).join("");
+  const b = window._bench;
+  return (
+    "<h2 style=\"margin-top:6px\">Speed and resources</h2>" +
+    '<p class="note">Per-stage wall time from a monotonic clock, bytes from the fetcher, memory from ' +
+    "the OS. Engine now: rss " + fmtBytes(o.engine.rss_bytes) + ", peak " +
+    fmtBytes(o.engine.peak_rss_bytes) + ", cpu " + (o.engine.cpu_ms / 1000).toFixed(1) + "s.</p>" +
+    '<div class="wrap sheet"><table><thead><tr><th>Site</th><th class="num">Bytes</th>' +
+    '<th class="num">Fetch</th><th class="num">Parse</th><th class="num">Classify</th>' +
+    '<th class="num">Map</th><th class="num">Total ms</th><th class="num">Records/s</th>' +
+    '<th class="num">Runs</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+    "<h2>Scale</h2>" +
+    '<p class="note">The scale test is not a simulation: it runs the full pipeline on every local site N times ' +
+    "and reports the measurements. Live government endpoints sit out so they are never hammered. Duplicate events are absorbed by content ids, which is the same " +
+    "mechanism that makes scheduled re-ingestion cheap.</p>" +
+    '<form class="row"><button data-action="bench" data-busy="Measuring">Run scale test</button>' +
+    '<label class="note">rounds <input id="bench-rounds" value="10" style="width:56px"></label></form>' +
+    (b ? '<div class="sheet pad"><strong>Measured:</strong> ' + b.runs +
+      " full pipeline runs in " + (b.total_ms / 1000).toFixed(2) + "s &middot; <strong>" +
+      Math.round(b.runs_per_sec) + " runs/s</strong> &middot; <strong>" +
+      Math.round(b.records_per_sec) + " records/s</strong> &middot; " +
+      fmtBytes(b.bytes_processed) + " processed &middot; cpu " + (b.cpu_ms / 1000).toFixed(2) +
+      "s &middot; rss " + fmtBytes(b.rss_before_bytes) + " &rarr; " + fmtBytes(b.rss_after_bytes) +
+      " &middot; " + b.events_new + " new events</div>" : ""));
+};
 
-  const dist = (snap.classification.distribution || []).slice(0, 4).map((d) =>
-    '<span class="chip">' + esc(d.label) + " " + fmtPct(d.probability) + "</span>").join(" ");
+// ------------------------------------------------------------- lifecycle ---
 
-  panel.innerHTML =
-    "<strong>" + esc(s.name) + "</strong> " +
-    '<span class="small muted">' + esc(snap.format) + " · container " +
-    '<span class="mono">' + esc(snap.container) + "</span> · fingerprint " +
-    '<span class="mono">' + esc(snap.fingerprint).slice(0, 12) + "</span> · " +
-    "baseline " + fmtPct(s.baseline_rate) + " over " + s.good_runs + " good runs</span>" +
-    '<div style="margin:8px 0" class="small">Classifier posterior: ' + dist + "</div>" +
-    '<div class="small muted" style="margin:6px 0">Labels found in the document: ' +
-    (snap.labels || []).map((l) => '<span class="chip">' + esc(l) + "</span>").join("") + "</div>" +
-    '<div class="wrap" style="margin-top:8px"><table><thead><tr>' +
-    "<th>Canonical field</th><th>Matched label</th>" +
-    '<th class="num">Label similarity</th><th class="num">Value pass rate</th>' +
-    '<th class="num">Confidence</th><th class="num">Extraction rate</th>' +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
-    (unmapped.length
-      ? '<div class="small muted" style="margin-top:8px">Unmapped labels: ' +
-        unmapped.map((l) => '<span class="chip">' + esc(l) + "</span>").join("") + "</div>"
-      : "");
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-// ---------------------------------------------------------------- runs -----
-
-async function refreshRuns() {
-  const runs = await api("/api/runs?limit=20");
-  $("#runs-table tbody").innerHTML = runs.map((r) =>
-    "<tr>" +
-    "<td>" + fmtTime(r.started_at) + "</td>" +
-    "<td>" + esc(r.source_id) + "</td>" +
-    "<td>" + statusCell(r.ok) +
-      (r.error ? ' <span class="muted small">' + esc(r.stage + ": " + r.error) + "</span>" : "") + "</td>" +
-    '<td class="mono">' + esc(r.classification) + "</td>" +
-    '<td class="num">' + fmtPct(r.class_confidence) + "</td>" +
-    '<td class="num">' + r.records_extracted + "</td>" +
-    '<td class="num">' + r.events_new + "</td>" +
-    '<td class="num">' + fmtPct(r.extraction_rate) + "</td>" +
-    "<td>" + (r.drift_detected
-      ? (r.repair_accepted ? statusCell(true, "healed")
-         : '<span class="status"><span class="dot warn"></span>review</span>')
-      : "") + "</td>" +
-    '<td class="num">' + fmtMs(r.total_ms) + "</td>" +
-    "</tr>"
-  ).join("") || '<tr><td colspan="10" class="muted">no runs</td></tr>';
-}
-
-// ---------------------------------------------------------- properties -----
-
-async function refreshProperties() {
-  const props = await api("/api/properties");
-  window._linked = props.filter((p) => p.sources > 1).length;
-  drawTiles();
-  $("#properties tbody").innerHTML = props.map((p) =>
-    "<tr>" +
-    '<td class="mono">' + esc(p.parcel_id) + "</td>" +
-    "<td>" + esc(p.owner) + "</td>" +
-    "<td>" + esc(p.address) + "</td>" +
-    "<td>" + stateChip(p.state) + "</td>" +
-    '<td class="num">' + p.events + "</td>" +
-    '<td class="num">' + (p.sources > 1
-      ? '<span class="chip link">' + p.sources + " sources</span>" : p.sources) + "</td>" +
-    "<td>" + esc(p.last_event_date) + "</td>" +
-    '<td><button class="quiet" data-key="' + esc(p.key) + '">History</button></td>' +
-    "</tr>"
-  ).join("") || '<tr><td colspan="8" class="muted">run a site to resolve properties</td></tr>';
-
-  document.querySelectorAll("#properties button[data-key]").forEach((btn) =>
-    btn.addEventListener("click", () => showProperty(btn.dataset.key)));
-}
-
-async function showProperty(key) {
-  const p = await api("/api/property?key=" + encodeURIComponent(key));
-  const events = p.events.map((e) => {
-    const details = Object.entries(e.details)
-      .map(([k, v]) => esc(k) + ": " + esc(v)).join(", ");
-    return "<tr>" +
-      "<td>" + esc(e.event_date || "") + "</td>" +
-      '<td class="mono">' + esc(e.kind) + "</td>" +
-      "<td>" + esc(e.source_id) + "</td>" +
-      '<td class="num">' + fmtPct(e.confidence) + "</td>" +
-      '<td class="small">' + details + "</td>" +
-      "</tr>";
-  }).join("");
-  const transitions = p.transitions.map((t) =>
-    stateChip(t.state) + '<span class="small muted"> ' + esc(t.event_date || "") + "</span>"
-  ).join(' <span class="muted">&rarr;</span> ') || '<span class="muted small">none</span>';
-
-  const detail = $("#detail");
-  detail.style.display = "block";
-  detail.innerHTML =
-    '<strong>Property</strong> <span class="mono">' + esc(p.key) + "</span>" +
-    '<div style="margin:8px 0" class="small">Lifecycle: ' + transitions +
-    ' <span class="muted">&rarr; now</span> ' + stateChip(p.state) + "</div>" +
-    '<div class="wrap"><table><thead><tr><th>Date</th><th>Event</th><th>Source</th>' +
-    '<th class="num">Model conf</th><th>Canonical record</th></tr></thead>' +
-    "<tbody>" + events + "</tbody></table></div>";
-  detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-// -------------------------------------------------------------- repairs ----
-
-async function refreshRepairs() {
-  const repairs = await api("/api/repairs");
-  $("#repairs-list").innerHTML = repairs.map((r) => {
-    const changes = (r.changes || []).map((c) => "<li>" + esc(c) + "</li>").join("");
-    return '<div class="subcard">' +
-      "<div>" + statusCell(r.accepted, r.accepted ? "auto accepted" : "queued for review") +
-      ' <span class="muted small">' + fmtTime(r.at) + " · " + esc(r.source_id) + "</span></div>" +
-      '<div class="small" style="margin-top:5px">' + esc(r.reason) + "</div>" +
-      '<div class="small">extraction ' + fmtPct(r.before_rate) + " &rarr; " + fmtPct(r.after_rate) +
-      " · repair confidence " + fmtPct(r.confidence) + meter(r.confidence) + "</div>" +
-      '<ul class="small mono" style="margin:6px 0 0;padding-left:18px">' + changes + "</ul>" +
-      "</div>";
-  }).join("") || '<p class="muted small" style="margin:0">none recorded</p>';
-}
-
-// ------------------------------------------------------------- actions -----
-
-async function runSource(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = "Running"; }
-  try {
-    const run = await api("/api/run?source=" + encodeURIComponent(id), { method: "POST" });
-    notify(run.ok
-      ? "ok: " + run.records_extracted + " records, " + run.events_new + " new events" +
-        (run.repair_accepted ? ", mapping healed" : "")
-      : "failed at " + run.stage + ": " + run.error);
-  } catch (e) {
-    notify("run failed: " + e.message);
-  }
-  if (btn) { btn.disabled = false; btn.textContent = "Run"; }
-  refreshAll();
-}
-
-$("#add-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    await api("/api/sources", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: $("#add-name").value, url: $("#add-url").value,
-        jurisdiction: $("#add-jur").value,
-      }),
-    });
-    $("#add-name").value = ""; $("#add-url").value = ""; $("#add-jur").value = "";
-    notify("site added");
-    refreshAll();
-  } catch (e) {
-    notify("add failed: " + e.message);
-  }
-});
-
-$("#run-all").addEventListener("click", async () => {
-  const btn = $("#run-all");
-  btn.disabled = true; btn.textContent = "Running";
-  try {
-    const runs = await api("/api/run_all", { method: "POST" });
-    notify(runs.filter((r) => r.ok).length + "/" + runs.length + " sites ok");
-  } catch (e) {
-    notify("run all failed: " + e.message);
-  }
-  btn.disabled = false; btn.textContent = "Run all";
-  refreshAll();
-});
-
-$("#bench").addEventListener("click", async () => {
-  const btn = $("#bench");
-  const rounds = parseInt($("#bench-rounds").value, 10) || 10;
-  btn.disabled = true; btn.textContent = "Measuring";
-  try {
-    const b = await api("/api/benchmark?rounds=" + rounds, { method: "POST" });
-    $("#bench-result").innerHTML = '<div class="subcard">' +
-      "<strong>Measured</strong>" +
-      '<div class="small" style="margin-top:5px">' +
-      b.runs + " full pipeline runs (" + b.rounds + " rounds &times; every site) in " +
-      (b.total_ms / 1000).toFixed(2) + "s &nbsp;·&nbsp; <strong>" +
-      Math.round(b.runs_per_sec) + " runs/s</strong> &nbsp;·&nbsp; <strong>" +
-      Math.round(b.records_per_sec) + " records/s</strong> &nbsp;·&nbsp; " +
-      fmtBytes(b.bytes_processed) + " processed &nbsp;·&nbsp; cpu " +
-      (b.cpu_ms / 1000).toFixed(2) + "s &nbsp;·&nbsp; rss " +
-      fmtBytes(b.rss_before_bytes) + " &rarr; " + fmtBytes(b.rss_after_bytes) +
-      " &nbsp;·&nbsp; " + b.events_new + " new events, duplicates absorbed by content ids" +
-      "</div></div>";
-  } catch (e) {
-    notify("scale test failed: " + e.message);
-  }
-  btn.disabled = false; btn.textContent = "Scale test";
-  refreshAll();
-});
-
-// ------------------------------------------------------------ lifecycle ----
-
-async function refreshAll() {
-  try {
-    await Promise.all([refreshOverview(), refreshModel(), refreshSources(),
-                       refreshRuns(), refreshProperties(), refreshRepairs()]);
-  } catch (e) {
-    notify("refresh failed: " + e.message);
-  }
-}
-
-refreshAll();
-setInterval(() => { refreshOverview(); refreshRuns(); }, 3000);
-setInterval(() => { refreshSources(); refreshProperties(); refreshRepairs(); }, 10000);
+navigate();
+refreshEngine();
+setInterval(refreshEngine, 4000);
 </script>
 </body>
 </html>

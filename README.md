@@ -21,11 +21,19 @@ ctest --test-dir build --output-on-failure
 ./build/datadiver serve
 ```
 
-Open http://127.0.0.1:8080. The console ships with five prefilled county-style
-sites in different dialects (HTML table, JSON API, CSV export, labelled HTML
-blocks, PDF report). Click Run on a site, or Run all, and watch records,
-properties, events and analytics fill in. Add your own site with any http(s)
-URL or a local file path.
+Open http://127.0.0.1:8080. The console is organized by county. It ships with
+seven fixture sources across five dialects (HTML table, JSON API, CSV export,
+labelled HTML blocks, legacy 1990s markup, PDF report) plus three live
+government endpoints fetched over the network: Norfolk VA delinquent property
+taxes, the Cook County IL annual tax sale, and Chicago building violations.
+Ingest everything, open a county, then open a source to walk its pipeline:
+fetch measurements, the classifier's posterior, the learned field mapping with
+its evidence, and the extracted canonical records. Add your own source with
+any http(s) URL or a local file path.
+
+Millbrook County demonstrates cross-referencing: three independent sources
+(tax roll, assessment roll, code enforcement) resolve onto the same six
+parcels, and each property page shows the corroborating events together.
 
 CLI equivalents:
 
@@ -38,9 +46,12 @@ CLI equivalents:
 
 ## Watching it self-heal
 
-The Millbrook demo site's bytes live at `var/local/millbrook_roll.html`, seeded
+The Millbrook tax roll's bytes live at `var/local/millbrook_roll.html`, seeded
 on first start, so they can change the way a real county site's bytes change.
-Run the site once, then simulate the county redesigning their page:
+On that source's page the demo buttons do it in one click: "change the page
+shape" writes the redesigned page over the working copy and runs the pipeline;
+"restore original page" writes the old bytes back and the engine heals in the
+other direction. The same thing from the CLI:
 
 ```
 cp data/fixtures/millbrook_tax_v2.html var/local/millbrook_roll.html
