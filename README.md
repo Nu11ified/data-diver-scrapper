@@ -75,22 +75,16 @@ fetch (libcurl / local files; bytes and wall time measured)
        AUCTION_SCHEDULED -> SOLD_AT_AUCTION, deed transfer resets
 ```
 
-Module map (`include/dd`, `src`):
+Layout (`include/dd/<layer>`, `src/<layer>`):
 
-| Module | Job |
-| --- | --- |
-| `core` | strings, time, files, logging, hashing, Jaro-Winkler |
-| `json`, `html`, `csv`, `pdf` | in-house parsers; the dependency budget is curl + zlib |
-| `fetch` | http(s) via libcurl, `file://` and bare paths from disk |
-| `doc` | format sniffing and the unified record model with provenance |
-| `features`, `model`, `classify` | feature bags, multinomial naive Bayes, source classifier |
-| `schema` | canonical fields, validators, mapping inference and application |
-| `entity` | parcel/address normalization, property keys |
-| `events` | property events and the lifecycle reducer |
-| `store` | file-backed state: sources, runs, events, repairs, learned mappings |
-| `heal` | drift assessment and repair proposals with an auto-accept bar |
-| `pipeline` | the full ingestion path, producing measured run records |
-| `server` | HTTP/1.1 on POSIX sockets: JSON API plus the console |
+| Layer | Modules | Job |
+| --- | --- | --- |
+| `core` | `core`, `json`, `metrics` | strings, time, files, hashing, JSON, OS metrics |
+| `parse` | `html`, `csv`, `pdf`, `document` | in-house parsers and the unified record model with provenance |
+| `net` | `fetch`, `server` | libcurl transport plus local files; HTTP/1.1 API and console |
+| `ml` | `features`, `model`, `classify` | feature bags, multinomial naive Bayes, source classifier |
+| `engine` | `schema`, `entity`, `events`, `store`, `heal`, `pipeline` | canonical mapping, property resolution, lifecycle, state, drift healing, orchestration |
+| `app` | `main`, `train_main` | the `datadiver` and `dd_train` binaries |
 
 ## The model
 

@@ -11,24 +11,24 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 add_library(dd_engine STATIC
-  src/core.cpp
-  src/json.cpp
-  src/html.cpp
-  src/csv.cpp
-  src/pdf.cpp
-  src/document.cpp
-  src/fetch.cpp
-  src/metrics.cpp
-  src/features.cpp
-  src/model.cpp
-  src/classify.cpp
-  src/schema.cpp
-  src/entity.cpp
-  src/events.cpp
-  src/store.cpp
-  src/heal.cpp
-  src/pipeline.cpp
-  src/server.cpp
+  src/core/core.cpp
+  src/core/json.cpp
+  src/core/metrics.cpp
+  src/parse/html.cpp
+  src/parse/csv.cpp
+  src/parse/pdf.cpp
+  src/parse/document.cpp
+  src/net/fetch.cpp
+  src/net/server.cpp
+  src/ml/features.cpp
+  src/ml/model.cpp
+  src/ml/classify.cpp
+  src/engine/schema.cpp
+  src/engine/entity.cpp
+  src/engine/events.cpp
+  src/engine/store.cpp
+  src/engine/heal.cpp
+  src/engine/pipeline.cpp
 )
 
 target_include_directories(dd_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -56,11 +56,11 @@ else()
   message(WARNING "zlib not found: compressed PDF streams will be skipped")
 endif()
 
-add_executable(datadiver src/main.cpp)
+add_executable(datadiver src/app/main.cpp)
 target_link_libraries(datadiver PRIVATE dd_engine)
 target_compile_options(datadiver PRIVATE -Wall -Wextra -Wpedantic)
 
-add_executable(dd_train src/train_main.cpp)
+add_executable(dd_train src/app/train_main.cpp)
 target_link_libraries(dd_train PRIVATE dd_engine)
 target_compile_options(dd_train PRIVATE -Wall -Wextra -Wpedantic)
 
