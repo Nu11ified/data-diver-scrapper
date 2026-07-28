@@ -72,14 +72,14 @@
   "jurisdiction": "City of Los Angeles CA"
  },
  {
-  "id": "howard_md_permits",
-  "name": "Howard County MD Building Permits",
+  "id": "howard_md_tax_sale",
+  "name": "Howard County MD Tax Sale",
   "url": "https://opendata.howardcountymd.gov/resource/etp2-fnbu.json?$limit=50",
   "jurisdiction": "Howard County MD"
  },
  {
-  "id": "prince_georges_permits",
-  "name": "Prince George's County MD Permits",
+  "id": "prince_georges_violations",
+  "name": "Prince George's County MD Code Violations",
   "url": "https://data.princegeorgescountymd.gov/resource/9hyf-46qb.json?$limit=50",
   "jurisdiction": "Prince George's County MD"
  }
