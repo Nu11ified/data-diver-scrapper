@@ -98,6 +98,10 @@ def main() -> int:
     parser.add_argument("--gate", type=float, default=0.50, help="macro-F1 needed to export")
     parser.add_argument("--no-relabel", action="store_true", help="keep on-disk labels")
     parser.add_argument("--binary", type=Path, default=REPO / "build" / "datadiver")
+    parser.add_argument("--d-model", type=int, default=48)
+    parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--d-ffn", type=int, default=96)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -121,7 +125,7 @@ def main() -> int:
     if overlap:
         raise SystemExit(f"portal leaked across the split: {overlap}")
 
-    hyper = Hyper()
+    hyper = Hyper(d_model=args.d_model, heads=args.heads, layers=args.layers, d_ffn=args.d_ffn)
     model = ColumnTagger(hyper, classes)
     print(f"{sum(p.numel() for p in model.parameters())} parameters")
 
