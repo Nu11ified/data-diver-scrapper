@@ -1,0 +1,43 @@
+{
+  "sales": 147226,
+  "jurisdictions": 193,
+  "by_state": {
+    "CT": 139566,
+    "MD": 7660
+  },
+  "experiments": [
+    {
+      "label": "held-out jurisdictions (35 of 193)",
+      "train": 112439,
+      "test": 34787,
+      "raw_mdape": 0.4866666793823242,
+      "calibrated_mdape": 0.1694263517856598,
+      "model_mdape": 0.15277424454689026,
+      "within_10": 0.3469686952022307,
+      "bar_within_10": 0.3142265788944146,
+      "beats": true
+    },
+    {
+      "label": "held-out state: CT",
+      "train": 7660,
+      "test": 139566,
+      "raw_mdape": 0.49944353103637695,
+      "calibrated_mdape": 0.5432723760604858,
+      "model_mdape": 0.7433763146400452,
+      "within_10": 0.007107748305461216,
+      "bar_within_10": 0.017998652967055013,
+      "beats": false
+    },
+    {
+      "label": "held-out state: MD",
+      "train": 139566,
+      "test": 7660,
+      "raw_mdape": 0.4978756904602051,
+      "calibrated_mdape": 1.177382230758667,
+      "model_mdape": 1.9192397594451904,
+      "within_10": 0.025326370757180156,
+      "bar_within_10": 0.05,
+      "beats": false
+    }
+  ]
+}
