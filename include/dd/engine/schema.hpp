@@ -25,6 +25,7 @@ struct FieldDef {
     Kind kind = Kind::Text;
     std::string role;
     bool identity = false;
+    std::string authority;  // classifier label whose sources win conflicts on this field
     std::vector<std::string> synonyms;
     double min = 0.0;  // Number kind only; a closed range the value must fall in
     double max = 0.0;

@@ -42,6 +42,7 @@ struct PropertyEvent {
     std::string event_date;   // ISO, may be empty when the source had none
     std::string recorded_at;  // when this engine saw it
     std::string source_id;
+    std::string source_label; // classifier label for the source document, e.g. "deed_transfer"
     std::string run_id;
     std::string as_of;
     double amount = 0.0;      // due/bid/price when the record carried one

@@ -77,6 +77,7 @@ std::string PropertyEvent::serialize() const {
     w.field("event_date", event_date);
     w.field("recorded_at", recorded_at);
     w.field("source_id", source_id);
+    w.field("source_label", source_label);
     w.field("as_of", as_of);
     w.field("run_id", run_id);
     w.field("amount", amount);
@@ -101,6 +102,7 @@ PropertyEvent PropertyEvent::deserialize(const std::string& text) {
     e.event_date = get("event_date");
     e.recorded_at = get("recorded_at");
     e.source_id = get("source_id");
+    e.source_label = get("source_label");
     e.as_of = get("as_of");
     e.run_id = get("run_id");
     const json::Value* amount = root.find("amount");
@@ -200,6 +202,7 @@ std::vector<PropertyEvent> build_events(const schema::Registry& registry,
         }
         e.recorded_at = context.recorded_at;
         e.source_id = context.source_id;
+        e.source_label = classification;
         e.as_of = context.as_of;
         e.run_id = context.run_id;
         e.confidence = class_confidence;

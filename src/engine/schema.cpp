@@ -222,6 +222,8 @@ Registry Registry::from_json(const std::string& text) {
         if (role != nullptr) def.role = role->as_string();
         const json::Value* identity = entry.find("identity");
         if (identity != nullptr) def.identity = identity->as_bool();
+        const json::Value* authority = entry.find("authority");
+        if (authority != nullptr) def.authority = authority->as_string();
         const json::Value* min = entry.find("min");
         const json::Value* max = entry.find("max");
         if (min != nullptr && max != nullptr) {

@@ -39,6 +39,7 @@ void resolve_fields(const schema::Registry& registry,
                     Property* property) {
     for (const schema::FieldDef& field : registry.fields()) {
         ResolvedField best;
+        std::string best_source_label;
         bool found = false;
         for (const events::PropertyEvent& e : property->events) {
             const auto it = e.details.find(field.name);
@@ -57,10 +58,17 @@ void resolve_fields(const schema::Registry& registry,
                 });
             if (!already) seen.push_back(Observation{e.as_of, it->second, e.source_id});
 
+            const bool has_authority = !field.authority.empty();
+            const bool e_authoritative = has_authority && e.source_label == field.authority;
+            const bool best_authoritative =
+                has_authority && best_source_label == field.authority;
+
             const bool both_dated = !e.as_of.empty() && !best.as_of.empty();
             bool wins;
             if (!found) {
                 wins = true;
+            } else if (has_authority && e_authoritative != best_authoritative) {
+                wins = e_authoritative;
             } else if (both_dated && e.as_of != best.as_of) {
                 wins = e.as_of > best.as_of;
             } else {
@@ -88,7 +96,9 @@ void resolve_fields(const schema::Registry& registry,
                 property->conflicts.push_back(std::move(c));
             }
             if (wins) {
-                best = ResolvedField{it->second, e.source_id, e.event_date, e.as_of, confidence};
+                best = ResolvedField{it->second,  e.source_id, e.event_date,
+                                     e.as_of,     confidence,  e.recorded_at};
+                best_source_label = e.source_label;
                 found = true;
             }
         }
@@ -100,6 +110,17 @@ void resolve_fields(const schema::Registry& registry,
                              return a.as_of > b.as_of;
                          });
     }
+}
+
+std::string_view distress_status_name(events::State s) {
+    switch (s) {
+    case events::State::Normal: return "normal";
+    case events::State::TaxDelinquent: return "tax_delinquent";
+    case events::State::ForeclosureFiled: return "foreclosure_filed";
+    case events::State::AuctionScheduled: return "auction_scheduled";
+    case events::State::SoldAtAuction: return "sold_at_auction";
+    }
+    return "normal";
 }
 
 std::optional<std::int64_t> newest_event_epoch(const std::vector<events::PropertyEvent>& evs) {
@@ -114,15 +135,42 @@ std::optional<std::int64_t> newest_event_epoch(const std::vector<events::Propert
     return newest;
 }
 
-void measure_signals(std::int64_t now, Property* property) {
+void classify_occupancy(const schema::Registry& registry, Property* property) {
+    const schema::FieldDef* mailing_field = registry.find("mailing_address");
+    const auto mailing = property->fields.find("mailing_address");
+    const auto address = property->fields.find("address");
+    if (mailing_field == nullptr || mailing == property->fields.end() ||
+        mailing->second.value.empty() || address == property->fields.end() ||
+        address->second.value.empty()) {
+        property->occupancy_status = "unknown";
+        return;
+    }
+    property->occupancy_status =
+        same_value(*mailing_field, mailing->second.value, address->second.value)
+            ? "owner_occupied"
+            : "absentee_owned";
+}
+
+void measure_signals(const schema::Registry& registry, std::int64_t now, Property* property) {
     for (const events::PropertyEvent& e : property->events) {
         switch (e.kind) {
         case events::Kind::TaxDelinquency: property->due = e.amount; break;
         case events::Kind::CodeViolation: ++property->violations; break;
         case events::Kind::AuctionScheduled: property->auction_date = e.event_date; break;
+        case events::Kind::ForeclosureFiled:
+            property->foreclosure_filed_date = e.event_date;
+            break;
+        case events::Kind::ProbateOpened: property->probate_date = e.event_date; break;
+        case events::Kind::DeedTransfer: property->last_transfer_date = e.event_date; break;
+        case events::Kind::SoldAtAuction: property->sold_date = e.event_date; break;
+        case events::Kind::PermitIssued:
+            ++property->permits_issued;
+            property->last_permit_date = e.event_date;
+            break;
         default: break;
         }
     }
+    classify_occupancy(registry, property);
     const auto assessed = property->fields.find("assessed_value");
     if (assessed != property->fields.end()) {
         const std::optional<double> parsed = schema::parse_money(assessed->second.value);
@@ -252,7 +300,7 @@ std::vector<Property> county_from_events(
         sort_events(&property.events);
         property.state = events::reduce(property.events).state;
         resolve_fields(registry, trust, &property);
-        measure_signals(now, &property);
+        measure_signals(registry, now, &property);
         const auto parcel = property.fields.find("parcel_id");
         const auto address = property.fields.find("address");
         property.locates_a_building =
@@ -293,6 +341,8 @@ std::string render_county_json(const std::string& county,
         for (const std::string& key : p.keys) w.string_value(key);
         w.end_array();
         w.field("lifecycle_state", std::string{events::state_name(p.state)});
+        w.field("distress_status", std::string{distress_status_name(p.state)});
+        w.field("occupancy_status", p.occupancy_status);
 
         w.key("fields");
         w.begin_object();
@@ -304,6 +354,18 @@ std::string render_county_json(const std::string& county,
             w.field("confidence", resolved.confidence);
             if (!resolved.as_of.empty()) w.field("edition", resolved.as_of);
             if (!resolved.event_date.empty()) w.field("as_of", resolved.event_date);
+            w.end_object();
+        }
+        w.end_object();
+
+        w.key("provenance");
+        w.begin_object();
+        for (const auto& [field, resolved] : p.fields) {
+            w.key(field);
+            w.begin_object();
+            w.field("source", resolved.source_id);
+            if (!resolved.event_date.empty()) w.field("event_date", resolved.event_date);
+            if (!resolved.recorded_at.empty()) w.field("observed_at", resolved.recorded_at);
             w.end_object();
         }
         w.end_object();
@@ -332,6 +394,16 @@ std::string render_county_json(const std::string& county,
             w.field("code_violations", static_cast<std::int64_t>(p.violations));
         }
         if (!p.auction_date.empty()) w.field("auction_date", p.auction_date);
+        if (!p.foreclosure_filed_date.empty()) {
+            w.field("foreclosure_filed_date", p.foreclosure_filed_date);
+        }
+        if (!p.probate_date.empty()) w.field("probate_date", p.probate_date);
+        if (!p.last_transfer_date.empty()) w.field("last_transfer_date", p.last_transfer_date);
+        if (!p.sold_date.empty()) w.field("sold_date", p.sold_date);
+        if (p.permits_issued > 0) {
+            w.field("permit_count", static_cast<std::int64_t>(p.permits_issued));
+        }
+        if (!p.last_permit_date.empty()) w.field("last_permit_date", p.last_permit_date);
         if (p.days_since_event.has_value()) {
             w.field("days_since_event", *p.days_since_event);
         }

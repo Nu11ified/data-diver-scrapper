@@ -1397,12 +1397,14 @@ TEST(events_id_is_content_stable) {
 TEST(events_serialize_roundtrip) {
     dd::events::PropertyEvent e = make_event(dd::events::Kind::ForeclosureFiled, "2026-03-01");
     e.amount = 214880.15;
+    e.source_label = "foreclosure_filing";
     e.details["case_number"] = "26-FC-1108";
     e.details["owner"] = "Marsh, Tobias";
     const dd::events::PropertyEvent back = dd::events::PropertyEvent::deserialize(e.serialize());
     CHECK_EQ(back.id, e.id);
     CHECK(back.kind == e.kind);
     CHECK_NEAR(back.amount, e.amount, 1e-9);
+    CHECK_EQ(back.source_label, "foreclosure_filing");
     CHECK_EQ(back.details.at("case_number"), "26-FC-1108");
     CHECK_THROWS(dd::events::PropertyEvent::deserialize("{\"kind\":\"nope\"}"));
 }
@@ -2374,6 +2376,201 @@ TEST(compile_measures_days_since_the_newest_event) {
     CHECK_EQ(emitted["S1"], "400");
     CHECK_EQ(emitted["U1"], ""); // absent, not zero: an unmeasured lead never reads as live
     CHECK_EQ(emitted["A1"], "");
+}
+
+TEST(compile_authority_beats_recency_on_conflict) {
+    const std::string root = fresh_dir("compile_authority");
+    dd::store::Store store{root};
+    const dd::store::Source tax = store.add_source("Treasurer", "https://a/tax", "Testville VA");
+    const dd::store::Source assessor =
+        store.add_source("Assessor", "https://a/assess", "Testville VA");
+
+    auto make = [&](const dd::store::Source& source, const std::string& label,
+                    const std::string& value, const std::string& date, double confidence) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", "P1", "10 Oak ST");
+        e.kind = dd::events::Kind::AssessmentRecorded;
+        e.event_date = date;
+        e.recorded_at = date + "T00:00:00Z";
+        e.source_id = source.id;
+        e.source_label = label;
+        e.confidence = confidence;
+        e.details["address"] = "10 Oak ST";
+        e.details["assessed_value"] = value;
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    // Newer and higher-confidence, but not from the authoritative source class.
+    // assessed_value's authority is assessor_roll (data/schema.json); it must still win.
+    store.add_events({
+        make(tax, "tax_delinquency", "400000", "2026-06-01", 0.99),
+        make(assessor, "assessor_roll", "550000", "2026-01-01", 0.5),
+    });
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    CHECK_EQ(properties.size(), std::size_t{1});
+    const dd::compile::Property& p = properties.front();
+    CHECK_EQ(p.fields.at("assessed_value").value, "550000");
+    CHECK_EQ(p.fields.at("assessed_value").source_id, assessor.id);
+    CHECK_EQ(p.conflicts.size(), std::size_t{1});
+    CHECK_EQ(p.conflicts[0].kept_source, assessor.id);
+    CHECK_EQ(p.conflicts[0].dropped_source, tax.id);
+}
+
+TEST(compile_occupancy_status_reflects_mailing_address) {
+    const std::string root = fresh_dir("compile_occupancy");
+    dd::store::Store store{root};
+    const dd::store::Source source = store.add_source("Roll", "https://a/roll", "Testville VA");
+
+    auto make = [&](const std::string& parcel, const std::string& address,
+                    const std::string& mailing) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", parcel, address);
+        e.kind = dd::events::Kind::AssessmentRecorded;
+        e.event_date = "2026-01-01";
+        e.recorded_at = "2026-01-01T00:00:00Z";
+        e.source_id = source.id;
+        e.confidence = 0.9;
+        e.details["address"] = address;
+        if (!mailing.empty()) e.details["mailing_address"] = mailing;
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    store.add_events({
+        make("O1", "10 Oak ST", "10 Oak Street"),  // normalizes to the same address
+        make("A1", "20 Elm ST", "500 PO Box Rd"),   // normalizes to a different address
+        make("U1", "30 Pine ST", ""),               // no mailing_address on file
+    });
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    std::map<std::string, const dd::compile::Property*> by_address;
+    for (const dd::compile::Property& p : properties) {
+        by_address[p.fields.at("address").value] = &p;
+    }
+    CHECK_EQ(by_address.at("10 Oak ST")->occupancy_status, "owner_occupied");
+    CHECK_EQ(by_address.at("20 Elm ST")->occupancy_status, "absentee_owned");
+    CHECK_EQ(by_address.at("30 Pine ST")->occupancy_status, "unknown");
+
+    const dd::json::Value rendered =
+        dd::json::parse(dd::compile::render_county_json("Testville VA", properties));
+    std::map<std::string, std::string> emitted;
+    for (const dd::json::Value& record : rendered.find("records")->items()) {
+        emitted[record.find("fields")->find("address")->find("value")->as_string()] =
+            record.find("occupancy_status")->as_string();
+    }
+    CHECK_EQ(emitted["10 Oak ST"], "owner_occupied");
+    CHECK_EQ(emitted["20 Elm ST"], "absentee_owned");
+    CHECK_EQ(emitted["30 Pine ST"], "unknown");
+}
+
+TEST(compile_provenance_reports_both_timelines) {
+    const std::string root = fresh_dir("compile_provenance");
+    dd::store::Store store{root};
+    const dd::store::Source source = store.add_source("Roll", "https://a/roll", "Testville VA");
+
+    dd::events::PropertyEvent e;
+    e.property_key = dd::entity::property_key("Testville VA", "P1", "10 Oak ST");
+    e.kind = dd::events::Kind::AssessmentRecorded;
+    e.event_date = "2026-05-01";            // valid time: when the fact became true
+    e.recorded_at = "2026-05-03T12:00:00Z"; // system time: when this engine saw it
+    e.source_id = source.id;
+    e.confidence = 0.9;
+    e.details["address"] = "10 Oak ST";
+    e.details["assessed_value"] = "300000";
+    e.id = dd::events::PropertyEvent::compute_id(e);
+    store.add_events({e});
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    const dd::json::Value rendered =
+        dd::json::parse(dd::compile::render_county_json("Testville VA", properties));
+    const dd::json::Value& record = rendered.find("records")->items().front();
+    const dd::json::Value* prov = record.find("provenance")->find("assessed_value");
+    CHECK(prov != nullptr);
+    CHECK_EQ(prov->find("source")->as_string(), source.id);
+    CHECK_EQ(prov->find("event_date")->as_string(), "2026-05-01");
+    CHECK_EQ(prov->find("observed_at")->as_string(), "2026-05-03T12:00:00Z");
+}
+
+TEST(compile_signals_cover_the_six_inert_event_kinds) {
+    const std::string root = fresh_dir("compile_new_signals");
+    dd::store::Store store{root};
+    const dd::store::Source source = store.add_source("Feed", "https://a/feed", "Testville VA");
+
+    auto event = [&](const std::string& parcel, const std::string& address,
+                     dd::events::Kind kind, const std::string& date) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", parcel, address);
+        e.kind = kind;
+        e.event_date = date;
+        e.recorded_at = date + "T00:00:00Z";
+        e.source_id = source.id;
+        e.confidence = 0.9;
+        e.details["address"] = address;
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    store.add_events({
+        event("P1", "10 Oak ST", dd::events::Kind::ForeclosureFiled, "2026-02-01"),
+        event("P1", "10 Oak ST", dd::events::Kind::ProbateOpened, "2026-01-05"),
+        event("P1", "10 Oak ST", dd::events::Kind::DeedTransfer, "2026-03-01"),
+        event("P1", "10 Oak ST", dd::events::Kind::SoldAtAuction, "2026-04-01"),
+        event("P1", "10 Oak ST", dd::events::Kind::PermitIssued, "2026-01-10"),
+        event("P1", "10 Oak ST", dd::events::Kind::PermitIssued, "2026-05-01"),
+        event("P2", "20 Elm ST", dd::events::Kind::AssessmentRecorded, "2026-01-01"),
+    });
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    std::map<std::string, const dd::compile::Property*> by_address;
+    for (const dd::compile::Property& p : properties) {
+        by_address[p.fields.at("address").value] = &p;
+    }
+    const dd::compile::Property& with_events = *by_address.at("10 Oak ST");
+    const dd::compile::Property& without = *by_address.at("20 Elm ST");
+
+    CHECK_EQ(with_events.foreclosure_filed_date, "2026-02-01");
+    CHECK_EQ(with_events.probate_date, "2026-01-05");
+    CHECK_EQ(with_events.last_transfer_date, "2026-03-01");
+    CHECK_EQ(with_events.sold_date, "2026-04-01");
+    CHECK_EQ(with_events.permits_issued, std::size_t{2});
+    CHECK_EQ(with_events.last_permit_date, "2026-05-01");
+    // ForeclosureFiled -> DeedTransfer (reset) -> SoldAtAuction, in date order.
+    CHECK(with_events.state == dd::events::State::SoldAtAuction);
+
+    CHECK(without.foreclosure_filed_date.empty());
+    CHECK(without.probate_date.empty());
+    CHECK(without.last_transfer_date.empty());
+    CHECK(without.sold_date.empty());
+    CHECK_EQ(without.permits_issued, std::size_t{0});
+    CHECK(without.last_permit_date.empty());
+    CHECK(without.state == dd::events::State::Normal);
+
+    const dd::json::Value rendered =
+        dd::json::parse(dd::compile::render_county_json("Testville VA", properties));
+    for (const dd::json::Value& record : rendered.find("records")->items()) {
+        const std::string address = record.find("fields")->find("address")->find("value")->as_string();
+        const dd::json::Value* signals = record.find("signals");
+        if (address == "10 Oak ST") {
+            CHECK_EQ(signals->find("foreclosure_filed_date")->as_string(), "2026-02-01");
+            CHECK_EQ(signals->find("probate_date")->as_string(), "2026-01-05");
+            CHECK_EQ(signals->find("last_transfer_date")->as_string(), "2026-03-01");
+            CHECK_EQ(signals->find("sold_date")->as_string(), "2026-04-01");
+            CHECK_NEAR(signals->find("permit_count")->as_number(), 2.0, 1e-9);
+            CHECK_EQ(signals->find("last_permit_date")->as_string(), "2026-05-01");
+            CHECK_EQ(record.find("distress_status")->as_string(), "sold_at_auction");
+        } else {
+            CHECK(signals->find("foreclosure_filed_date") == nullptr);
+            CHECK(signals->find("probate_date") == nullptr);
+            CHECK(signals->find("last_transfer_date") == nullptr);
+            CHECK(signals->find("sold_date") == nullptr);
+            CHECK(signals->find("permit_count") == nullptr);
+            CHECK(signals->find("last_permit_date") == nullptr);
+            CHECK_EQ(record.find("distress_status")->as_string(), "normal");
+        }
+    }
 }
 
 TEST(schema_registry_rejects_bad_files) {
