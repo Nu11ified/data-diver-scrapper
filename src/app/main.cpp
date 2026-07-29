@@ -17,6 +17,7 @@
 #include "render.hpp"
 
 #include "dd/core/core.hpp"
+#include "dd/core/metrics.hpp"
 #include "dd/engine/heal.hpp"
 #include "dd/engine/pipeline.hpp"
 #include "dd/engine/schema.hpp"
@@ -199,8 +200,18 @@ void print_alignment(const dd::fetch::Result& fetched, const Alignment& a) {
 
     section("Result");
     const bool usable = !a.mapping.fields.empty() && a.extraction.rate > 0.0;
+    char throughput[32];
+    std::snprintf(throughput, sizeof(throughput), "%.0f MB/s",
+                  a.parse_ms > 0.0
+                      ? (static_cast<double>(fetched.bytes) / 1048576.0) / (a.parse_ms / 1000.0)
+                      : 0.0);
+    char rss[32];
+    std::snprintf(rss, sizeof(rss), "%.1f MB",
+                  static_cast<double>(dd::metrics::current_rss_bytes()) / 1048576.0);
     dd::render::kv({
         {"status", usable ? stamp("aligned") : stamp("failed")},
+        {"parse throughput", std::string{throughput}},
+        {"process rss", std::string{rss}},
         {"extraction rate", meter(a.extraction.rate)},
         {"mapping confidence", meter(a.mapping.confidence)},
         {"classified as", a.prediction.label + "  " + meter(a.prediction.confidence)},

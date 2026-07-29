@@ -32,6 +32,11 @@ struct Result {
 // read directly so fixtures and local exports work without a network. A URL
 // scheme the build cannot serve produces ok=false with a reason, never a
 // fabricated body.
+// "render+https://..." URLs are fetched through an external renderer (a
+// headless browser) named by the DD_RENDERER environment variable: the
+// command is run with the URL as its argument and its stdout becomes the
+// body. The engine takes bytes from it and nothing else - parsing,
+// classification and extraction stay in-process.
 Result get(const std::string& url, const Options& options = {});
 
 bool is_local(const std::string& url);

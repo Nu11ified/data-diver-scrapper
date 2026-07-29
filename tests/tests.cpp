@@ -8,6 +8,7 @@
 #include "dd/core/core.hpp"
 #include "dd/parse/csv.hpp"
 #include "dd/parse/document.hpp"
+#include "dd/parse/query.hpp"
 #include "dd/engine/entity.hpp"
 #include "dd/engine/events.hpp"
 #include "dd/ml/features.hpp"
@@ -2062,6 +2063,53 @@ TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
     const std::vector<dd::compile::Property> again =
         dd::compile::county(store, registry, "testville");
     CHECK_EQ(again.size(), std::size_t{4}); // merged pair + no-address + two placeholders
+}
+
+TEST(html_query_dfs_and_selectors_compose) {
+    const dd::html::Document doc = dd::html::parse(R"(
+        <html><body>
+          <table class="data results"><tr><th>Parcel</th><td>123</td></tr></table>
+          <div class="results"><span>Owed: $500</span></div>
+          <table id="nav"><tr><td>menu</td></tr></table>
+        </body></html>)");
+
+    using namespace dd::html;
+    // DFS order visits every node exactly once; standard algorithms apply.
+    const std::size_t tables = static_cast<std::size_t>(std::count_if(
+        dfs(doc).begin(), dfs(doc).end(), [](const Node& n) {
+            return n.kind == Node::Kind::Element && n.tag == "table";
+        }));
+    CHECK_EQ(tables, std::size_t{2});
+
+    // Boolean logic over selectors.
+    CHECK_EQ(select(doc, tag("table") && has_class("data")).size(), std::size_t{1});
+    CHECK_EQ(select(doc, tag("table") && !has_class("data")).size(), std::size_t{1});
+    CHECK_EQ(select(doc, has_class("results")).size(), std::size_t{2});
+    CHECK_EQ(select(doc, tag("span") && text_contains("owed")).size(), std::size_t{1});
+    CHECK_EQ(select(doc, attr_equals("id", "nav")).size(), std::size_t{1});
+    const Node* first = select_first(doc.root(), tag("th"));
+    CHECK(first != nullptr);
+    CHECK_EQ(first->text_content(), "Parcel");
+    CHECK(select_first(doc.root(), tag("video")) == nullptr);
+}
+
+TEST(fetch_render_scheme_uses_external_renderer) {
+    // The renderer is any command that prints HTML for a url; here a shell
+    // one-liner stands in for the headless browser.
+    setenv("DD_RENDERER", "cat data/fixtures/millbrook_tax.html #", 1);
+    const dd::fetch::Result rendered = dd::fetch::get("render+https://spa.example/parcels");
+    CHECK(rendered.ok);
+    CHECK_EQ(rendered.content_type, "text/html");
+    CHECK(rendered.bytes > 0);
+    CHECK(dd::str::contains(rendered.body, "<table"));
+
+    unsetenv("DD_RENDERER");
+    CHECK(!dd::fetch::get("render+https://spa.example/parcels").ok);
+    setenv("DD_RENDERER", "false", 1);
+    CHECK(!dd::fetch::get("render+https://spa.example/parcels").ok);
+    CHECK(!dd::fetch::get("render+ftp://nope").ok);
+    CHECK(!dd::fetch::get("render+https://x.test/'; rm -rf ~'").ok);
+    unsetenv("DD_RENDERER");
 }
 
 TEST(schema_registry_rejects_bad_files) {

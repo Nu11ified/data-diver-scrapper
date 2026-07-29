@@ -2,6 +2,9 @@
 
 #include "dd/core/core.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
 #if defined(DD_HAVE_CURL)
 #include <curl/curl.h>
 #include <mutex>
@@ -137,7 +140,57 @@ bool http_supported() {
 #endif
 }
 
+Result fetch_rendered(const std::string& url, const Options& options) {
+    Result r;
+    r.url = url;
+    r.final_url = url;
+    r.fetched_at = timeutil::iso_now();
+    const std::string target = url.substr(7); // after "render+"
+    if (!has_prefix(target, "http://") && !has_prefix(target, "https://")) {
+        r.error = "render+ requires an http(s) url";
+        return r;
+    }
+    if (target.find('\'') != std::string::npos || target.find('\n') != std::string::npos) {
+        r.error = "render+ url contains characters the renderer command cannot take";
+        return r;
+    }
+    const char* renderer = std::getenv("DD_RENDERER");
+    if (renderer == nullptr || renderer[0] == '\0') {
+        r.error = "set DD_RENDERER to a command that prints rendered HTML for a url "
+                  "(e.g. 'npx tsx tools/render.ts', see the Makefile)";
+        return r;
+    }
+    const Stopwatch watch;
+    const std::string command = std::string{renderer} + " '" + target + "'";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        r.error = "could not start renderer: " + std::string{renderer};
+        return r;
+    }
+    char buffer[1 << 14];
+    std::size_t n = 0;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0) {
+        r.body.append(buffer, n);
+        if (static_cast<std::int64_t>(r.body.size()) > options.max_body_bytes) break;
+    }
+    const int status = pclose(pipe);
+    r.total_ms = watch.elapsed_ms();
+    r.bytes = static_cast<std::int64_t>(r.body.size());
+    r.content_type = "text/html";
+    if (status != 0) {
+        r.body.clear();
+        r.bytes = 0;
+        r.error = "renderer exited with status " + std::to_string(status);
+    } else if (r.body.empty()) {
+        r.error = "renderer produced no output";
+    } else {
+        r.ok = true;
+    }
+    return r;
+}
+
 Result get(const std::string& url, const Options& options) {
+    if (has_prefix(url, "render+")) return fetch_rendered(url, options);
     if (is_local(url)) return fetch_local(url, options);
     if (has_prefix(url, "http://") || has_prefix(url, "https://")) {
 #if defined(DD_HAVE_CURL)

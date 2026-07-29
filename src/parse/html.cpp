@@ -1,5 +1,7 @@
 #include "dd/parse/html.hpp"
 
+#include "dd/parse/query.hpp"
+
 #include "dd/core/core.hpp"
 
 #include <algorithm>
@@ -397,33 +399,23 @@ std::size_t Node::element_child_count() const {
 }
 
 std::string Document::title() const {
-    std::string out;
-    walk(root(), [&](const Node* n) {
-        if (out.empty() && n->kind == Node::Kind::Element && n->tag == "title") {
-            out = n->text_content();
-        }
-    });
-    return out;
+    const Node* found = select_first(root(), tag("title"));
+    return found == nullptr ? std::string{} : found->text_content();
 }
 
 std::vector<std::string> Document::headings() const {
+    const Selector heading =
+        tag("h1") || tag("h2") || tag("h3") || tag("h4") || tag("h5") || tag("h6");
     std::vector<std::string> out;
-    walk(root(), [&](const Node* n) {
-        if (n->kind != Node::Kind::Element) return;
-        if (n->tag.size() == 2 && n->tag[0] == 'h' && n->tag[1] >= '1' && n->tag[1] <= '6') {
-            const std::string text = n->text_content();
-            if (!text.empty()) out.push_back(text);
-        }
-    });
+    for (const Node* n : select(root(), heading)) {
+        const std::string text = n->text_content();
+        if (!text.empty()) out.push_back(text);
+    }
     return out;
 }
 
-std::vector<const Node*> Document::find_all(std::string_view tag) const {
-    std::vector<const Node*> out;
-    walk(root(), [&](const Node* n) {
-        if (n->kind == Node::Kind::Element && n->tag == tag) out.push_back(n);
-    });
-    return out;
+std::vector<const Node*> Document::find_all(std::string_view tag_name) const {
+    return select(root(), tag(std::string{tag_name}));
 }
 
 std::string Document::text() const { return root_->text_content(); }

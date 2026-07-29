@@ -15,6 +15,7 @@ add_library(dd_engine STATIC
   src/core/json.cpp
   src/core/metrics.cpp
   src/parse/html.cpp
+  src/parse/query.cpp
   src/parse/csv.cpp
   src/parse/pdf.cpp
   src/parse/document.cpp

@@ -56,6 +56,12 @@ of a fixture, edit it in another pane, and you see drift detection and the
 self-heal live. `help` lists everything; one-shot equivalents exist as
 `datadiver <command>`.
 
+JS-rendered portals: prefix the URL with `render+` and the bytes come from
+an external headless browser (`make renderer` installs the Puppeteer script
+in `tools/`, `make run-with-renderer` wires it up). The engine consumes its
+stdout and nothing else - parsing, classification, matching and ML stay
+in-process, in C++, measured (`align` prints parse throughput and RSS).
+
 ## The schema is configuration
 
 `data/schema.json` defines the labels the engine fills - not code. Each field

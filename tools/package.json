@@ -1,0 +1,9 @@
+{
+  "name": "datadiver-renderer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "puppeteer": "^23.0.0",
+    "tsx": "^4.19.0"
+  }
+}
