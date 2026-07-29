@@ -4,9 +4,7 @@
 
 export interface PropertyLinks {
   readonly maps: string;
-  readonly streetView: string;
   readonly zillow: string;
-  readonly redfin: string;
 }
 
 const encode = (value: string): string => encodeURIComponent(value.trim().replace(/\s+/g, " "));
@@ -30,9 +28,7 @@ export const linksFor = (address: string, jurisdiction: string): PropertyLinks |
   const full = place === "" ? cleaned : `${cleaned}, ${place}`;
   return {
     maps: `https://www.google.com/maps/search/?api=1&query=${encode(full)}`,
-    streetView: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=&query=${encode(full)}`,
     zillow: `https://www.zillow.com/homes/${slugAddress(full)}_rb/`,
-    redfin: `https://www.redfin.com/city/1/search?q=${encode(full)}`,
   };
 };
 
