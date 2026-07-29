@@ -417,10 +417,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 `\nNothing was changed; try rephrasing.`,
             });
           }
-          return yield* thread.applyScout({
+          return yield* thread.proposeTree({
             userText: text,
-            reply: decision.text,
+            lead: decision.text,
             graph: decision.graph,
+            candidates,
           });
         }
         return yield* thread.applyScout({ userText: text, reply: decision.text });

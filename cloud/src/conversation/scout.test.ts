@@ -138,8 +138,23 @@ describe("buildInstructions", () => {
     });
     expect(text).toContain(`"kind":"temp_filter"`);
     expect(text).toContain(`"kind":"remember_filter"`);
-    expect(text).toContain("Use set_tree only when the user clearly wants the change kept.");
+    expect(text).toContain("Use set_tree only when the user clearly wants the change kept");
     expect(text).toContain("for now");
+  });
+
+  test("tells the model set_tree is a proposal requiring approval", () => {
+    const text = buildInstructions({
+      tree,
+      configured: true,
+      summary: "",
+      recentTurns: [],
+      county: "norfolk",
+      candidateCount: 4,
+      qualifiedCount: 1,
+      extraSignals: [],
+    });
+    expect(text).toContain("set_tree never applies immediately: it is a proposal.");
+    expect(text).toContain("reply APPROVE or REJECT");
   });
 
   test("runs the onboarding interview for unconfigured users", () => {

@@ -150,7 +150,8 @@ export type Pending =
       readonly kind: "approve_outreach";
       readonly match: PropertyMatch;
       readonly draft: string;
-    };
+    }
+  | { readonly kind: "approve_tree"; readonly graph: Graph };
 
 const AFFIRMATIONS = [
   "yes",
@@ -283,6 +284,13 @@ export interface PreviewFilterInput {
   readonly limit?: number;
 }
 
+export interface ProposeTreeInput {
+  readonly userText: string;
+  readonly lead: string;
+  readonly graph: Graph;
+  readonly candidates: readonly PropertyMatch[];
+}
+
 export interface RememberFilterInput {
   readonly userText: string;
   readonly lead: string;
@@ -308,6 +316,9 @@ export interface ThreadShape {
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
   readonly previewFilter: (
     input: PreviewFilterInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly proposeTree: (
+    input: ProposeTreeInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
   readonly rememberFilter: (
     input: RememberFilterInput,
@@ -435,6 +446,60 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         reply,
         evaluations: [],
         ...(loaded.created ? { tree } : {}),
+      } satisfies HandleOutcome;
+    });
+
+  const MAX_NAMED_CHANGES = 5;
+
+  const namedList = (
+    keys: readonly string[],
+    matches: ReadonlyMap<string, PropertyMatch>,
+  ): string => {
+    const names = keys.map((key) => matches.get(key)?.address ?? key);
+    return names.length > MAX_NAMED_CHANGES
+      ? `${names.slice(0, MAX_NAMED_CHANGES).join(", ")}, +${names.length - MAX_NAMED_CHANGES} more`
+      : names.join(", ");
+  };
+
+  const proposeTree = (input: ProposeTreeInput) =>
+    Effect.gen(function* () {
+      const loaded = yield* loadTree;
+      const activeTree = loaded.tree;
+      const activeMatches = new Map(
+        qualifiedOf(evaluateAgainst(activeTree.graph, input.candidates)).map((m) => [
+          m.match.propertyKey,
+          m.match,
+        ]),
+      );
+      const proposedMatches = new Map(
+        qualifiedOf(evaluateAgainst(input.graph, input.candidates)).map((m) => [
+          m.match.propertyKey,
+          m.match,
+        ]),
+      );
+      const remain = [...activeMatches.keys()].filter((key) => proposedMatches.has(key));
+      const removed = [...activeMatches.keys()].filter((key) => !proposedMatches.has(key));
+      const added = [...proposedMatches.keys()].filter((key) => !activeMatches.has(key));
+      const parts = [
+        `${remain.length} remain qualified`,
+        `${removed.length} removed${removed.length > 0 ? `: ${namedList(removed, activeMatches)}` : ""}`,
+        `${added.length} added${added.length > 0 ? `: ${namedList(added, proposedMatches)}` : ""}`,
+      ];
+      const lead = input.lead.trim();
+      const reply =
+        `${lead === "" ? "" : `${lead}\n\n`}Impact preview against ${input.candidates.length} ` +
+        `scanned propert${input.candidates.length === 1 ? "y" : "ies"} (active criteria ` +
+        `v${activeTree.version}):\n${parts.join("; ")}.\n\n` +
+        `This is a proposal, not yet applied. Reply APPROVE to commit it as criteria ` +
+        `v${activeTree.version + 1}, or REJECT to discard.`;
+      yield* storage.put("pending", { kind: "approve_tree", graph: input.graph } satisfies Pending);
+      const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+      const summary = (yield* storage.get<string>("summary")) ?? "";
+      yield* record(input.userText, reply, activeTree, turns, summary);
+      return {
+        reply,
+        evaluations: [],
+        ...(loaded.created ? { tree: activeTree } : {}),
       } satisfies HandleOutcome;
     });
 
@@ -572,6 +637,32 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             return yield* respond(
               text,
               "Draft discarded. Reply REVIEW to see other matches.",
+              { kind: "idle" },
+            );
+          }
+        }
+
+        if (pending.kind === "approve_tree") {
+          if (lower === "approve" || lower === "yes") {
+            tree = { name: tree.name, version: tree.version + 1, graph: pending.graph };
+            yield* storage.put("tree", tree);
+            changedTree = tree;
+            const pairs = evaluateAll();
+            const evaluations = asEvaluations(pairs);
+            const qualifiedCount = qualifiedOf(pairs).length;
+            return yield* respond(
+              text,
+              `Committed. Criteria v${tree.version} is now active. ${qualifiedCount} ` +
+                `propert${qualifiedCount === 1 ? "y" : "ies"} currently qualify.\n\n` +
+                `Reply REVIEW to see them.`,
+              { kind: "idle" },
+              evaluations,
+            );
+          }
+          if (lower === "reject" || lower === "no") {
+            return yield* respond(
+              text,
+              `Discarded. Your active criteria remain v${tree.version}.`,
               { kind: "idle" },
             );
           }
@@ -838,6 +929,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
 
     applyScout,
     previewFilter,
+    proposeTree,
     rememberFilter,
   };
 };

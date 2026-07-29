@@ -267,3 +267,134 @@ describe("rememberFilter", () => {
     expect(after.graph).toEqual(compileSpec(DEFAULT_SPEC, after.name, 1).graph);
   });
 });
+
+const proposeBusinessOnly = async (storage: ThreadStorage) => {
+  const thread = makeThread(storage);
+  await run(thread.handleMessage({ text: "review", candidates: CANDIDATES }));
+  const baseline = await storedTree(storage);
+  const proposal = await run(
+    thread.proposeTree({
+      userText: "only businesses from now on",
+      lead: "Switching to business-only criteria.",
+      graph: businessOnly,
+      candidates: CANDIDATES,
+    }),
+  );
+  return { thread, baseline, proposal };
+};
+
+describe("proposeTree", () => {
+  test("leaves the active tree untouched and previews the impact", async () => {
+    const storage = memoryStorage();
+    const { baseline, proposal } = await proposeBusinessOnly(storage);
+
+    // The default tree (owed >= $10,000) matches both fixtures; the
+    // business-only proposal drops the residential one and keeps the other.
+    expect(proposal.reply).toContain(`active criteria v${baseline.version}`);
+    expect(proposal.reply).toContain("1 remain qualified");
+    expect(proposal.reply).toContain("1 removed: 10 Elm St");
+    expect(proposal.reply).toContain("0 added");
+    expect(proposal.reply).not.toContain("added: ");
+    expect(proposal.reply).toContain(`v${baseline.version + 1}`);
+    expect(proposal.tree).toBeUndefined();
+    expect(proposal.evaluations).toEqual([]);
+
+    const after = await storedTree(storage);
+    expect(after.version).toBe(baseline.version);
+    expect(after.graph).toEqual(baseline.graph);
+
+    const pending = await run(storage.get<Pending>("pending"));
+    expect(pending).toEqual({ kind: "approve_tree", graph: businessOnly });
+  });
+
+  test("counts an addition once the active tree is narrower than the proposal", async () => {
+    const storage = memoryStorage();
+    const { thread, baseline } = await proposeBusinessOnly(storage);
+    await run(thread.handleMessage({ text: "approve", candidates: CANDIDATES }));
+    const narrowed = await storedTree(storage);
+    expect(narrowed.graph).toEqual(businessOnly);
+
+    const proposal = await run(
+      thread.proposeTree({
+        userText: "open it back up to everyone",
+        lead: "",
+        graph: baseline.graph,
+        candidates: CANDIDATES,
+      }),
+    );
+
+    expect(proposal.reply).toContain("1 remain qualified");
+    expect(proposal.reply).toContain("0 removed");
+    expect(proposal.reply).toContain("1 added: 10 Elm St");
+    expect(proposal.reply).toContain(`active criteria v${narrowed.version}`);
+  });
+});
+
+describe("approve_tree pending", () => {
+  test("APPROVE commits a new version and re-evaluates every candidate", async () => {
+    const storage = memoryStorage();
+    const { thread, baseline } = await proposeBusinessOnly(storage);
+
+    const outcome = await run(
+      thread.handleMessage({ text: "approve", candidates: CANDIDATES }),
+    );
+
+    expect(outcome.tree?.version).toBe(baseline.version + 1);
+    expect(outcome.tree?.graph).toEqual(businessOnly);
+    expect(outcome.reply).toContain(`v${baseline.version + 1}`);
+    expect(outcome.evaluations).toHaveLength(CANDIDATES.length);
+    expect(
+      outcome.evaluations.find((e) => e.propertyKey === BUSINESS.propertyKey)?.outcome,
+    ).toBe("match");
+    expect(
+      outcome.evaluations.find((e) => e.propertyKey === RESIDENTIAL.propertyKey)?.outcome,
+    ).toBe("discard");
+
+    const after = await storedTree(storage);
+    expect(after.version).toBe(baseline.version + 1);
+    expect(after.graph).toEqual(businessOnly);
+    const pending = await run(storage.get<Pending>("pending"));
+    expect(pending?.kind).toBe("idle");
+  });
+
+  test("REJECT discards the proposal and leaves the active tree untouched", async () => {
+    const storage = memoryStorage();
+    const { thread, baseline } = await proposeBusinessOnly(storage);
+
+    const outcome = await run(
+      thread.handleMessage({ text: "reject", candidates: CANDIDATES }),
+    );
+
+    expect(outcome.tree).toBeUndefined();
+    expect(outcome.reply).toContain(`v${baseline.version}`);
+
+    const after = await storedTree(storage);
+    expect(after.version).toBe(baseline.version);
+    expect(after.graph).toEqual(baseline.graph);
+    const pending = await run(storage.get<Pending>("pending"));
+    expect(pending?.kind).toBe("idle");
+  });
+
+  test("a new proposal supersedes a pending one still awaiting approval", async () => {
+    const storage = memoryStorage();
+    const { thread, baseline } = await proposeBusinessOnly(storage);
+
+    await run(
+      thread.proposeTree({
+        userText: "actually keep everyone",
+        lead: "",
+        graph: baseline.graph,
+        candidates: CANDIDATES,
+      }),
+    );
+    const supersededPending = await run(storage.get<Pending>("pending"));
+    expect(supersededPending).toEqual({ kind: "approve_tree", graph: baseline.graph });
+
+    const outcome = await run(
+      thread.handleMessage({ text: "approve", candidates: CANDIDATES }),
+    );
+
+    expect(outcome.tree?.graph).toEqual(baseline.graph);
+    expect(outcome.tree?.version).toBe(baseline.version + 1);
+  });
+});
