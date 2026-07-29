@@ -6,7 +6,7 @@ import Scraper from "./src/worker.ts";
 import { Bucket } from "./src/resources.ts";
 
 export default Alchemy.Stack(
-  "GoliathScout",
+  "DataDiver",
   {
     providers: Cloudflare.providers(),
     state: Cloudflare.state(),
