@@ -70,6 +70,47 @@
       ]
     },
     {
+      "name": "mailing_address",
+      "kind": "address",
+      "synonyms": [
+        "mailing address",
+        "owner address",
+        "owner mailing address",
+        "mail address",
+        "taxpayer address",
+        "billing address",
+        "mail to",
+        "owner mailing",
+        "mailing addr",
+        "owner mail address"
+      ]
+    },
+    {
+      "name": "owner_phone",
+      "kind": "text",
+      "synonyms": [
+        "phone",
+        "phone number",
+        "owner phone",
+        "telephone",
+        "contact number",
+        "phone no",
+        "primary phone",
+        "contact phone"
+      ]
+    },
+    {
+      "name": "owner_email",
+      "kind": "text",
+      "synonyms": [
+        "email",
+        "e-mail",
+        "owner email",
+        "email address",
+        "contact email"
+      ]
+    },
+    {
       "name": "property_use",
       "kind": "text",
       "synonyms": [
