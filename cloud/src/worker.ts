@@ -2,7 +2,9 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
@@ -12,8 +14,19 @@ import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
   ConversationThread,
   ConversationThreadLive,
+  type HandleMessageInput,
   type PropertyMatch,
 } from "./conversation/thread.ts";
+import { importMasterKey, open, seal } from "./codex/envelope.ts";
+import {
+  CredentialPayload,
+  authorizeUrl,
+  challengeFor,
+  exchangeCode,
+  identityFromIdToken,
+  makeVerifier,
+  refreshTokens,
+} from "./codex/oauth.ts";
 import {
   EngineError,
   processDocument,
@@ -64,6 +77,14 @@ interface CountyRecord {
   readonly events: ReadonlyArray<{ readonly source: string }>;
 }
 
+const ConnectState = Schema.Struct({
+  phone: Schema.String,
+  verifier: Schema.String,
+  createdAt: Schema.String,
+});
+
+const CONNECT_TTL_MS = 15 * 60_000;
+
 const sources: readonly SourceConfig[] = sourcesConfig;
 const schemaJson = JSON.stringify(schema);
 const classifierJson = JSON.stringify(classifier);
@@ -83,6 +104,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       DATABASE_URL: Config.redacted("DATABASE_URL"),
       SENDBLUE_API_KEY: Config.redacted("SENDBLUE_API_KEY"),
       SENDBLUE_SECRET_KEY: Config.redacted("SENDBLUE_SECRET_KEY"),
+      CREDENTIAL_MASTER_KEY: Config.redacted("CREDENTIAL_MASTER_KEY"),
     },
   },
   Effect.gen(function* () {
@@ -98,6 +120,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       Redacted.value(sendblueKey) === ""
         ? simulated((line) => console.log(line))
         : sendblue(Redacted.value(sendblueKey), Redacted.value(sendblueSecret));
+
+    const masterKeyB64 = Redacted.value(yield* Config.redacted("CREDENTIAL_MASTER_KEY"));
 
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
@@ -308,20 +332,25 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const compileCountyPayload = (county: string) =>
       Effect.gen(function* () {
         const events = yield* loadCountyEvents(county);
-        if (events.length === 0) return null;
+        if (events.length === 0) {
+          return Option.none<{
+            readonly payload: string;
+            readonly records: readonly CountyRecord[];
+          }>();
+        }
         const payload = yield* Effect.promise(() =>
           compileCounty(schemaJson, events, {}, county),
         );
         const parsed = JSON.parse(payload) as { readonly records: readonly CountyRecord[] };
         const jurisdiction = events[0]?.property_key.split("|")[0] ?? county;
         yield* persist(jurisdiction, parsed.records);
-        return { payload, records: parsed.records };
+        return Option.some({ payload, records: parsed.records });
       });
 
     const countyMatches = (county: string) =>
       Effect.gen(function* () {
-        const compiled = yield* compileCountyPayload(county);
-        if (compiled === null) return [] as readonly PropertyMatch[];
+        const compiled = Option.getOrUndefined(yield* compileCountyPayload(county));
+        if (compiled === undefined) return [] as readonly PropertyMatch[];
         return compiled.records
           .map((record): PropertyMatch => {
             const sourceIds = new Set(record.events.map((e) => e.source));
@@ -384,8 +413,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
         const countyMatch = /^\/county\/([a-z0-9_]+)$/.exec(url.pathname);
         if (countyMatch !== null) {
-          const compiled = yield* compileCountyPayload(countyMatch[1] ?? "");
-          if (compiled === null) {
+          const compiled = Option.getOrUndefined(
+            yield* compileCountyPayload(countyMatch[1] ?? ""),
+          );
+          if (compiled === undefined) {
             return json({ ok: false, error: "no events; run the sources first" }, 404);
           }
           return HttpServerResponse.text(compiled.payload, {
@@ -404,11 +435,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (phone === "" || text === "") {
             return json({ ok: false, error: "from_number and content are required" }, 400);
           }
-          const candidates = yield* countyMatches("norfolk");
-          const thread = threads.getByName(phone);
-          const reply = yield* thread.handleMessage({ text, candidates });
 
-          const delivery = yield* Effect.tryPromise({
+          const preflight = yield* Effect.tryPromise({
             try: async () => {
               const prisma = db();
               const tenant = await prisma.tenant.upsert({
@@ -416,13 +444,102 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 create: { phone },
                 update: {},
               });
+              const credential = await prisma.credential.findUnique({
+                where: { tenantId: tenant.id },
+              });
+              return { tenantId: tenant.id, codexAccount: credential?.accountLabel ?? "" };
+            },
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (preflight instanceof Error) {
+            return json({ ok: false, error: preflight.message }, 500);
+          }
+
+          const lower = text.trim().toLowerCase();
+          let input: HandleMessageInput = {
+            text,
+            candidates: yield* countyMatches("norfolk"),
+            codexAccount: preflight.codexAccount,
+          };
+          if ((lower === "connect" || lower === "connect codex") && masterKeyB64 !== "") {
+            const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+            yield* bucket.put(
+              `connect/${token}`,
+              JSON.stringify({
+                phone,
+                verifier: makeVerifier(),
+                createdAt: new Date().toISOString(),
+              }),
+            );
+            input = { ...input, connectUrl: `${url.origin}/connect/${token}` };
+          }
+
+          const thread = threads.getByName(phone);
+          const outcome = yield* thread.handleMessage(input);
+
+          const delivery = yield* Effect.tryPromise({
+            try: async () => {
+              const prisma = db();
               await prisma.message.createMany({
                 data: [
-                  { tenantId: tenant.id, role: "user", body: text },
-                  { tenantId: tenant.id, role: "scout", body: reply },
+                  { tenantId: preflight.tenantId, role: "user", body: text },
+                  { tenantId: preflight.tenantId, role: "scout", body: outcome.reply },
                 ],
               });
-              await sender.send({ to: phone, body: reply });
+              const tree = outcome.tree;
+              if (tree !== undefined) {
+                await prisma.decisionTree.upsert({
+                  where: {
+                    tenantId_name_version: {
+                      tenantId: preflight.tenantId,
+                      name: tree.name,
+                      version: tree.version,
+                    },
+                  },
+                  create: {
+                    tenantId: preflight.tenantId,
+                    name: tree.name,
+                    version: tree.version,
+                    status: "active",
+                    configuration: JSON.parse(
+                      JSON.stringify({ spec: tree.spec, graph: tree.graph }),
+                    ) as object,
+                  },
+                  update: { status: "active" },
+                });
+                await prisma.decisionTree.updateMany({
+                  where: {
+                    tenantId: preflight.tenantId,
+                    name: tree.name,
+                    version: { not: tree.version },
+                  },
+                  data: { status: "superseded" },
+                });
+              }
+              const first = outcome.evaluations[0];
+              if (first !== undefined) {
+                const treeRow = await prisma.decisionTree.findUnique({
+                  where: {
+                    tenantId_name_version: {
+                      tenantId: preflight.tenantId,
+                      name: first.treeName,
+                      version: first.treeVersion,
+                    },
+                  },
+                });
+                await prisma.evaluation.createMany({
+                  data: outcome.evaluations.map((evaluation) => ({
+                    tenantId: preflight.tenantId,
+                    propertyKey: evaluation.propertyKey,
+                    decisionTreeId: treeRow === null ? null : treeRow.id,
+                    treeVersion: evaluation.treeVersion,
+                    outcome: evaluation.outcome,
+                    trace: JSON.parse(JSON.stringify(evaluation.trace)) as object,
+                  })),
+                });
+              }
+              await sender.send({ to: phone, body: outcome.reply });
             },
             catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),
           }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
@@ -430,9 +547,147 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           return json({
             ok: !(delivery instanceof Error),
             phone,
-            reply,
+            reply: outcome.reply,
+            evaluations: outcome.evaluations.length,
+            treeVersion: outcome.tree?.version,
             transport: sender.name,
             ...(delivery instanceof Error ? { error: delivery.message } : {}),
+          });
+        }
+
+        const connectTokenMatch = /^\/connect\/([a-f0-9]{32,})$/.exec(url.pathname);
+        if (connectTokenMatch !== null && request.method === "GET") {
+          const token = connectTokenMatch[1] ?? "";
+          const object = yield* bucket.get(`connect/${token}`);
+          if (object === null) {
+            return json({ ok: false, error: "connect link is invalid or already used" }, 404);
+          }
+          const connectState = yield* Schema.decodeUnknownEffect(ConnectState)(
+            JSON.parse(yield* object.text()),
+          );
+          if (Date.now() - Date.parse(connectState.createdAt) > CONNECT_TTL_MS) {
+            yield* bucket.delete(`connect/${token}`);
+            return json({ ok: false, error: "connect link expired; text CONNECT again" }, 410);
+          }
+          const challenge = yield* challengeFor(connectState.verifier);
+          const location = authorizeUrl({
+            redirectUri: `${url.origin}/connect/callback`,
+            state: token,
+            challenge,
+          });
+          return HttpServerResponse.text("", { status: 302, headers: { location } });
+        }
+
+        if (url.pathname === "/connect/callback" && request.method === "GET") {
+          const code = url.searchParams.get("code") ?? "";
+          const token = url.searchParams.get("state") ?? "";
+          if (code === "" || token === "") {
+            return json({ ok: false, error: "code and state are required" }, 400);
+          }
+          const object = yield* bucket.get(`connect/${token}`);
+          if (object === null) {
+            return json({ ok: false, error: "connect link is invalid or already used" }, 410);
+          }
+          const connectState = yield* Schema.decodeUnknownEffect(ConnectState)(
+            JSON.parse(yield* object.text()),
+          );
+          yield* bucket.delete(`connect/${token}`);
+          if (Date.now() - Date.parse(connectState.createdAt) > CONNECT_TTL_MS) {
+            return json({ ok: false, error: "connect link expired; text CONNECT again" }, 410);
+          }
+          const masterKey = yield* importMasterKey(masterKeyB64);
+          const tokens = yield* exchangeCode({
+            code,
+            redirectUri: `${url.origin}/connect/callback`,
+            verifier: connectState.verifier,
+          });
+          const identity = yield* identityFromIdToken(tokens.idToken);
+          const payload: CredentialPayload = {
+            provider: "codex",
+            accountId: identity.accountId,
+            email: identity.email,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            idToken: tokens.idToken,
+            obtainedAt: new Date().toISOString(),
+          };
+          const sealed = yield* seal(masterKey, JSON.stringify(payload));
+          const stored = yield* Effect.tryPromise({
+            try: async () => {
+              const prisma = db();
+              const tenant = await prisma.tenant.upsert({
+                where: { phone: connectState.phone },
+                create: { phone: connectState.phone },
+                update: {},
+              });
+              const row = {
+                provider: "codex",
+                ciphertext: sealed.ciphertext,
+                iv: sealed.iv,
+                wrappedKey: sealed.wrappedKey,
+                accountLabel: identity.email !== "" ? identity.email : identity.accountId,
+              };
+              await prisma.credential.upsert({
+                where: { tenantId: tenant.id },
+                create: { tenantId: tenant.id, ...row },
+                update: row,
+              });
+            },
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (stored instanceof Error) {
+            return json({ ok: false, error: stored.message }, 500);
+          }
+          return HttpServerResponse.text(
+            `<!doctype html><meta charset="utf-8"><title>Goliath Scout</title>` +
+              `<body style="font-family:system-ui;max-width:32rem;margin:4rem auto">` +
+              `<h1>Codex connected</h1><p>${identity.email !== "" ? identity.email : identity.accountId} ` +
+              `is now linked to ${connectState.phone}. Tokens are stored encrypted. ` +
+              `You can close this tab and return to your text thread.</p></body>`,
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          );
+        }
+
+        if (url.pathname === "/connect/status" && request.method === "GET") {
+          const phone = (url.searchParams.get("phone") ?? "").replace(/[^+0-9]/g, "");
+          if (phone === "") return json({ ok: false, error: "phone is required" }, 400);
+          const row = yield* Effect.promise(() =>
+            db().credential.findFirst({ where: { tenant: { phone } } }),
+          );
+          if (row === null) return json({ ok: true, connected: false });
+          const masterKey = yield* importMasterKey(masterKeyB64);
+          const opened = yield* open(masterKey, {
+            ciphertext: Uint8Array.from(row.ciphertext),
+            iv: Uint8Array.from(row.iv),
+            wrappedKey: Uint8Array.from(row.wrappedKey),
+          });
+          const payload = yield* Schema.decodeUnknownEffect(CredentialPayload)(
+            JSON.parse(opened),
+          );
+          const refreshed = yield* refreshTokens(payload.refreshToken);
+          const next: CredentialPayload = {
+            ...payload,
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            obtainedAt: new Date().toISOString(),
+          };
+          const resealed = yield* seal(masterKey, JSON.stringify(next));
+          yield* Effect.promise(() =>
+            db().credential.update({
+              where: { id: row.id },
+              data: {
+                ciphertext: resealed.ciphertext,
+                iv: resealed.iv,
+                wrappedKey: resealed.wrappedKey,
+              },
+            }),
+          );
+          return json({
+            ok: true,
+            connected: true,
+            account: payload.email !== "" ? payload.email : payload.accountId,
+            refreshed: true,
           });
         }
 
@@ -442,6 +697,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     return {
       fetch: handleFetch.pipe(
         Effect.catchTag("R2Error", (cause) =>
+          Effect.succeed(json({ ok: false, error: cause.message }, 500)),
+        ),
+        Effect.catchTag("OAuthError", (cause) =>
+          Effect.succeed(json({ ok: false, error: cause.message }, 502)),
+        ),
+        Effect.catchTag("EnvelopeError", (cause) =>
+          Effect.succeed(json({ ok: false, error: cause.message }, 500)),
+        ),
+        Effect.catchTag("SchemaError", (cause) =>
           Effect.succeed(json({ ok: false, error: cause.message }, 500)),
         ),
       ),

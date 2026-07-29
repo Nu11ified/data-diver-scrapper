@@ -166,6 +166,20 @@ query. The thread keeps a rolling window of turns and folds older ones into
 a summary, and because every decision is extracted into structured state
 before compaction, the user never needs to start a new conversation.
 
+Acquisition criteria are a versioned decision graph of condition, action
+and approval nodes, not a bag of settings. Editing a criterion compiles a
+new tree version; every scan evaluates each property by walking the graph
+and records the per-node trace to Postgres, so "why did this match" is
+answered from the trace of the exact tree version that ran, not from the
+current settings.
+
+Texting CONNECT links a ChatGPT account for Codex access: the worker
+issues a single-use link that runs the PKCE flow against auth.openai.com,
+and the resulting tokens are envelope-encrypted — a fresh AES-256-GCM data
+key per credential, wrapped with AES-KW under a worker-held master key —
+before they reach the credentials table. `GET /connect/status` proves a
+stored credential is alive by refreshing it and re-sealing the result.
+
 ## How matching works
 
 Each source label is scored against each schema field: name evidence

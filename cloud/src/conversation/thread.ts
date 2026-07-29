@@ -3,6 +3,18 @@ import type { RuntimeContextInterface } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 
+import {
+  DEFAULT_SPEC,
+  compileSpec,
+  describe,
+  evaluate,
+  explainTrace,
+  type CriteriaSpec,
+  type Subject,
+  type TraceStep,
+  type TreeDoc,
+} from "../decision/graph.ts";
+
 export interface PropertyMatch {
   readonly propertyKey: string;
   readonly address: string;
@@ -15,33 +27,50 @@ export interface PropertyMatch {
   readonly sources: number;
 }
 
-export interface Criteria {
-  readonly minOwed: number;
-  readonly requireMultiSource: boolean;
-  readonly minDebtToValue: number;
-}
-
 interface Turn {
   readonly role: "user" | "scout";
   readonly text: string;
   readonly at: string;
 }
 
+interface EvaluatedMatch {
+  readonly match: PropertyMatch;
+  readonly requiresApproval: boolean;
+  readonly trace: readonly TraceStep[];
+}
+
 type Pending =
-  | { readonly kind: "review"; readonly matches: readonly PropertyMatch[] }
+  | { readonly kind: "idle" }
+  | { readonly kind: "review"; readonly matches: readonly EvaluatedMatch[] }
   | {
       readonly kind: "approve_outreach";
       readonly match: PropertyMatch;
       readonly draft: string;
-    }
-  | null;
+    };
 
-const DEFAULT_CRITERIA: Criteria = {
-  minOwed: 10_000,
-  requireMultiSource: false,
-  minDebtToValue: 0,
-};
+export interface PropertyEvaluation {
+  readonly propertyKey: string;
+  readonly outcome: "match" | "discard" | "invalid";
+  readonly requiresApproval: boolean;
+  readonly treeName: string;
+  readonly treeVersion: number;
+  readonly trace: readonly TraceStep[];
+}
 
+export interface HandleMessageInput {
+  readonly text: string;
+  readonly candidates: readonly PropertyMatch[];
+  readonly connectUrl?: string;
+  readonly codexAccount?: string;
+}
+
+export interface HandleOutcome {
+  readonly reply: string;
+  readonly tree?: TreeDoc;
+  readonly evaluations: readonly PropertyEvaluation[];
+}
+
+const TREE_NAME = "acquisition";
 const TURN_WINDOW = 24;
 const TURNS_KEPT_AFTER_COMPACTION = 8;
 const SUMMARY_LIMIT = 2_400;
@@ -49,7 +78,16 @@ const SUMMARY_LIMIT = 2_400;
 const money = (value: number): string =>
   `$${Math.round(value).toLocaleString("en-US")}`;
 
-const describeMatch = (match: PropertyMatch, index: number): string => {
+const subjectOf = (match: PropertyMatch): Subject => ({
+  owed: match.owed,
+  assessed: match.assessed,
+  debtToValue: match.debtToValue,
+  violations: match.violations,
+  sources: match.sources,
+});
+
+const describeMatch = (evaluated: EvaluatedMatch, index: number): string => {
+  const match = evaluated.match;
   const lines = [
     `${index + 1}. ${match.address}`,
     `   Owner: ${match.owner || "unknown"}`,
@@ -61,25 +99,10 @@ const describeMatch = (match: PropertyMatch, index: number): string => {
   return lines.join("\n");
 };
 
-const explainMatch = (match: PropertyMatch, criteria: Criteria): string => {
-  const reasons = [`✓ ${money(match.owed)} delinquent (your floor is ${money(criteria.minOwed)})`];
-  if (match.assessed > 0) {
-    reasons.push(`✓ Assessed at ${money(match.assessed)} by the county assessor`);
-  }
-  if (match.violations > 0) reasons.push(`✓ ${match.violations} open code violation(s)`);
-  if (match.sources > 1) reasons.push(`✓ Confirmed by ${match.sources} independent county sources`);
-  return reasons.join("\n");
-};
-
-export interface HandleMessageInput {
-  readonly text: string;
-  readonly candidates: readonly PropertyMatch[];
-}
-
 export interface ThreadShape {
   readonly handleMessage: (
     input: HandleMessageInput,
-  ) => Effect.Effect<string, never, RuntimeContextInterface>;
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
 }
 
 export class ConversationThread extends Cloudflare.DurableObject<
@@ -95,7 +118,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
       const record = (
         userText: string,
         reply: string,
-        criteria: Criteria,
+        spec: CriteriaSpec,
         turns: readonly Turn[],
         summary: string,
       ) =>
@@ -112,9 +135,9 @@ export const ConversationThreadLive = ConversationThread.make<never>(
             const userAsks = folded.filter((t) => t.role === "user").length;
             const paragraph =
               `[${folded[0]?.at.slice(0, 10) ?? ""}..${folded.at(-1)?.at.slice(0, 10) ?? ""}] ` +
-              `${userAsks} user messages handled; criteria now: owed >= ${money(criteria.minOwed)}` +
-              `${criteria.requireMultiSource ? ", multi-source only" : ""}` +
-              `${criteria.minDebtToValue > 0 ? `, debt/value >= ${criteria.minDebtToValue}` : ""}.`;
+              `${userAsks} user messages handled; criteria now: owed >= ${money(spec.minOwed)}` +
+              `${spec.requireMultiSource ? ", multi-source only" : ""}` +
+              `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}.`;
             nextSummary = `${nextSummary}\n${paragraph}`.trim().slice(-SUMMARY_LIMIT);
             nextTurns = nextTurns.slice(-TURNS_KEPT_AFTER_COMPACTION);
           }
@@ -125,80 +148,142 @@ export const ConversationThreadLive = ConversationThread.make<never>(
       return {
         handleMessage: (input: HandleMessageInput) =>
           Effect.gen(function* () {
-            const criteria =
-              (yield* state.storage.get<Criteria>("criteria")) ?? DEFAULT_CRITERIA;
+            const stored = yield* state.storage.get<TreeDoc>("tree");
+            const legacy = yield* state.storage.get<CriteriaSpec>("criteria");
+            let changedTree: TreeDoc | undefined;
+            let tree: TreeDoc;
+            if (stored === undefined) {
+              tree = compileSpec(legacy ?? DEFAULT_SPEC, TREE_NAME, 1);
+              yield* state.storage.put("tree", tree);
+              changedTree = tree;
+            } else {
+              tree = stored;
+            }
+
             const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
             const summary = (yield* state.storage.get<string>("summary")) ?? "";
-            const pending = (yield* state.storage.get<Pending>("pending")) ?? null;
+            const rawPending =
+              (yield* state.storage.get<Pending>("pending")) ?? { kind: "idle" as const };
+            // Pre-graph deploys stored review matches without traces; drop them.
+            const pending: Pending =
+              rawPending.kind === "review" && rawPending.matches.some((m) => !("match" in m))
+                ? { kind: "idle" }
+                : rawPending;
 
-            const respond = (userText: string, reply: string, nextPending: Pending) =>
+            const adopt = (spec: CriteriaSpec) =>
+              Effect.gen(function* () {
+                tree = compileSpec(spec, TREE_NAME, tree.version + 1);
+                yield* state.storage.put("tree", tree);
+                changedTree = tree;
+              });
+
+            const respond = (
+              userText: string,
+              reply: string,
+              nextPending: Pending,
+              evaluations: readonly PropertyEvaluation[] = [],
+            ) =>
               Effect.gen(function* () {
                 yield* state.storage.put("pending", nextPending);
-                yield* record(userText, reply, criteria, turns, summary);
-                return reply;
+                yield* record(userText, reply, tree.spec, turns, summary);
+                const toPersist = changedTree ?? (evaluations.length > 0 ? tree : undefined);
+                const outcome: HandleOutcome =
+                  toPersist === undefined
+                    ? { reply, evaluations }
+                    : { reply, evaluations, tree: toPersist };
+                return outcome;
               });
+
+            const evaluateAll = () =>
+              input.candidates.map((match) => ({
+                match,
+                verdict: evaluate(tree.graph, subjectOf(match)),
+              }));
+
+            const asEvaluations = (
+              pairs: ReturnType<typeof evaluateAll>,
+            ): readonly PropertyEvaluation[] =>
+              pairs.map(({ match, verdict }) => ({
+                propertyKey: match.propertyKey,
+                outcome: verdict.outcome,
+                requiresApproval: verdict.outcome === "match" && verdict.requiresApproval,
+                treeName: tree.name,
+                treeVersion: tree.version,
+                trace: verdict.trace,
+              }));
+
+            const qualifiedOf = (pairs: ReturnType<typeof evaluateAll>): EvaluatedMatch[] =>
+              pairs.flatMap(({ match, verdict }) =>
+                verdict.outcome === "match"
+                  ? [{ match, requiresApproval: verdict.requiresApproval, trace: verdict.trace }]
+                  : [],
+              );
 
             const text = input.text.trim();
             const lower = text.toLowerCase();
 
-            const qualified = input.candidates.filter(
-              (m) =>
-                m.owed >= criteria.minOwed &&
-                (!criteria.requireMultiSource || m.sources > 1) &&
-                (criteria.minDebtToValue <= 0 || m.debtToValue >= criteria.minDebtToValue),
-            );
-
-            if (pending?.kind === "approve_outreach") {
+            if (pending.kind === "approve_outreach") {
               if (lower === "approve" || lower === "yes") {
                 const sent =
                   `Simulated outreach sent for ${pending.match.address}.\n` +
                   `(Demo mode: no real message left this system.)\n\n` +
                   `Reply REVIEW to see remaining matches.`;
-                return yield* respond(text, sent, null);
+                return yield* respond(text, sent, { kind: "idle" });
               }
               if (lower === "reject" || lower === "no") {
                 return yield* respond(
                   text,
                   "Draft discarded. Reply REVIEW to see other matches.",
-                  null,
+                  { kind: "idle" },
                 );
               }
             }
 
-            if (pending?.kind === "review" && /^\d+$/.test(lower)) {
+            if (pending.kind === "review" && /^\d+$/.test(lower)) {
               const index = Number.parseInt(lower, 10) - 1;
-              const match = pending.matches[index];
-              if (match === undefined) {
+              const evaluated = pending.matches[index];
+              if (evaluated === undefined) {
                 return yield* respond(
                   text,
                   `Reply with a number between 1 and ${pending.matches.length}.`,
                   pending,
                 );
               }
+              const match = evaluated.match;
               const draft =
                 `Hi ${match.owner.split(",")[0] ?? "there"}, I'm reaching out about the ` +
                 `property at ${match.address}. Would you be open to discussing an offer?`;
-              const reply =
+              const explanation =
                 `${match.address} — recorded owner: ${match.owner || "unknown"}.\n\n` +
-                `Why it matched:\n${explainMatch(match, criteria)}\n\n` +
-                `Draft (simulated outreach):\n"${draft}"\n\n` +
-                `Reply APPROVE to simulate sending it, or REJECT to discard.`;
-              return yield* respond(text, reply, {
-                kind: "approve_outreach",
-                match,
-                draft,
-              });
+                `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}\n\n` +
+                `Draft (simulated outreach):\n"${draft}"`;
+              if (!evaluated.requiresApproval) {
+                return yield* respond(
+                  text,
+                  `${explanation}\n\nYour decision tree has no approval gate: ` +
+                    `simulated outreach sent.\n(Demo mode: no real message left this system.)`,
+                  { kind: "idle" },
+                );
+              }
+              return yield* respond(
+                text,
+                `${explanation}\n\nReply APPROVE to simulate sending it, or REJECT to discard.`,
+                { kind: "approve_outreach", match, draft },
+              );
             }
 
             if (lower === "review" || lower === "yes" || lower === "scan") {
+              const pairs = evaluateAll();
+              const qualified = qualifiedOf(pairs);
+              const evaluations = asEvaluations(pairs);
               if (qualified.length === 0) {
                 return yield* respond(
                   text,
-                  `No properties currently match your criteria ` +
-                    `(owed >= ${money(criteria.minOwed)}` +
-                    `${criteria.requireMultiSource ? ", multi-source only" : ""}). ` +
+                  `No properties currently match your criteria (v${tree.version}):\n` +
+                    `${describe(tree.graph)}\n` +
                     `Reply CRITERIA to see or change them.`,
-                  null,
+                  { kind: "idle" },
+                  evaluations,
                 );
               }
               const top = qualified.slice(0, 3);
@@ -206,17 +291,15 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 `${qualified.length} properties match your criteria. Top ${top.length}:\n\n` +
                 top.map(describeMatch).join("\n\n") +
                 `\n\nReply with a property number for owner and outreach.`;
-              return yield* respond(text, reply, { kind: "review", matches: top });
+              return yield* respond(text, reply, { kind: "review", matches: top }, evaluations);
             }
 
             if (lower === "criteria") {
               return yield* respond(
                 text,
-                `Your acquisition criteria:\n` +
-                  `- Minimum owed: ${money(criteria.minOwed)}\n` +
-                  `- Multi-source corroboration required: ${criteria.requireMultiSource ? "yes" : "no"}\n` +
-                  `- Minimum debt/value: ${criteria.minDebtToValue > 0 ? `${criteria.minDebtToValue}x` : "none"}\n\n` +
-                  `Change them like: "min owed 25000", "require multi source",  ` +
+                `Your acquisition criteria (v${tree.version}):\n${describe(tree.graph)}\n` +
+                  `Codex: ${input.codexAccount !== undefined && input.codexAccount !== "" ? `connected as ${input.codexAccount}` : "not connected (reply CONNECT)"}\n\n` +
+                  `Change them like: "min owed 25000", "require multi source", ` +
                   `"any source", "min debt ratio 0.5".`,
                 pending,
               );
@@ -225,35 +308,59 @@ export const ConversationThreadLive = ConversationThread.make<never>(
             const minOwedMatch = /^min owed (\d+)$/.exec(lower);
             if (minOwedMatch !== null) {
               const value = Number.parseInt(minOwedMatch[1] ?? "0", 10);
-              yield* state.storage.put("criteria", { ...criteria, minOwed: value });
-              const remaining = input.candidates.filter((m) => m.owed >= value).length;
+              yield* adopt({ ...tree.spec, minOwed: value });
+              const remaining = qualifiedOf(evaluateAll()).length;
               return yield* respond(
                 text,
-                `Done: minimum owed is now ${money(value)}. ` +
+                `Done: minimum owed is now ${money(value)} (criteria v${tree.version}). ` +
                   `${remaining} properties currently qualify. Reply REVIEW to see them.`,
-                null,
+                { kind: "idle" },
               );
             }
             if (lower === "require multi source") {
-              yield* state.storage.put("criteria", { ...criteria, requireMultiSource: true });
+              yield* adopt({ ...tree.spec, requireMultiSource: true });
               return yield* respond(
                 text,
-                "Done: only properties corroborated by more than one county source will match.",
-                null,
+                `Done: only properties corroborated by more than one county source ` +
+                  `will match (criteria v${tree.version}).`,
+                { kind: "idle" },
               );
             }
             if (lower === "any source") {
-              yield* state.storage.put("criteria", { ...criteria, requireMultiSource: false });
-              return yield* respond(text, "Done: single-source properties can match again.", null);
+              yield* adopt({ ...tree.spec, requireMultiSource: false });
+              return yield* respond(
+                text,
+                `Done: single-source properties can match again (criteria v${tree.version}).`,
+                { kind: "idle" },
+              );
             }
             const ratioMatch = /^min debt ratio ([0-9.]+)$/.exec(lower);
             if (ratioMatch !== null) {
               const value = Number.parseFloat(ratioMatch[1] ?? "0");
-              yield* state.storage.put("criteria", { ...criteria, minDebtToValue: value });
+              yield* adopt({ ...tree.spec, minDebtToValue: value });
               return yield* respond(
                 text,
-                `Done: minimum debt/value is now ${value}x.`,
-                null,
+                `Done: minimum debt/value is now ${value}x (criteria v${tree.version}).`,
+                { kind: "idle" },
+              );
+            }
+
+            if (lower === "connect" || lower === "connect codex") {
+              if (input.connectUrl !== undefined && input.connectUrl !== "") {
+                return yield* respond(
+                  text,
+                  `Open this link to connect your ChatGPT account to Goliath Scout:\n` +
+                    `${input.connectUrl}\n\n` +
+                    `It is single-use and expires in 15 minutes. Your tokens are ` +
+                    `stored encrypted; reply CRITERIA any time to check the connection.`,
+                  pending,
+                );
+              }
+              return yield* respond(
+                text,
+                "Codex connect is not available right now: the credential store " +
+                  "is not configured on this deployment.",
+                pending,
               );
             }
 
@@ -270,11 +377,12 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               );
             }
 
+            const qualified = qualifiedOf(evaluateAll());
             return yield* respond(
               text,
               `Goliath Scout here. The county scan found ${qualified.length} properties ` +
                 `matching your criteria.\n\n` +
-                `Commands: REVIEW, CRITERIA, MEMORY, a property number, APPROVE, REJECT.`,
+                `Commands: REVIEW, CRITERIA, CONNECT, MEMORY, a property number, APPROVE, REJECT.`,
               pending,
             );
           }),
