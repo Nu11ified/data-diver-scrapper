@@ -20,6 +20,7 @@ model Tenant {
   outreach     Outreach[]
   messages     Message[]
   decisionTrees DecisionTree[]
+  inboundDeliveries InboundDelivery[]
 
   @@map("tenants")
 }
@@ -227,4 +228,15 @@ model Message {
 
   @@index([tenantId, at])
   @@map("messages")
+}
+
+model InboundDelivery {
+  messageHandle String   @id
+  tenantId     String   @db.Uuid
+  receivedAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, receivedAt])
+  @@map("inbound_deliveries")
 }

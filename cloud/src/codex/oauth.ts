@@ -253,6 +253,21 @@ export interface CodexIdentity {
   readonly email: string;
 }
 
+export const jwtExpiresAt = (token: string): number | undefined => {
+  const payload = token.split(".")[1];
+  if (payload === undefined) return undefined;
+  try {
+    const claims = JSON.parse(
+      atob(payload.replace(/-/g, "+").replace(/_/g, "/")),
+    ) as { readonly exp?: unknown };
+    return typeof claims.exp === "number" && Number.isFinite(claims.exp)
+      ? claims.exp * 1_000
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export const identityFromIdToken = (idToken: string): Effect.Effect<CodexIdentity, OAuthError> =>
   Effect.gen(function* () {
     const payload = idToken.split(".")[1];

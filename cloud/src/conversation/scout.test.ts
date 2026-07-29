@@ -94,7 +94,7 @@ describe("buildInstructions", () => {
       extraSignals: [],
     });
     expect(text).toContain("The user is onboarding");
-    expect(text).toContain("Use update_profile for every answer");
-    expect(text).toContain("Never reject an answer merely because");
+    expect(text).toContain("must use update_profile");
+    expect(text).toContain("Never repeat a list of allowed keywords");
   });
 });

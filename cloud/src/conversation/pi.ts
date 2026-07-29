@@ -5,10 +5,10 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
   Type,
-  createModels,
   type Model,
   type TSchema,
 } from "@earendil-works/pi-ai";
+import { streamSimple as streamOpenAICodex } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 
 import { CHAT_MODEL } from "../codex/client.ts";
@@ -71,13 +71,16 @@ export interface PiScoutRuntime {
 }
 
 const productionRuntime = (): PiScoutRuntime => {
-  const models = createModels();
-  models.setProvider(openaiCodexProvider());
-  const model = models.getModel("openai-codex", CHAT_MODEL);
+  const provider = openaiCodexProvider();
+  const model = provider.getModels().find((candidate) => candidate.id === CHAT_MODEL);
   if (model === undefined) {
     throw new Error(`Pi model catalog does not contain openai-codex/${CHAT_MODEL}`);
   }
-  return { model, streamFn: models.streamSimple.bind(models) };
+  return {
+    model,
+    streamFn: (selected, context, options) =>
+      streamOpenAICodex(selected as typeof model, context, options),
+  };
 };
 
 const emptyUsage = {
@@ -344,17 +347,90 @@ export const runPiScout = async (
     toolExecution: "sequential",
     transformContext: async (messages) => messages.slice(-20),
   });
+  const historyLength = agent.state.messages.length;
   await agent.prompt(call.userText);
   const messages = agent.state.messages;
-  const reply = [...messages].reverse().map(textOf).find((text) => text !== "") ?? "";
+  const newMessages = messages.slice(historyLength);
+  const assistantError =
+    [...newMessages]
+      .reverse()
+      .find(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          "role" in message &&
+          message.role === "assistant" &&
+          "errorMessage" in message &&
+          typeof message.errorMessage === "string",
+      );
+  const errorMessage =
+    agent.state.errorMessage ??
+    (assistantError !== undefined &&
+    "errorMessage" in assistantError &&
+    typeof assistantError.errorMessage === "string"
+      ? assistantError.errorMessage
+      : undefined);
+  if (errorMessage !== undefined && errorMessage !== "") {
+    throw new Error(`Pi agent failed: ${errorMessage}`);
+  }
+  const reply =
+    [...newMessages]
+      .reverse()
+      .map(textOf)
+      .find((text) => text !== "") ?? "";
+  if (decision === undefined && reply === "") {
+    const events = newMessages.map((message) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        !("role" in message) ||
+        typeof message.role !== "string"
+      ) {
+        return "unknown";
+      }
+      if (
+        message.role === "assistant" &&
+        "content" in message &&
+        Array.isArray(message.content)
+      ) {
+        const content = message.content.map((part) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          typeof part.type === "string"
+            ? part.type === "toolCall" &&
+              "name" in part &&
+              typeof part.name === "string"
+              ? `toolCall:${part.name}`
+              : part.type
+            : "unknown",
+        );
+        const stopReason =
+          "stopReason" in message && typeof message.stopReason === "string"
+            ? message.stopReason
+            : "unknown";
+        return `assistant(${stopReason})[${content.join(",")}]`;
+      }
+      if (message.role === "toolResult") {
+        const toolName =
+          "toolName" in message && typeof message.toolName === "string"
+            ? message.toolName
+            : "unknown";
+        const isError =
+          "isError" in message && typeof message.isError === "boolean"
+            ? message.isError
+            : false;
+        return `toolResult:${toolName}${isError ? ":error" : ""}`;
+      }
+      return message.role;
+    });
+    throw new Error(`Pi agent ended without an action: ${events.join(" -> ")}`);
+  }
   const finalDecision =
     decision ??
     ({
       kind: "reply",
-      text:
-        reply === ""
-          ? "I could not turn that into a safe property-search action. Please say it another way."
-          : reply,
+      text: reply,
     } satisfies ScoutDecision);
   return { decision: finalDecision, messages };
 };

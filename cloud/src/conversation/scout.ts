@@ -73,6 +73,10 @@ export const buildInstructions = (context: ScoutContext): string => {
       .filter((key) => SIGNAL_CATALOG[key] === undefined)
       .map((key) => `- ${key}: engine-measured signal present on current properties`),
   ].join("\n");
+  const currentQuestion =
+    [...context.recentTurns]
+      .reverse()
+      .find((turn) => turn.role === "scout")?.text ?? "";
   return [
     `You are Data Diver, an SMS assistant over a county public-record`,
     `ingestion engine that finds distressed properties. You manage the user's`,
@@ -91,10 +95,11 @@ export const buildInstructions = (context: ScoutContext): string => {
     ``,
     `CONVERSATION SUMMARY: ${context.summary === "" ? "(none)" : context.summary}`,
     `BUYER PROFILE: ${JSON.stringify(context.profile ?? {})}`,
+    `CURRENT UNANSWERED QUESTION: ${currentQuestion === "" ? "(none)" : currentQuestion}`,
     ``,
     context.configured
       ? `The user has configured criteria. Use the tools to inspect leads, explain facts, or propose requested changes.`
-      : `The user is onboarding. Use update_profile for every answer, converting natural language into normalized fields. The server knows which question comes next. Never reject an answer merely because it does not match a keyword. If the user delegates a choice, make and explain a conservative professional default. Do not propose a tree yourself during onboarding; the server builds it from the completed profile.`,
+      : `The user is onboarding. When their latest message answers or delegates the CURRENT UNANSWERED QUESTION, you must use update_profile and normalize the answer. Use reply only when they explicitly pause, ask a question, or discuss something unrelated. Never repeat a list of allowed keywords. If they delegate evidence policy, recommend multiple_sources; if they delegate recency, use anyEventAge; if they delegate outreach safety, require approval. Explain the judgment in the tool's text. Do not propose a tree yourself during onboarding; the server builds it from the completed profile.`,
     ``,
     `You are the whole conversation. Greetings, questions, ambiguity and corrections all go through you. Choose exactly one tool for each message. Never expose command menus, JSON, tool names, internal state, or implementation details.`,
     `Use resolve_pending when the user accepts or rejects a pending proposal, draft, or temporary filter.`,

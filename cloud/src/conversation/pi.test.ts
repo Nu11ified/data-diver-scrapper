@@ -7,6 +7,7 @@ import {
 
 import { DEFAULT_SPEC, compileSpec } from "../decision/graph.ts";
 import { runPiScout } from "./pi.ts";
+import { legacyProfileText } from "./profile.ts";
 import type { ScoutContext } from "./scout.ts";
 
 const context = (profile: ScoutContext["profile"] = {}): ScoutContext => ({
@@ -87,5 +88,64 @@ describe("Pi conversation agent", () => {
       kind: "reply",
       text: "We can pause here. I will keep your answers for when you return.",
     });
+  });
+
+  test("never reuses an old assistant message when a turn has no new text", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "stop",
+      }),
+    ]);
+
+    await expect(
+      runPiScout(
+        {
+          accessToken: "test-token",
+          sessionId: "tenant-3",
+          userText: "Whatever works",
+          context: context(),
+        },
+        {
+          model: faux.getModel(),
+          streamFn: faux.provider.streamSimple.bind(faux.provider),
+        },
+      ),
+    ).rejects.toThrow("Pi agent ended without an action: user -> assistant(stop)[]");
+  });
+
+  test("surfaces provider errors instead of treating them as conversation", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "provider rejected the request",
+      }),
+    ]);
+
+    await expect(
+      runPiScout(
+        {
+          accessToken: "test-token",
+          sessionId: "tenant-4",
+          userText: "Whatever works",
+          context: context(),
+        },
+        {
+          model: faux.getModel(),
+          streamFn: faux.provider.streamSimple.bind(faux.provider),
+        },
+      ),
+    ).rejects.toThrow("Pi agent failed: provider rejected the request");
+  });
+});
+
+describe("Durable Object rollout compatibility", () => {
+  test("converts typed profile choices into input understood by the previous object", () => {
+    expect(
+      legacyProfileText({ evidence: "multiple_sources" }, "Whatever works"),
+    ).toBe("multiple sources");
+    expect(legacyProfileText({ anyEventAge: true }, "You decide")).toBe("any");
+    expect(legacyProfileText({ requireApproval: true }, "Not sure")).toBe("yes");
   });
 });

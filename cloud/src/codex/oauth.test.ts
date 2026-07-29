@@ -6,6 +6,7 @@ import {
   DEVICE_VERIFICATION_URL,
   exchangeDeviceCode,
   identityFromIdToken,
+  jwtExpiresAt,
   pollDeviceCode,
   requestDeviceCode,
 } from "./oauth.ts";
@@ -120,5 +121,18 @@ describe("identityFromIdToken", () => {
   test("fails on a token that is not a JWT", async () => {
     const result = await Effect.runPromiseExit(identityFromIdToken("garbage"));
     expect(result._tag).toBe("Failure");
+  });
+});
+
+describe("jwtExpiresAt", () => {
+  test("reads the access-token expiry", () => {
+    expect(jwtExpiresAt(fakeIdToken({ exp: 1_800_000_000 }))).toBe(
+      1_800_000_000_000,
+    );
+  });
+
+  test("returns undefined for an opaque or malformed token", () => {
+    expect(jwtExpiresAt("opaque-token")).toBeUndefined();
+    expect(jwtExpiresAt("header.not-json.signature")).toBeUndefined();
   });
 });

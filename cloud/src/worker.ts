@@ -35,6 +35,7 @@ import {
   type PropertyMatch,
 } from "./conversation/thread.ts";
 import { runPiScout } from "./conversation/pi.ts";
+import { legacyProfileText } from "./conversation/profile.ts";
 import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
 import { CodexError, complete } from "./codex/client.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
@@ -43,6 +44,7 @@ import {
   DEVICE_VERIFICATION_URL,
   exchangeDeviceCode,
   identityFromIdToken,
+  jwtExpiresAt,
   pollDeviceCode,
   refreshTokens,
   requestDeviceCode,
@@ -114,6 +116,9 @@ const ConnectState = Schema.Struct({
 
 const CONNECT_TTL_MS = 15 * 60_000;
 const USER_AGENT = "DataDiver/0.1 (public-record research; contact site operator)";
+const MODEL_UNAVAILABLE_REPLY =
+  `I could not reach the reasoning service, so I did not change your ` +
+  `criteria or run anything. Please try again in a few minutes.`;
 
 const schemaJson = JSON.stringify(schema);
 const classifierJson = JSON.stringify(classifier);
@@ -184,6 +189,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const limiter = makeLimiter();
 
     const CREDENTIAL_FRESH_MS = 45 * 60_000;
+    const CREDENTIAL_EXPIRY_MARGIN_MS = 2 * 60_000;
 
     const freshCredential = (tenantId: string, force = false) =>
       Effect.gen(function* () {
@@ -201,7 +207,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           JSON.parse(opened),
         );
         const age = Date.now() - Date.parse(payload.obtainedAt);
-        if (!force && age < CREDENTIAL_FRESH_MS) return Option.some(payload);
+        const expiresAt = jwtExpiresAt(payload.accessToken);
+        const usable =
+          expiresAt === undefined
+            ? age < CREDENTIAL_FRESH_MS
+            : expiresAt - Date.now() > CREDENTIAL_EXPIRY_MARGIN_MS;
+        if (!force && usable) return Option.some(payload);
         const refreshed = yield* refreshTokens(payload.refreshToken);
         const next: CredentialPayload = {
           ...payload,
@@ -281,6 +292,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       phone: string,
       text: string,
       candidates: readonly PropertyMatch[],
+      onDecision: (kind: string) => void,
+      dryRun = false,
     ) =>
       Effect.gen(function* () {
         const thread = threads.getByName(phone);
@@ -324,16 +337,27 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
         const piResult = yield* askPi(credential.accessToken).pipe(
           Effect.catchTag("CodexError", (firstError) =>
-            Effect.gen(function* () {
-              const forced = Option.getOrUndefined(
-                yield* freshCredential(tenantId, true),
-              );
-              if (forced === undefined) return yield* Effect.fail(firstError);
-              return yield* askPi(forced.accessToken);
-            }),
+            /\b401\b|unauthorized|authentication|token expired/i.test(
+              firstError.message,
+            )
+              ? Effect.gen(function* () {
+                  const forced = Option.getOrUndefined(
+                    yield* freshCredential(tenantId, true),
+                  );
+                  if (forced === undefined) return yield* Effect.fail(firstError);
+                  return yield* askPi(forced.accessToken);
+                })
+              : Effect.fail(firstError),
           ),
         );
         const decision = piResult.decision;
+        onDecision(decision.kind);
+        if (dryRun) {
+          return {
+            reply: "",
+            evaluations: [],
+          } satisfies HandleOutcome;
+        }
         const asInternal =
           decision.kind === "show_matches"
             ? "review"
@@ -358,7 +382,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
         if (decision.kind === "update_profile") {
           return yield* thread.handleMessage({
-            text,
+            text:
+              snap.profile === undefined
+                ? legacyProfileText(decision.update, text)
+                : text,
             candidates,
             codexAccount: credential.accountId,
             onboardingUpdate: decision.update,
@@ -1373,22 +1400,18 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             readonly to_number?: string;
             readonly number?: string;
             readonly content?: string;
+            readonly message_handle?: string;
           };
           const phone = (parsed.from_number ?? "").replace(/[^+0-9]/g, "");
-          // Sendblue's inbound webhook names our own line `to_number`;
-          // the send API requires it back as from_number.
           const ourNumber = (parsed.to_number ?? parsed.number ?? "").replace(/[^+0-9]/g, "");
           const text = parsed.content ?? "";
+          const messageHandle = parsed.message_handle?.trim() ?? "";
+          const probe =
+            request.headers["x-datadiver-probe"] ===
+            Redacted.value(sendblueSecret);
           if (phone === "" || text === "") {
             return json({ ok: false, error: "from_number and content are required" }, 400);
           }
-
-          const showTyping = Effect.tryPromise({
-            try: () => sender.typing(phone, ourNumber),
-            catch: (cause): Error =>
-              cause instanceof Error ? cause : new Error(String(cause)),
-          }).pipe(Effect.catch(() => Effect.void));
-          yield* showTyping;
 
           const preflight = yield* Effect.tryPromise({
             try: async () => {
@@ -1401,7 +1424,32 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               const credential = await prisma.credential.findUnique({
                 where: { tenantId: tenant.id },
               });
-              return { tenantId: tenant.id, codexAccount: credential?.accountLabel ?? "" };
+              if (!probe && messageHandle !== "") {
+                try {
+                  await prisma.inboundDelivery.create({
+                    data: { messageHandle, tenantId: tenant.id },
+                  });
+                } catch (cause) {
+                  if (
+                    typeof cause === "object" &&
+                    cause !== null &&
+                    "code" in cause &&
+                    cause.code === "P2002"
+                  ) {
+                    return {
+                      tenantId: tenant.id,
+                      codexAccount: credential?.accountLabel ?? "",
+                      duplicate: true,
+                    };
+                  }
+                  throw cause;
+                }
+              }
+              return {
+                tenantId: tenant.id,
+                codexAccount: credential?.accountLabel ?? "",
+                duplicate: false,
+              };
             },
             catch: (cause): Error =>
               cause instanceof Error ? cause : new Error(String(cause)),
@@ -1409,6 +1457,16 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (preflight instanceof Error) {
             return json({ ok: false, error: preflight.message }, 500);
           }
+          if (preflight.duplicate) {
+            return json({ ok: true, duplicate: true });
+          }
+
+          const showTyping = Effect.tryPromise({
+            try: () => sender.typing(phone, ourNumber),
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch(() => Effect.void));
+          if (!probe) yield* showTyping;
 
           const lower = text.trim().toLowerCase();
 
@@ -1623,26 +1681,42 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: true, phone, reply, signedIn: false });
           }
 
-          // The bubble lapses after a few seconds and the model routinely takes
-          // longer, so it is raised again immediately before the slow call.
-          yield* showTyping;
+          if (!probe) yield* showTyping;
           let scoutError = "";
-          const scouted =
-            !snapshot.configured && snapshot.profile === undefined
-              ? undefined
-              : yield* scoutTurn(
-                  preflight.tenantId,
-                  phone,
-                  text,
-                  input.candidates,
-                ).pipe(
-                  Effect.map((o): HandleOutcome | undefined => o),
-                  Effect.catch((cause) => {
-                    scoutError = cause.message;
-                    return Effect.succeed(undefined);
-                  }),
-                );
-          let outcome = scouted ?? (yield* thread.handleMessage(input));
+          let scoutDecision = "";
+          const scouted = yield* scoutTurn(
+            preflight.tenantId,
+            phone,
+            text,
+            input.candidates,
+            (kind) => {
+              scoutDecision = kind;
+            },
+            probe,
+          ).pipe(
+            Effect.map((o): HandleOutcome | undefined => o),
+            Effect.catch((cause) => {
+              scoutError = cause.message;
+              return Effect.succeed(undefined);
+            }),
+          );
+          if (probe) {
+            return json({
+              ok: scouted !== undefined,
+              brain: scouted !== undefined ? "codex" : "unavailable",
+              ...(scouted === undefined ? { reply: MODEL_UNAVAILABLE_REPLY } : {}),
+              ...(scoutDecision === ""
+                ? {}
+                : { brainDecision: scoutDecision }),
+              ...(scoutError === "" ? {} : { scoutError }),
+            });
+          }
+          let outcome =
+            scouted ??
+            ({
+              reply: MODEL_UNAVAILABLE_REPLY,
+              evaluations: [],
+            } satisfies HandleOutcome);
 
           const draftRequest = outcome.draftRequest;
           if (draftRequest !== undefined) {
@@ -1748,7 +1822,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             reply: outcome.reply,
             evaluations: outcome.evaluations.length,
             treeVersion: outcome.tree?.version,
-            brain: scouted !== undefined ? "codex" : "deterministic",
+            brain: scouted !== undefined ? "codex" : "unavailable",
+            ...(scoutDecision === "" ? {} : { brainDecision: scoutDecision }),
             transport: sender.name,
             ...(scoutError !== "" ? { scoutError } : {}),
             ...(delivery instanceof Error ? { error: delivery.message } : {}),
