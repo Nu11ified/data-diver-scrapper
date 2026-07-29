@@ -9,6 +9,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import { Bucket } from "./resources.ts";
+import { crawl } from "./crawl.ts";
 import { makeClient, type Db } from "./db.ts";
 import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
@@ -85,6 +86,7 @@ const ConnectState = Schema.Struct({
 });
 
 const CONNECT_TTL_MS = 15 * 60_000;
+const USER_AGENT = "DataDiver/0.1 (public-record research; contact site operator)";
 
 const sources: readonly SourceConfig[] = sourcesConfig;
 const schemaJson = JSON.stringify(schema);
@@ -226,15 +228,46 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const results = yield* Effect.all(
             vetted.map((candidate) =>
               candidate.url.startsWith("https://")
-                ? runSource(
-                    {
-                      id: candidate.id.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
-                      name: candidate.name,
-                      url: candidate.url,
-                      jurisdiction,
-                    },
-                    runId,
-                  )
+                ? Effect.gen(function* () {
+                    const id = candidate.id.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+                    const direct = yield* runSource(
+                      { id, name: candidate.name, url: candidate.url, jurisdiction },
+                      runId,
+                    );
+                    if (direct.ok && (direct.records ?? 0) > 0) return direct;
+                    // The model often names the page a human would land on
+                    // rather than the export behind it, so the site is walked
+                    // and every page is put to the engine. The best page wins,
+                    // and the engine still decides what counts as records.
+                    let best: RunOutcome = direct;
+                    let bestUrl = "";
+                    yield* crawl(
+                      candidate.url,
+                      { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT },
+                      (page) =>
+                        Effect.gen(function* () {
+                          const outcome = yield* runSource(
+                            {
+                              id: `${id}_p${(best.records ?? 0) + 1}`,
+                              name: candidate.name,
+                              url: page.url,
+                              jurisdiction,
+                            },
+                            runId,
+                          );
+                          if (outcome.ok && (outcome.records ?? 0) > (best.records ?? 0)) {
+                            best = outcome;
+                            bestUrl = page.url;
+                          }
+                          return true;
+                        }),
+                    );
+                    return bestUrl === ""
+                      ? direct
+                      : ({ ...best, sourceId: id, crawledFrom: bestUrl } as RunOutcome & {
+                          readonly crawledFrom?: string;
+                        });
+                  })
                 : Effect.succeed({
                     sourceId: candidate.id,
                     ok: false,
