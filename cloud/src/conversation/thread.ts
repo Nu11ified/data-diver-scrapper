@@ -10,6 +10,7 @@ import {
   evaluate,
   explainTrace,
   type CriteriaSpec,
+  type Graph,
   type Subject,
   type TraceStep,
   type TreeDoc,
@@ -28,11 +29,36 @@ export interface PropertyMatch {
   readonly signals: Readonly<Record<string, number>>;
 }
 
-interface Turn {
+export interface Turn {
   readonly role: "user" | "scout";
   readonly text: string;
   readonly at: string;
 }
+
+const COMMAND_WORDS = [
+  "review",
+  "scan",
+  "yes",
+  "no",
+  "approve",
+  "reject",
+  "criteria",
+  "memory",
+  "connect",
+  "connect codex",
+  "any source",
+  "require multi source",
+];
+
+export const isDeterministicCommand = (text: string): boolean => {
+  const lower = text.trim().toLowerCase();
+  return (
+    /^\d+$/.test(lower) ||
+    COMMAND_WORDS.includes(lower) ||
+    /^min owed \d+$/.test(lower) ||
+    /^min debt ratio [0-9.]+$/.test(lower)
+  );
+};
 
 interface EvaluatedMatch {
   readonly match: PropertyMatch;
@@ -79,7 +105,7 @@ const SUMMARY_LIMIT = 2_400;
 const money = (value: number): string =>
   `$${Math.round(value).toLocaleString("en-US")}`;
 
-const subjectOf = (match: PropertyMatch): Subject => ({
+export const subjectOf = (match: PropertyMatch): Subject => ({
   ...match.signals,
   owed: match.owed,
   assessed: match.assessed,
@@ -101,9 +127,26 @@ const describeMatch = (evaluated: EvaluatedMatch, index: number): string => {
   return lines.join("\n");
 };
 
+export interface ThreadSnapshot {
+  readonly tree: TreeDoc;
+  readonly summary: string;
+  readonly recentTurns: readonly Turn[];
+  readonly configured: boolean;
+}
+
+export interface ApplyScoutInput {
+  readonly userText: string;
+  readonly reply: string;
+  readonly graph?: Graph;
+}
+
 export interface ThreadShape {
   readonly handleMessage: (
     input: HandleMessageInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly snapshot: () => Effect.Effect<ThreadSnapshot, never, RuntimeContextInterface>;
+  readonly applyScout: (
+    input: ApplyScoutInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
 }
 
@@ -152,20 +195,21 @@ export const ConversationThreadLive = ConversationThread.make<never>(
           yield* state.storage.put("summary", nextSummary);
         });
 
+      const loadTree = Effect.gen(function* () {
+        const stored = yield* state.storage.get<TreeDoc>("tree");
+        if (stored !== undefined) return { tree: stored, created: false };
+        const legacy = yield* state.storage.get<CriteriaSpec>("criteria");
+        const tree = compileSpec(legacy ?? DEFAULT_SPEC, TREE_NAME, 1);
+        yield* state.storage.put("tree", tree);
+        return { tree, created: true };
+      });
+
       return {
         handleMessage: (input: HandleMessageInput) =>
           Effect.gen(function* () {
-            const stored = yield* state.storage.get<TreeDoc>("tree");
-            const legacy = yield* state.storage.get<CriteriaSpec>("criteria");
-            let changedTree: TreeDoc | undefined;
-            let tree: TreeDoc;
-            if (stored === undefined) {
-              tree = compileSpec(legacy ?? DEFAULT_SPEC, TREE_NAME, 1);
-              yield* state.storage.put("tree", tree);
-              changedTree = tree;
-            } else {
-              tree = stored;
-            }
+            const loaded = yield* loadTree;
+            let tree: TreeDoc = loaded.tree;
+            let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
 
             const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
             const summary = (yield* state.storage.get<string>("summary")) ?? "";
@@ -407,6 +451,39 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 `Commands: REVIEW, CRITERIA, CONNECT, MEMORY, a property number, APPROVE, REJECT.`,
               pending,
             );
+          }),
+
+        snapshot: () =>
+          Effect.gen(function* () {
+            const loaded = yield* loadTree;
+            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
+            const summary = (yield* state.storage.get<string>("summary")) ?? "";
+            return {
+              tree: loaded.tree,
+              summary,
+              recentTurns: turns.slice(-8),
+              configured: loaded.tree.version > 1,
+            };
+          }),
+
+        applyScout: (input: ApplyScoutInput) =>
+          Effect.gen(function* () {
+            const loaded = yield* loadTree;
+            let tree: TreeDoc = loaded.tree;
+            let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
+            if (input.graph !== undefined) {
+              tree = { name: tree.name, version: tree.version + 1, graph: input.graph };
+              yield* state.storage.put("tree", tree);
+              changedTree = tree;
+            }
+            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
+            const summary = (yield* state.storage.get<string>("summary")) ?? "";
+            yield* record(input.userText, input.reply, tree, turns, summary);
+            const outcome: HandleOutcome =
+              changedTree === undefined
+                ? { reply: input.reply, evaluations: [] }
+                : { reply: input.reply, evaluations: [], tree: changedTree };
+            return outcome;
           }),
       };
     });

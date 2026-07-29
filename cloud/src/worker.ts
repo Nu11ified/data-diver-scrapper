@@ -14,9 +14,15 @@ import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
   ConversationThread,
   ConversationThreadLive,
+  isDeterministicCommand,
+  subjectOf,
   type HandleMessageInput,
+  type HandleOutcome,
   type PropertyMatch,
 } from "./conversation/thread.ts";
+import { buildInstructions, parseScoutDecision } from "./conversation/scout.ts";
+import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
+import { CodexError, complete } from "./codex/client.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
 import {
   CredentialPayload,
@@ -116,6 +122,121 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         : sendblue(Redacted.value(sendblueKey), Redacted.value(sendblueSecret));
 
     const masterKeyB64 = Redacted.value(yield* Config.redacted("CREDENTIAL_MASTER_KEY"));
+
+    const CREDENTIAL_FRESH_MS = 45 * 60_000;
+
+    const freshCredential = (tenantId: string, force = false) =>
+      Effect.gen(function* () {
+        const row = yield* Effect.promise(() =>
+          db().credential.findUnique({ where: { tenantId } }),
+        );
+        if (row === null) return Option.none<CredentialPayload>();
+        const masterKey = yield* importMasterKey(masterKeyB64);
+        const opened = yield* open(masterKey, {
+          ciphertext: Uint8Array.from(row.ciphertext),
+          iv: Uint8Array.from(row.iv),
+          wrappedKey: Uint8Array.from(row.wrappedKey),
+        });
+        const payload = yield* Schema.decodeUnknownEffect(CredentialPayload)(
+          JSON.parse(opened),
+        );
+        const age = Date.now() - Date.parse(payload.obtainedAt);
+        if (!force && age < CREDENTIAL_FRESH_MS) return Option.some(payload);
+        const refreshed = yield* refreshTokens(payload.refreshToken);
+        const next: CredentialPayload = {
+          ...payload,
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          obtainedAt: new Date().toISOString(),
+        };
+        const resealed = yield* seal(masterKey, JSON.stringify(next));
+        yield* Effect.promise(() =>
+          db().credential.update({
+            where: { id: row.id },
+            data: {
+              ciphertext: resealed.ciphertext,
+              iv: resealed.iv,
+              wrappedKey: resealed.wrappedKey,
+            },
+          }),
+        );
+        return Option.some(next);
+      });
+
+    const scoutTurn = (
+      tenantId: string,
+      phone: string,
+      text: string,
+      candidates: readonly PropertyMatch[],
+    ) =>
+      Effect.gen(function* () {
+        const thread = threads.getByName(phone);
+        const snap = yield* thread.snapshot();
+        const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
+        if (credential === undefined) {
+          return yield* new CodexError({ message: "no codex credential stored", status: 0 });
+        }
+        const extraSignals = [
+          ...new Set(candidates.flatMap((candidate) => Object.keys(candidate.signals))),
+        ];
+        const qualifiedCount = candidates.filter(
+          (candidate) => evaluate(snap.tree.graph, subjectOf(candidate)).outcome === "match",
+        ).length;
+        const instructions = buildInstructions({
+          tree: snap.tree,
+          configured: snap.configured,
+          summary: snap.summary,
+          recentTurns: snap.recentTurns,
+          candidateCount: candidates.length,
+          qualifiedCount,
+          extraSignals,
+        });
+        const raw = yield* complete({
+          accessToken: credential.accessToken,
+          accountId: credential.accountId,
+          instructions,
+          userText: text,
+        }).pipe(
+          Effect.catchTag("CodexError", (cause) =>
+            cause.status !== 401
+              ? Effect.fail(cause)
+              : Effect.gen(function* () {
+                  const forced = Option.getOrUndefined(
+                    yield* freshCredential(tenantId, true),
+                  );
+                  if (forced === undefined) return yield* Effect.fail(cause);
+                  return yield* complete({
+                    accessToken: forced.accessToken,
+                    accountId: forced.accountId,
+                    instructions,
+                    userText: text,
+                  });
+                }),
+          ),
+        );
+        const decision = parseScoutDecision(raw);
+        if (decision.kind === "set_tree") {
+          const problems = validateGraph(decision.graph, [
+            ...Object.keys(SIGNAL_CATALOG),
+            ...extraSignals,
+          ]);
+          if (problems.length > 0) {
+            return yield* thread.applyScout({
+              userText: text,
+              reply:
+                `I drafted a criteria change but it failed validation:\n` +
+                problems.map((p) => `- ${p}`).join("\n") +
+                `\nNothing was changed; try rephrasing.`,
+            });
+          }
+          return yield* thread.applyScout({
+            userText: text,
+            reply: decision.text,
+            graph: decision.graph,
+          });
+        }
+        return yield* thread.applyScout({ userText: text, reply: decision.text });
+      });
 
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
@@ -471,7 +592,22 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
 
           const thread = threads.getByName(phone);
-          const outcome = yield* thread.handleMessage(input);
+          const scoutEligible =
+            !isDeterministicCommand(text) &&
+            preflight.codexAccount !== "" &&
+            masterKeyB64 !== "";
+          let scoutError = "";
+          let scouted: HandleOutcome | undefined;
+          if (scoutEligible) {
+            scouted = yield* scoutTurn(preflight.tenantId, phone, text, input.candidates).pipe(
+              Effect.map((o): HandleOutcome | undefined => o),
+              Effect.catch((cause) => {
+                scoutError = cause.message;
+                return Effect.succeed(undefined);
+              }),
+            );
+          }
+          const outcome = scouted ?? (yield* thread.handleMessage(input));
 
           const delivery = yield* Effect.tryPromise({
             try: async () => {
@@ -545,7 +681,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             reply: outcome.reply,
             evaluations: outcome.evaluations.length,
             treeVersion: outcome.tree?.version,
+            brain: scouted !== undefined ? "codex" : "deterministic",
             transport: sender.name,
+            ...(scoutError !== "" ? { scoutError } : {}),
             ...(delivery instanceof Error ? { error: delivery.message } : {}),
           });
         }
@@ -647,42 +785,20 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         if (url.pathname === "/connect/status" && request.method === "GET") {
           const phone = (url.searchParams.get("phone") ?? "").replace(/[^+0-9]/g, "");
           if (phone === "") return json({ ok: false, error: "phone is required" }, 400);
-          const row = yield* Effect.promise(() =>
-            db().credential.findFirst({ where: { tenant: { phone } } }),
+          const tenant = yield* Effect.promise(() =>
+            db().tenant.findUnique({ where: { phone } }),
           );
-          if (row === null) return json({ ok: true, connected: false });
-          const masterKey = yield* importMasterKey(masterKeyB64);
-          const opened = yield* open(masterKey, {
-            ciphertext: Uint8Array.from(row.ciphertext),
-            iv: Uint8Array.from(row.iv),
-            wrappedKey: Uint8Array.from(row.wrappedKey),
-          });
-          const payload = yield* Schema.decodeUnknownEffect(CredentialPayload)(
-            JSON.parse(opened),
+          if (tenant === null) return json({ ok: true, connected: false });
+          const credential = Option.getOrUndefined(
+            yield* freshCredential(tenant.id, true),
           );
-          const refreshed = yield* refreshTokens(payload.refreshToken);
-          const next: CredentialPayload = {
-            ...payload,
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken,
-            obtainedAt: new Date().toISOString(),
-          };
-          const resealed = yield* seal(masterKey, JSON.stringify(next));
-          yield* Effect.promise(() =>
-            db().credential.update({
-              where: { id: row.id },
-              data: {
-                ciphertext: resealed.ciphertext,
-                iv: resealed.iv,
-                wrappedKey: resealed.wrappedKey,
-              },
-            }),
-          );
+          if (credential === undefined) return json({ ok: true, connected: false });
           return json({
             ok: true,
             connected: true,
-            account: payload.email !== "" ? payload.email : payload.accountId,
+            account: credential.email !== "" ? credential.email : credential.accountId,
             refreshed: true,
+            tokenObtainedAt: credential.obtainedAt,
           });
         }
 
