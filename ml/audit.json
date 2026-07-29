@@ -1,0 +1,73 @@
+{
+  "columns": 403,
+  "classes": [
+    "address",
+    "amount_due",
+    "assessed_value",
+    "auction_date",
+    "buyer",
+    "case_number",
+    "defendant",
+    "description",
+    "event_date",
+    "latitude",
+    "legal_description",
+    "longitude",
+    "mailing_address",
+    "none",
+    "owner",
+    "owner_phone",
+    "parcel_id",
+    "plaintiff",
+    "property_use",
+    "sale_price",
+    "status",
+    "zip"
+  ],
+  "lf_summary": [
+    {
+      "name": "lexicon_exact",
+      "coverage": 0.3225806451612903,
+      "fired": 130,
+      "accuracy_on_fired": 1.0,
+      "description": "name is exactly one known synonym"
+    },
+    {
+      "name": "lexicon_token",
+      "coverage": 0.15384615384615385,
+      "fired": 62,
+      "accuracy_on_fired": 1.0,
+      "description": "all synonym tokens present in name"
+    },
+    {
+      "name": "validator_unique",
+      "coverage": 0.0,
+      "fired": 0,
+      "accuracy_on_fired": 0.0,
+      "description": "values fit exactly one strict field"
+    },
+    {
+      "name": "validator_veto",
+      "coverage": 0.017369727047146403,
+      "fired": 7,
+      "accuracy_on_fired": 1.0,
+      "description": "no field can hold these values"
+    },
+    {
+      "name": "llm",
+      "coverage": 0.0,
+      "fired": 0,
+      "accuracy_on_fired": 0.0,
+      "description": "LLM votes (0 loaded)"
+    }
+  ],
+  "weights": {
+    "lexicon_exact": 6.907755278982137,
+    "lexicon_token": 6.907755278982137,
+    "validator_unique": 0.1,
+    "validator_veto": 6.907755278982137,
+    "llm": 0.1
+  },
+  "coverage": 0.3399503722084367,
+  "suspect_indices": []
+}

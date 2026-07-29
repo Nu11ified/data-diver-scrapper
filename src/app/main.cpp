@@ -3,6 +3,7 @@
 #include "render.hpp"
 
 #include "dd/core/core.hpp"
+#include "dd/core/json.hpp"
 #include "dd/core/metrics.hpp"
 #include "dd/engine/heal.hpp"
 #include "dd/engine/pipeline.hpp"
@@ -715,6 +716,49 @@ int main(int argc, char** argv) {
             state.columns_model_path = columns_model_path;
             return shell(dd::schema::Registry::load(schema_path),
                          dd::classify::Classifier::load(model_path), state);
+        }
+
+        // Reads {"model":path,"columns":[{"name","values"}]} on stdin and
+        // answers this engine's own distribution, so an exported model can be
+        // proven identical to the trainer's rather than assumed to be.
+        if (args.command == "--predict-columns" || args.command == "predict-columns") {
+            std::string payload;
+            for (std::string line; std::getline(std::cin, line);) payload += line;
+            const dd::json::Value root = dd::json::parse(payload);
+            const dd::json::Value* model_field = root.find("model");
+            const dd::json::Value* columns = root.find("columns");
+            if (columns == nullptr || !columns->is_array()) {
+                std::fprintf(stderr, "predict-columns: need a 'columns' array\n");
+                return 1;
+            }
+            const dd::columns::ColumnModel model = dd::columns::ColumnModel::load(
+                model_field == nullptr ? columns_model_path : model_field->as_string());
+            dd::json::Writer w;
+            w.begin_object();
+            w.key("predictions");
+            w.begin_array();
+            for (const dd::json::Value& entry : columns->items()) {
+                const dd::json::Value* name = entry.find("name");
+                const dd::json::Value* values = entry.find("values");
+                std::vector<std::string> samples;
+                if (values != nullptr && values->is_array()) {
+                    for (const dd::json::Value& v : values->items()) samples.push_back(v.as_string());
+                }
+                const dd::columns::Prediction p =
+                    model.predict(name == nullptr ? std::string{} : name->as_string(), samples);
+                w.begin_object();
+                w.field("label", p.label);
+                w.field("confidence", p.confidence);
+                w.key("distribution");
+                w.begin_object();
+                for (const auto& [label, probability] : p.distribution) w.field(label, probability);
+                w.end_object();
+                w.end_object();
+            }
+            w.end_array();
+            w.end_object();
+            std::printf("%s\n", w.str().c_str());
+            return 0;
         }
 
         if (args.command == "align") {

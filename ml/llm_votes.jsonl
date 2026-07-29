@@ -1,0 +1,295 @@
+{"domain": "data.kingcounty.gov", "name": "New_Construction_Flag", "label": "none", "confidence": 0.99}
+{"domain": "data.kingcounty.gov", "name": "Drainage_District", "label": "none", "confidence": 0.98}
+{"domain": "data.kingcounty.gov", "name": "Senior_Citizen_Flag", "label": "none", "confidence": 0.99}
+{"domain": "data.kingcounty.gov", "name": "Account_Number", "label": "parcel_id", "confidence": 0.84}
+{"domain": "data.kingcounty.gov", "name": "Forest_Patrol_Acres", "label": "none", "confidence": 0.99}
+{"domain": "data.kingcounty.gov", "name": "Land_Value", "label": "assessed_value", "confidence": 0.96}
+{"domain": "data.kingcounty.gov", "name": "Imps_Value", "label": "assessed_value", "confidence": 0.96}
+{"domain": "data.kingcounty.gov", "name": "Bill_Requestor_Id", "label": "none", "confidence": 0.99}
+{"domain": "data.novascotia.ca", "name": "Residential", "label": "none", "confidence": 0.97}
+{"domain": "data.novascotia.ca", "name": "Commercial", "label": "none", "confidence": 0.97}
+{"domain": "data.novascotia.ca", "name": "Year", "label": "none", "confidence": 0.99}
+{"domain": "data.novascotia.ca", "name": "Area Type", "label": "none", "confidence": 0.99}
+{"domain": "data.novascotia.ca", "name": "Area", "label": "none", "confidence": 0.98}
+{"domain": "data.norfolk.gov", "name": "PENALTY DUE", "label": "amount_due", "confidence": 0.91}
+{"domain": "data.norfolk.gov", "name": "QUARTER", "label": "none", "confidence": 0.99}
+{"domain": "data.norfolk.gov", "name": "PROPERTY ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.norfolk.gov", "name": "PIN", "label": "parcel_id", "confidence": 1.0}
+{"domain": "data.norfolk.gov", "name": "YEAR", "label": "none", "confidence": 0.99}
+{"domain": "data.norfolk.gov", "name": "ACCOUNT NUMBER", "label": "none", "confidence": 0.91}
+{"domain": "data.norfolk.gov", "name": "INTEREST DUE", "label": "amount_due", "confidence": 0.89}
+{"domain": "data.norfolk.gov", "name": "PROPERTY OWNER", "label": "owner", "confidence": 1.0}
+{"domain": "data.norfolk.gov", "name": "TAX DUE", "label": "amount_due", "confidence": 0.97}
+{"domain": "data.readingpa.gov", "name": "Tax8 Pen", "label": "none", "confidence": 0.93}
+{"domain": "data.readingpa.gov", "name": "Pen Start Dt", "label": "event_date", "confidence": 0.78}
+{"domain": "data.readingpa.gov", "name": "Tax Name3", "label": "none", "confidence": 0.96}
+{"domain": "data.readingpa.gov", "name": "Tax2 Pen", "label": "none", "confidence": 0.98}
+{"domain": "data.readingpa.gov", "name": "Tax2 Flat", "label": "none", "confidence": 0.98}
+{"domain": "data.readingpa.gov", "name": "Tax2 Disc", "label": "none", "confidence": 0.98}
+{"domain": "data.readingpa.gov", "name": "Land Use", "label": "property_use", "confidence": 0.96}
+{"domain": "data.readingpa.gov", "name": "Owner Mailing", "label": "mailing_address", "confidence": 0.99}
+{"domain": "data.readingpa.gov", "name": "Market Value", "label": "assessed_value", "confidence": 0.99}
+{"domain": "opendata.howardcountymd.gov", "name": "Bid_Amount", "label": "sale_price", "confidence": 0.94}
+{"domain": "opendata.howardcountymd.gov", "name": "Sale_Amount", "label": "amount_due", "confidence": 0.91}
+{"domain": "opendata.howardcountymd.gov", "name": "Assessed_Value", "label": "assessed_value", "confidence": 1.0}
+{"domain": "opendata.howardcountymd.gov", "name": "Year", "label": "none", "confidence": 0.96}
+{"domain": "opendata.howardcountymd.gov", "name": "Parcel", "label": "parcel_id", "confidence": 1.0}
+{"domain": "opendata.howardcountymd.gov", "name": "Total_Due", "label": "amount_due", "confidence": 1.0}
+{"domain": "opendata.howardcountymd.gov", "name": "High_Bid_Premium", "label": "none", "confidence": 0.96}
+{"domain": "opendata.howardcountymd.gov", "name": "Taxes_Due", "label": "amount_due", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Buyer Name", "label": "buyer", "confidence": 0.98}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Cost", "label": "none", "confidence": 0.93}
+{"domain": "datacatalog.cookcountyil.gov", "name": "PIN", "label": "parcel_id", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Classification", "label": "property_use", "confidence": 0.93}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Sold at Sale", "label": "status", "confidence": 0.94}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Tax Sale Year", "label": "auction_date", "confidence": 0.92}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Township Name", "label": "none", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Buyer Number", "label": "none", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Township Name", "label": "none", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "VOL", "label": "none", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "To Year", "label": "none", "confidence": 0.97}
+{"domain": "datacatalog.cookcountyil.gov", "name": "From Year", "label": "none", "confidence": 0.97}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Tax Sale Year", "label": "auction_date", "confidence": 0.92}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Sold at Sale", "label": "status", "confidence": 0.94}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Buyer Name", "label": "buyer", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "PIN", "label": "parcel_id", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Zip Code", "label": "zip", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "PIN", "label": "parcel_id", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Tax Year", "label": "none", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Tax Type", "label": "none", "confidence": 0.99}
+{"domain": "data.texas.gov", "name": "City", "label": "none", "confidence": 0.99}
+{"domain": "data.texas.gov", "name": "StreetAddress", "label": "address", "confidence": 0.97}
+{"domain": "data.texas.gov", "name": "CorporateName", "label": "owner", "confidence": 0.88}
+{"domain": "data.texas.gov", "name": "County", "label": "none", "confidence": 1.0}
+{"domain": "data.texas.gov", "name": "TradeName", "label": "none", "confidence": 0.95}
+{"domain": "data.texas.gov", "name": "Zip", "label": "zip", "confidence": 0.99}
+{"domain": "data.texas.gov", "name": "CLP", "label": "none", "confidence": 0.99}
+{"domain": "data.texas.gov", "name": "AIMS_Related_type", "label": "none", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "Parcel Number", "label": "parcel_id", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "Tax Year", "label": "none", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "Total Assessed Value", "label": "assessed_value", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "OWN1", "label": "owner", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "OWN2", "label": "owner", "confidence": 0.95}
+{"domain": "internal.opendata.clermontauditor.org", "name": "MAILADDR1", "label": "mailing_address", "confidence": 1.0}
+{"domain": "internal.opendata.clermontauditor.org", "name": "MAILADDR2", "label": "mailing_address", "confidence": 0.96}
+{"domain": "internal.opendata.clermontauditor.org", "name": "MAILADDR3", "label": "mailing_address", "confidence": 0.99}
+{"domain": "data.richmondgov.com", "name": "Property Code", "label": "parcel_id", "confidence": 0.91}
+{"domain": "data.richmondgov.com", "name": "Total Years Delinquent", "label": "none", "confidence": 1.0}
+{"domain": "data.richmondgov.com", "name": "Total Due", "label": "amount_due", "confidence": 1.0}
+{"domain": "www.dallasopendata.com", "name": "Location", "label": "address", "confidence": 0.58}
+{"domain": "www.dallasopendata.com", "name": "Department", "label": "none", "confidence": 1.0}
+{"domain": "www.dallasopendata.com", "name": "Zone", "label": "none", "confidence": 0.98}
+{"domain": "www.dallasopendata.com", "name": "Y_Value", "label": "latitude", "confidence": 0.95}
+{"domain": "www.dallasopendata.com", "name": "Service Request ID", "label": "none", "confidence": 1.0}
+{"domain": "www.dallasopendata.com", "name": "Str Prefix", "label": "none", "confidence": 0.99}
+{"domain": "www.dallasopendata.com", "name": "X_Value", "label": "longitude", "confidence": 0.95}
+{"domain": "www.dallasopendata.com", "name": "Status", "label": "status", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "HouseNumber", "label": "none", "confidence": 0.78}
+{"domain": "data.cityofnewyork.us", "name": "OrderNumber", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "BuildingID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "RegistrationID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "InspectionDate", "label": "event_date", "confidence": 0.94}
+{"domain": "data.cityofnewyork.us", "name": "BoroID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "LowHouseNumber", "label": "none", "confidence": 0.96}
+{"domain": "data.cityofnewyork.us", "name": "Latitude", "label": "latitude", "confidence": 0.92}
+{"domain": "data.cityofnewyork.us", "name": "ViolationStatus", "label": "status", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Postcode", "label": "zip", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Longitude", "label": "longitude", "confidence": 0.92}
+{"domain": "data.cityofnewyork.us", "name": "ViolationID", "label": "none", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Location", "label": "none", "confidence": 0.98}
+{"domain": "data.montgomerycountymd.gov", "name": "Inspection Date", "label": "event_date", "confidence": 0.96}
+{"domain": "data.montgomerycountymd.gov", "name": "Zip Code", "label": "zip", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Street Address", "label": "address", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Disposition", "label": "status", "confidence": 0.97}
+{"domain": "data.montgomerycountymd.gov", "name": "Case Number", "label": "case_number", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Unit Number", "label": "none", "confidence": 0.97}
+{"domain": "data.montgomerycountymd.gov", "name": "City", "label": "none", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Service Request Number", "label": "none", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Service Request Closed Time", "label": "event_date", "confidence": 0.93}
+{"domain": "data.montgomerycountymd.gov", "name": "Violation ID", "label": "none", "confidence": 0.99}
+{"domain": "data.montgomerycountymd.gov", "name": "Action", "label": "description", "confidence": 0.94}
+{"domain": "data.montgomerycountymd.gov", "name": "Code Reference", "label": "none", "confidence": 0.91}
+{"domain": "data.montgomerycountymd.gov", "name": "Longitude", "label": "longitude", "confidence": 0.98}
+{"domain": "data.montgomerycountymd.gov", "name": "Latitude", "label": "latitude", "confidence": 0.98}
+{"domain": "data.cityofchicago.org", "name": "BUILDING_FEE_UNPAID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "CONTACT_15_TYPE", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "CONTACT_15_CITY", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "CONTACT_3_TYPE", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "CONTACT_13_STATE", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "CONTACT_5_STATE", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "PermitClass", "label": "property_use", "confidence": 0.91}
+{"domain": "data.calgary.ca", "name": "IssuedDate", "label": "event_date", "confidence": 0.97}
+{"domain": "data.calgary.ca", "name": "PermitType", "label": "none", "confidence": 0.94}
+{"domain": "data.calgary.ca", "name": "PermitTypeMapped", "label": "none", "confidence": 0.96}
+{"domain": "data.calgary.ca", "name": "HousingUnits", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "CommunityCode", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "CommunityName", "label": "none", "confidence": 0.98}
+{"domain": "data.calgary.ca", "name": "ContractorName", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "WorkClass", "label": "none", "confidence": 0.96}
+{"domain": "data.calgary.ca", "name": "Description", "label": "description", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "HousingUnitsRemoved", "label": "none", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "DependentBuilding", "label": "none", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "HousingUnits", "label": "none", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "PermitTypeMapped", "label": "none", "confidence": 0.96}
+{"domain": "cos-data.seattle.gov", "name": "DaysIssuePermitCity", "label": "none", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "TotalDaysPlanReview", "label": "none", "confidence": 0.99}
+{"domain": "cos-data.seattle.gov", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "cos-data.seattle.gov", "name": "IssuedDate", "label": "event_date", "confidence": 0.97}
+{"domain": "cos-data.seattle.gov", "name": "Description", "label": "description", "confidence": 1.0}
+{"domain": "cos-data.seattle.gov", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "cos-data.seattle.gov", "name": "PermitClass", "label": "property_use", "confidence": 0.91}
+{"domain": "data.edmonton.ca", "name": "Row ID", "label": "none", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "JOB_CATEGORY", "label": "none", "confidence": 0.96}
+{"domain": "data.edmonton.ca", "name": "BUILDING_TYPE", "label": "property_use", "confidence": 0.96}
+{"domain": "data.edmonton.ca", "name": "FLOOR_AREA", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "ZONING", "label": "property_use", "confidence": 0.72}
+{"domain": "data.edmonton.ca", "name": "LOCATION", "label": "none", "confidence": 0.55}
+{"domain": "data.edmonton.ca", "name": "MONTH_NUMBER", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "LEGAL_DESCRIPTION", "label": "legal_description", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "LONGITUDE", "label": "longitude", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "PERMIT_NUMBER", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "LATITUDE", "label": "latitude", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "LAND_SIZE_SF", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "LAND_SIZE_SM", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "PROPERTY_TYPE", "label": "property_use", "confidence": 0.91}
+{"domain": "data.calgary.ca", "name": "COMM_CODE", "label": "none", "confidence": 0.96}
+{"domain": "data.calgary.ca", "name": "CPID", "label": "parcel_id", "confidence": 0.76}
+{"domain": "data.calgary.ca", "name": "LAND_SIZE_AC", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "YEAR_OF_CONSTRUCTION", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "ASSESSED_VALUE", "label": "assessed_value", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "House Number", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Neighbourhood", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Zoning", "label": "property_use", "confidence": 0.72}
+{"domain": "data.edmonton.ca", "name": "Assessed Value", "label": "assessed_value", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Legal Description", "label": "legal_description", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Garage", "label": "none", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Suite", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Actual Year Built", "label": "none", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Account Number", "label": "parcel_id", "confidence": 0.75}
+{"domain": "data.edmonton.ca", "name": "Suite", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "House Number", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Garage", "label": "none", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Assessed Value", "label": "assessed_value", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Ward", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Neighbourhood ID", "label": "none", "confidence": 1.0}
+{"domain": "data.edmonton.ca", "name": "Street Name", "label": "none", "confidence": 0.99}
+{"domain": "data.edmonton.ca", "name": "Account Number", "label": "parcel_id", "confidence": 0.82}
+{"domain": "data.calgary.ca", "name": "YEAR_OF_CONSTRUCTION", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "ASSESSED_VALUE", "label": "assessed_value", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "COMM_NAME", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "UNIQUE_KEY", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "LAND_SIZE_SM", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "COMM_CODE", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "ROLL_NUMBER", "label": "parcel_id", "confidence": 0.98}
+{"domain": "data.calgary.ca", "name": "PROPERTY_TYPE", "label": "property_use", "confidence": 0.98}
+{"domain": "data.princegeorgescountymd.gov", "name": "Zip Code", "label": "zip", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Property ID", "label": "parcel_id", "confidence": 0.91}
+{"domain": "data.princegeorgescountymd.gov", "name": "Street Address", "label": "address", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "City", "label": "none", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Location", "label": "address", "confidence": 0.96}
+{"domain": "opendata.maryland.gov", "name": "Harford County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Garrett County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Dorchester County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Charles County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Cecil County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Carroll County", "label": "none", "confidence": 1.0}
+{"domain": "opendata.maryland.gov", "name": "Date", "label": "event_date", "confidence": 0.98}
+{"domain": "data.nola.gov", "name": "Defendant", "label": "defendant", "confidence": 1.0}
+{"domain": "data.nola.gov", "name": "CaseTitle", "label": "none", "confidence": 0.99}
+{"domain": "data.nola.gov", "name": "PropertyAddress", "label": "address", "confidence": 1.0}
+{"domain": "data.nola.gov", "name": "SaleAmount", "label": "sale_price", "confidence": 0.99}
+{"domain": "data.nola.gov", "name": "SaleDate", "label": "auction_date", "confidence": 0.97}
+{"domain": "data.nola.gov", "name": "Plaintiff", "label": "plaintiff", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "ZIP CODE", "label": "zip", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "TOTAL ASSESSED VALUE", "label": "assessed_value", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "LEGAL DESCRIPTION", "label": "legal_description", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "BLOCK/SQUARE NO", "label": "none", "confidence": 0.99}
+{"domain": "data.brla.gov", "name": "TAX YEAR", "label": "none", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "WARD", "label": "none", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "COUNCIL DISTRICT", "label": "none", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "TAXPAYER NAME", "label": "owner", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "TAXPAYER ADDRESS", "label": "mailing_address", "confidence": 1.0}
+{"domain": "data.brla.gov", "name": "LOT NO", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Tow (Y/N)", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Judgment Amount", "label": "amount_due", "confidence": 0.91}
+{"domain": "data.cityofnewyork.us", "name": "Case Number", "label": "case_number", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "License plate number", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Auction Date", "label": "auction_date", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Case Status", "label": "status", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Redeemed (Y/N)", "label": "none", "confidence": 0.98}
+{"domain": "data.wa.gov", "name": "PercentageofVotes", "label": "none", "confidence": 1.0}
+{"domain": "data.wa.gov", "name": "PrecinctNumber", "label": "none", "confidence": 1.0}
+{"domain": "data.wa.gov", "name": "BallotItem", "label": "none", "confidence": 1.0}
+{"domain": "data.wa.gov", "name": "PreferredParty", "label": "none", "confidence": 1.0}
+{"domain": "data.wa.gov", "name": "Yes/No", "label": "none", "confidence": 0.99}
+{"domain": "data.wa.gov", "name": "Repealed/Maintained", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Property Disposed to Last Name", "label": "buyer", "confidence": 0.86}
+{"domain": "data.cityofnewyork.us", "name": "Block", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Property Disposed to City", "label": "none", "confidence": 0.98}
+{"domain": "data.cityofnewyork.us", "name": "Property Disposed to State", "label": "none", "confidence": 0.98}
+{"domain": "data.cityofnewyork.us", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Property Disposed to ZIP", "label": "zip", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Lot", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Location", "label": "address", "confidence": 0.99}
+{"domain": "www.dallasopendata.com", "name": "NOTES", "label": "description", "confidence": 0.94}
+{"domain": "www.dallasopendata.com", "name": "COUNCIL_DA", "label": "event_date", "confidence": 0.7}
+{"domain": "www.dallasopendata.com", "name": "DEED_RES", "label": "none", "confidence": 0.97}
+{"domain": "www.dallasopendata.com", "name": "ORD_NUM", "label": "none", "confidence": 0.99}
+{"domain": "www.dallasopendata.com", "name": "EFFECTIVED", "label": "event_date", "confidence": 0.96}
+{"domain": "www.dallasopendata.com", "name": "RES_NUM", "label": "none", "confidence": 0.97}
+{"domain": "www.dallasopendata.com", "name": "SHAPE_area", "label": "none", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Doc Number", "label": "none", "confidence": 0.99}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Doc Type", "label": "none", "confidence": 0.98}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Pin", "label": "parcel_id", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Pin", "label": "parcel_id", "confidence": 1.0}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Doc Type", "label": "none", "confidence": 0.98}
+{"domain": "datacatalog.cookcountyil.gov", "name": "Doc Number", "label": "none", "confidence": 0.99}
+{"domain": "data.wcad.org", "name": "TXBLVALYRC", "label": "assessed_value", "confidence": 0.86}
+{"domain": "data.wcad.org", "name": "CNTWNTTXOD", "label": "amount_due", "confidence": 0.61}
+{"domain": "data.wcad.org", "name": "ASSDVALYRC", "label": "assessed_value", "confidence": 0.99}
+{"domain": "data.wcad.org", "name": "USEDSCRP", "label": "property_use", "confidence": 1.0}
+{"domain": "data.wcad.org", "name": "PSTLCITY", "label": "none", "confidence": 0.99}
+{"domain": "data.wcad.org", "name": "PRVASSDVAL", "label": "assessed_value", "confidence": 0.98}
+{"domain": "data.wcad.org", "name": "PropertyID", "label": "parcel_id", "confidence": 0.93}
+{"domain": "data.winnipeg.ca", "name": "Street Type", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Street Name", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Attached Garage", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Fire Place", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Dwelling Units", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Basement", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Full Address", "label": "address", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "location", "label": "none", "confidence": 0.95}
+{"domain": "data.calgary.ca", "name": "POINT", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "HOUSE_ALPHA", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "HOUSE_NUMBER", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "STREET_QUAD", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "STREET_TYPE", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "STREET_NAME", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Property ID", "label": "parcel_id", "confidence": 0.97}
+{"domain": "data.princegeorgescountymd.gov", "name": "Street Name", "label": "none", "confidence": 0.99}
+{"domain": "data.princegeorgescountymd.gov", "name": "City", "label": "none", "confidence": 0.99}
+{"domain": "data.princegeorgescountymd.gov", "name": "Street Type", "label": "none", "confidence": 0.99}
+{"domain": "data.princegeorgescountymd.gov", "name": "Violation ID", "label": "none", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Inspection ID", "label": "none", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Inspection Date", "label": "event_date", "confidence": 0.98}
+{"domain": "data.princegeorgescountymd.gov", "name": "Violation Description", "label": "description", "confidence": 1.0}
+{"domain": "data.princegeorgescountymd.gov", "name": "Street Number", "label": "none", "confidence": 0.99}
+{"domain": "data.princegeorgescountymd.gov", "name": "Property Location", "label": "address", "confidence": 0.76}
+{"domain": "data.princegeorgescountymd.gov", "name": "Zip Code", "label": "zip", "confidence": 1.0}
+{"domain": "data.winnipeg.ca", "name": "Inspection Area", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Time Slot", "label": "none", "confidence": 1.0}
+{"domain": "data.winnipeg.ca", "name": "Earliest One Hour", "label": "none", "confidence": 0.99}
+{"domain": "data.winnipeg.ca", "name": "Earliest Half Hour", "label": "none", "confidence": 0.99}
