@@ -164,6 +164,27 @@ have exported the one model measurably worse on the key. Macro-F1 over 1,846
 holdout columns and mapping F1 over 16 hand-verified sources are not the same
 quantity, and when they disagree the key wins.
 
+**The gate is measured partly where the key cannot see.** `data/schema.json` now
+carries 22 fields, but the shipped model has 18 classes: `latitude`,
+`longitude`, `mailing_address`, `owner_email` and `owner_phone` were added to
+the schema after it was trained. Those five are also the easiest — coordinates
+separate on value range alone — and the golden key does not exercise a single
+one of them. Across its 16 sources the key fills 100 canonical field slots, and
+zero come from the five. Splitting the holdout macro-F1 on that line:
+
+| candidate | reported | 17 classes the key exercises | 5 classes it does not |
+|---|---|---|---|
+| A (baseline arch) | 0.494 | 0.436 | 0.691 |
+| C | 0.503 | 0.467 | 0.622 |
+| I | 0.420 | 0.366 | 0.603 |
+
+So C clears the 0.50 gate on 0.503, of which the lift over A comes with five
+classes no bench source contains; on the classes the key can actually check it
+scores 0.467, and no candidate in the sweep reaches 0.50 there. The gate did not
+get harder when the corpus grew, it got more permissive along the one axis the
+deciding metric cannot verify. That is a second reason C clearing it meant
+nothing, independent of the mapping it lost.
+
 **I is identical to the shipped model where it counts.** Its per-source
 ok/spurious/missed column is byte-identical to the baseline on all sixteen
 sources; only the timings differ. It has the worst holdout macro-F1 in the
