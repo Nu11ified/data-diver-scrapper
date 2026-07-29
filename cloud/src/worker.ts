@@ -1137,9 +1137,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             // texter gets nothing at all. The cron warms the busiest county
             // hourly and POST /warm?county= primes any other on demand.
             const reply =
-              `Still compiling ${county.replace(/_/g, " ")} from the county records. ` +
-              `This takes a couple of minutes the first time after new data lands.\n\n` +
-              `Text me again shortly and I will have the matches.`;
+              `Collecting information on ${county.replace(/_/g, " ")} now - reading the ` +
+              `county's records and working out the signals for every property.\n\n` +
+              `This is the slow part and it only happens when the data is new. ` +
+              `Text me again in a minute and I will have your matches.`;
             yield* Effect.tryPromise({
               try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
               catch: (cause): Error =>

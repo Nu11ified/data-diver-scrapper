@@ -16,6 +16,7 @@ import {
   type TreeDoc,
 } from "../decision/graph.ts";
 import { calibratedStates, estimate, holdoutError, isCalibrated } from "../valuation.ts";
+import { linkBlock } from "../links.ts";
 import {
   classifyOwner,
   formatInZone,
@@ -428,6 +429,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
                 `${contactSummary(match)}\n\n` +
                 `${worthSummary(match)}\n\n` +
+                `${linkBlock(match.address, match.propertyKey.split("|")[0] ?? "")}\n\n` +
                 `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
               const codexConnected =
                 input.codexAccount !== undefined && input.codexAccount !== "";
