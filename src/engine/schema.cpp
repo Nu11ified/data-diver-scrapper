@@ -143,13 +143,15 @@ std::string_view kind_name(Kind k) {
     case Kind::Date: return "date";
     case Kind::Status: return "status";
     case Kind::Text: return "text";
+    case Kind::Email: return "email";
+    case Kind::Phone: return "phone";
     }
     return "text";
 }
 
 std::optional<Kind> kind_from_name(std::string_view name) {
     for (Kind k : {Kind::Id, Kind::Name, Kind::Address, Kind::Money, Kind::Date, Kind::Status,
-                   Kind::Text}) {
+                   Kind::Text, Kind::Email, Kind::Phone}) {
         if (kind_name(k) == name) return k;
     }
     return std::nullopt;
@@ -347,6 +349,28 @@ bool validate(const FieldDef& field, std::string_view raw) {
     case Kind::Date: return parse_date(value).has_value();
     case Kind::Status: return value.size() <= 60 && has_alpha(value);
     case Kind::Text: return value.size() >= 3;
+    case Kind::Email: {
+        if (value.size() < 6 || value.size() > 254) return false;
+        const std::size_t at = value.find('@');
+        if (at == std::string::npos || at == 0) return false;
+        if (value.find('@', at + 1) != std::string::npos) return false;
+        if (str::contains(value, " ")) return false;
+        const std::string_view domain{value.data() + at + 1, value.size() - at - 1};
+        const std::size_t dot = domain.rfind('.');
+        return dot != std::string_view::npos && dot > 0 && domain.size() - dot >= 3;
+    }
+    case Kind::Phone: {
+        const std::size_t digits = digit_count(value);
+        if (digits < 10 || digits > 15) return false;
+        if (str::contains(value, "@")) return false;
+        for (const char c : value) {
+            const bool allowed = std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '(' ||
+                                 c == ')' || c == '-' || c == ' ' || c == '+' || c == '.' ||
+                                 c == 'x' || c == 'X';
+            if (!allowed) return false;
+        }
+        return true;
+    }
     }
     return false;
 }
@@ -366,9 +390,11 @@ std::string normalize(const FieldDef& field, std::string_view raw) {
         return date.has_value() ? *date : value;
     }
     case Kind::Id: return str::to_upper(str::collapse_ws(value));
+    case Kind::Email: return str::to_lower(str::collapse_ws(value));
     case Kind::Name:
     case Kind::Address:
     case Kind::Status:
+    case Kind::Phone:
     case Kind::Text: return str::collapse_ws(value);
     }
     return value;

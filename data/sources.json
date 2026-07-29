@@ -1,138 +1,150 @@
 [
- {
-  "id": "norfolk_delinquent",
-  "name": "Norfolk VA Delinquent Property Taxes",
-  "url": "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,sum(taxdue) as tax_due,sum(penaltydue) as penalty,sum(interestdue) as interest,sum(total) as total_due&$group=account,owner_name,address&$order=total_due DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "cook_tax_sale",
-  "name": "Cook County IL Annual Tax Sale",
-  "url": "https://datacatalog.cookcountyil.gov/resource/55ju-2fs9.json?$order=tax_sale_year DESC&$limit=50",
-  "jurisdiction": "Cook County IL"
- },
- {
-  "id": "chicago_violations",
-  "name": "Chicago Building Violations",
-  "url": "https://data.cityofchicago.org/resource/22u3-xenr.json?$order=violation_last_modified_date DESC&$limit=50",
-  "jurisdiction": "City of Chicago IL"
- },
- {
-  "id": "nola_violations",
-  "name": "New Orleans LA Code Enforcement Violations",
-  "url": "https://data.nola.gov/resource/3ehi-je3s.json?$select=caseno as case_number,location as address,violationdate as date,codesection as code_section,violation,description&$order=violationdate DESC&$limit=50",
-  "jurisdiction": "City of New Orleans LA"
- },
- {
-  "id": "nola_sheriff_sales",
-  "name": "New Orleans LA Sheriff Sales - Lien Foreclosures",
-  "url": "https://data.nola.gov/resource/d52w-8nva.json?$select=casetitle,cdccasenumber as case_number,plaintiff,defendant,propertyaddress,saleamount,saledate,salestatus as status&$order=cdccasenumber DESC&$limit=50",
-  "jurisdiction": "City of New Orleans LA"
- },
- {
-  "id": "seattle_permits",
-  "name": "Seattle WA Building Permits",
-  "url": "https://cos-data.seattle.gov/resource/76t5-zqzr.json?$select=permitnum as permit_number,originaladdress1 as address,permitclass,description,estprojectcost as valuation,issueddate as issued_date,statuscurrent as status&$order=issueddate DESC&$limit=50",
-  "jurisdiction": "City of Seattle WA"
- },
- {
-  "id": "nyc_property_sales",
-  "name": "NYC Citywide Rolling Calendar Property Sales",
-  "url": "https://data.cityofnewyork.us/resource/usep-8jbt.json?$select=address,zip_code,sale_price as consideration,sale_date as recorded&$order=sale_date DESC&$limit=50",
-  "jurisdiction": "City of New York NY"
- },
- {
-  "id": "norfolk_assessments",
-  "name": "Norfolk VA Property Assessments FY25",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$order=current_total_value DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA",
-  "as_of": "2025"
- },
- {
-  "id": "norfolk_violations",
-  "name": "Norfolk VA Code Enforcement Cases",
-  "url": "https://data.norfolk.gov/resource/agip-sqwc.json?$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "kcmo_property_violations",
-  "name": "Kansas City MO Property Violations",
-  "url": "https://data.kcmo.org/resource/nhtf-e75a.json?$limit=50",
-  "jurisdiction": "Kansas City MO"
- },
- {
-  "id": "cincinnati_code_enforcement",
-  "name": "Cincinnati OH Code Enforcement",
-  "url": "https://data.cincinnati-oh.gov/resource/cncm-znd6.json?$limit=50",
-  "jurisdiction": "City of Cincinnati OH"
- },
- {
-  "id": "la_building_permits",
-  "name": "Los Angeles CA Building Permits",
-  "url": "https://data.lacity.org/resource/pi9x-tg5x.json?$limit=50",
-  "jurisdiction": "City of Los Angeles CA"
- },
- {
-  "id": "howard_md_tax_sale",
-  "name": "Howard County MD Tax Sale",
-  "url": "https://opendata.howardcountymd.gov/resource/etp2-fnbu.json?$limit=50",
-  "jurisdiction": "Howard County MD"
- },
- {
-  "id": "prince_georges_violations",
-  "name": "Prince George's County MD Code Violations",
-  "url": "https://data.princegeorgescountymd.gov/resource/9hyf-46qb.json?$limit=50",
-  "jurisdiction": "Prince George's County MD"
- },
- {
-  "id": "tarrant_constable_tax_sale",
-  "name": "Tarrant County TX Constable Tax Sale (HTML)",
-  "url": "https://www.tarrantcountytx.gov/en/constables/constable-3/delinquent-tax-sales/monthly-tax-sales-listings/june-2--2026.html",
-  "jurisdiction": "Tarrant County TX"
- },
- {
-  "id": "norfolk_permits",
-  "name": "Norfolk VA Building Permits",
-  "url": "https://data.norfolk.gov/resource/fahm-yuh4.json?$order=application_date DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "norfolk_inspections",
-  "name": "Norfolk VA Inspections",
-  "url": "https://data.norfolk.gov/resource/ihzr-5x5n.json?$order=completed_date DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "norfolk_short_term_rentals",
-  "name": "Norfolk VA Short Term Rental Registrations",
-  "url": "https://data.norfolk.gov/resource/7mjv-xiqs.json?$order=permit_issue_date DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "norfolk_plan_reviews",
-  "name": "Norfolk VA Plan Reviews",
-  "url": "https://data.norfolk.gov/resource/dhk3-hr4y.json?$order=completed_date DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
- },
- {
-  "id": "norfolk_parcel_assessments",
-  "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=200",
-  "jurisdiction": "City of Norfolk VA",
-  "as_of": "2025"
- },
- {
-  "id": "norfolk_street_assessments",
-  "name": "Norfolk VA Assessments (enrichment: tracked addresses)",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=upper(property_street_name) in({streets}) AND property_street_number in({numbers})&$limit=2000",
-  "jurisdiction": "City of Norfolk VA",
-  "as_of": "2025"
- },
- {
-  "id": "norfolk_prior_year_assessments",
-  "name": "Norfolk VA Assessments FY24 (enrichment: tracked parcels)",
-  "url": "https://data.norfolk.gov/resource/9gmp-9x4c.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=400",
-  "jurisdiction": "City of Norfolk VA",
-  "as_of": "2024"
- }
+  {
+    "id": "norfolk_delinquent",
+    "name": "Norfolk VA Delinquent Property Taxes",
+    "url": "https://data.norfolk.gov/resource/7qie-z5gv.json?$select=account,owner_name,address,sum(taxdue) as tax_due,sum(penaltydue) as penalty,sum(interestdue) as interest,sum(total) as total_due&$group=account,owner_name,address&$order=total_due DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "cook_tax_sale",
+    "name": "Cook County IL Annual Tax Sale",
+    "url": "https://datacatalog.cookcountyil.gov/resource/55ju-2fs9.json?$order=tax_sale_year DESC&$limit=50",
+    "jurisdiction": "Cook County IL"
+  },
+  {
+    "id": "chicago_violations",
+    "name": "Chicago Building Violations",
+    "url": "https://data.cityofchicago.org/resource/22u3-xenr.json?$order=violation_last_modified_date DESC&$limit=50",
+    "jurisdiction": "City of Chicago IL"
+  },
+  {
+    "id": "nola_violations",
+    "name": "New Orleans LA Code Enforcement Violations",
+    "url": "https://data.nola.gov/resource/3ehi-je3s.json?$select=caseno as case_number,location as address,violationdate as date,codesection as code_section,violation,description&$order=violationdate DESC&$limit=50",
+    "jurisdiction": "City of New Orleans LA"
+  },
+  {
+    "id": "nola_sheriff_sales",
+    "name": "New Orleans LA Sheriff Sales - Lien Foreclosures",
+    "url": "https://data.nola.gov/resource/d52w-8nva.json?$select=casetitle,cdccasenumber as case_number,plaintiff,defendant,propertyaddress,saleamount,saledate,salestatus as status&$order=cdccasenumber DESC&$limit=50",
+    "jurisdiction": "City of New Orleans LA"
+  },
+  {
+    "id": "seattle_permits",
+    "name": "Seattle WA Building Permits",
+    "url": "https://cos-data.seattle.gov/resource/76t5-zqzr.json?$select=permitnum as permit_number,originaladdress1 as address,permitclass,description,estprojectcost as valuation,issueddate as issued_date,statuscurrent as status&$order=issueddate DESC&$limit=50",
+    "jurisdiction": "City of Seattle WA"
+  },
+  {
+    "id": "nyc_property_sales",
+    "name": "NYC Citywide Rolling Calendar Property Sales",
+    "url": "https://data.cityofnewyork.us/resource/usep-8jbt.json?$select=address,zip_code,sale_price as consideration,sale_date as recorded&$order=sale_date DESC&$limit=50",
+    "jurisdiction": "City of New York NY"
+  },
+  {
+    "id": "norfolk_assessments",
+    "name": "Norfolk VA Property Assessments FY25",
+    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$order=current_total_value DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA",
+    "as_of": "2025"
+  },
+  {
+    "id": "norfolk_violations",
+    "name": "Norfolk VA Code Enforcement Cases",
+    "url": "https://data.norfolk.gov/resource/agip-sqwc.json?$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "kcmo_property_violations",
+    "name": "Kansas City MO Property Violations",
+    "url": "https://data.kcmo.org/resource/nhtf-e75a.json?$limit=50",
+    "jurisdiction": "Kansas City MO"
+  },
+  {
+    "id": "cincinnati_code_enforcement",
+    "name": "Cincinnati OH Code Enforcement",
+    "url": "https://data.cincinnati-oh.gov/resource/cncm-znd6.json?$limit=50",
+    "jurisdiction": "City of Cincinnati OH"
+  },
+  {
+    "id": "la_building_permits",
+    "name": "Los Angeles CA Building Permits",
+    "url": "https://data.lacity.org/resource/pi9x-tg5x.json?$limit=50",
+    "jurisdiction": "City of Los Angeles CA"
+  },
+  {
+    "id": "howard_md_tax_sale",
+    "name": "Howard County MD Tax Sale",
+    "url": "https://opendata.howardcountymd.gov/resource/etp2-fnbu.json?$limit=50",
+    "jurisdiction": "Howard County MD"
+  },
+  {
+    "id": "prince_georges_violations",
+    "name": "Prince George's County MD Code Violations",
+    "url": "https://data.princegeorgescountymd.gov/resource/9hyf-46qb.json?$limit=50",
+    "jurisdiction": "Prince George's County MD"
+  },
+  {
+    "id": "tarrant_constable_tax_sale",
+    "name": "Tarrant County TX Constable Tax Sale (HTML)",
+    "url": "https://www.tarrantcountytx.gov/en/constables/constable-3/delinquent-tax-sales/monthly-tax-sales-listings/june-2--2026.html",
+    "jurisdiction": "Tarrant County TX"
+  },
+  {
+    "id": "norfolk_permits",
+    "name": "Norfolk VA Building Permits",
+    "url": "https://data.norfolk.gov/resource/fahm-yuh4.json?$order=application_date DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "norfolk_inspections",
+    "name": "Norfolk VA Inspections",
+    "url": "https://data.norfolk.gov/resource/ihzr-5x5n.json?$order=completed_date DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "norfolk_short_term_rentals",
+    "name": "Norfolk VA Short Term Rental Registrations",
+    "url": "https://data.norfolk.gov/resource/7mjv-xiqs.json?$order=permit_issue_date DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "norfolk_plan_reviews",
+    "name": "Norfolk VA Plan Reviews",
+    "url": "https://data.norfolk.gov/resource/dhk3-hr4y.json?$order=completed_date DESC&$limit=50",
+    "jurisdiction": "City of Norfolk VA"
+  },
+  {
+    "id": "norfolk_parcel_assessments",
+    "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
+    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=200",
+    "jurisdiction": "City of Norfolk VA",
+    "as_of": "2025"
+  },
+  {
+    "id": "norfolk_street_assessments",
+    "name": "Norfolk VA Assessments (enrichment: tracked addresses)",
+    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=upper(property_street_name) in({streets}) AND property_street_number in({numbers})&$limit=2000",
+    "jurisdiction": "City of Norfolk VA",
+    "as_of": "2025"
+  },
+  {
+    "id": "norfolk_prior_year_assessments",
+    "name": "Norfolk VA Assessments FY24 (enrichment: tracked parcels)",
+    "url": "https://data.norfolk.gov/resource/9gmp-9x4c.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=400",
+    "jurisdiction": "City of Norfolk VA",
+    "as_of": "2024"
+  },
+  {
+    "id": "orlando_str_licenses",
+    "name": "Orlando FL Short Term Rental Licenses",
+    "url": "https://data.cityoforlando.net/resource/ssrj-rbua.json?$select=property_address as address,property_owner_name1 as owner,property_owner_address1 as mailing_address,license_holder_phone as owner_phone,license_holder_email as owner_email,license_number,license_status as status,license_date as date&$order=license_date DESC&$limit=50",
+    "jurisdiction": "City of Orlando FL"
+  },
+  {
+    "id": "cook_parcel_owners",
+    "name": "Cook County IL Assessor Parcel Owner Addresses",
+    "url": "https://datacatalog.cookcountyil.gov/resource/3723-97qp.json?$select=pin as parcel_id,prop_address_full as address,prop_address_zipcode_1 as zip,mail_address_name as owner,mail_address_full as mailing_address,year&$order=year DESC&$limit=50",
+    "jurisdiction": "Cook County IL"
+  }
 ]

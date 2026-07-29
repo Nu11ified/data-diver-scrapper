@@ -87,7 +87,7 @@
     },
     {
       "name": "owner_phone",
-      "kind": "text",
+      "kind": "phone",
       "synonyms": [
         "phone",
         "phone number",
@@ -96,18 +96,21 @@
         "contact number",
         "phone no",
         "primary phone",
-        "contact phone"
+        "contact phone",
+        "license holder phone",
+        "applicant phone"
       ]
     },
     {
       "name": "owner_email",
-      "kind": "text",
+      "kind": "email",
       "synonyms": [
         "email",
         "e-mail",
         "owner email",
-        "email address",
-        "contact email"
+        "contact email",
+        "license holder email",
+        "applicant email"
       ]
     },
     {

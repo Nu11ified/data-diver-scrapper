@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace dd::schema {
-enum class Kind { Id, Name, Address, Money, Date, Status, Text };
+enum class Kind { Id, Name, Address, Money, Date, Status, Text, Email, Phone };
 
 std::string_view kind_name(Kind k);
 std::optional<Kind> kind_from_name(std::string_view name);

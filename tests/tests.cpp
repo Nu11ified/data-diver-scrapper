@@ -948,6 +948,19 @@ TEST(schema_validators) {
 
     CHECK(tvalidate("case_number", "2026-CV-04182"));
     CHECK(!tvalidate("case_number", "$500"));
+
+    CHECK(tvalidate("owner_email", "jlappy@gmail.com"));
+    CHECK(tvalidate("owner_email", "JAIMEDELGADO19@YAHOO.COM"));
+    CHECK(!tvalidate("owner_email", "17859 WILLIAM ST")); // a mailing address is not an email
+    CHECK(!tvalidate("owner_email", "no-at-sign.com"));
+    CHECK(!tvalidate("owner_email", "two@at@signs.com"));
+    CHECK(!tvalidate("owner_email", "trailing@dot."));
+
+    CHECK(tvalidate("owner_phone", "(407)353-6377"));
+    CHECK(tvalidate("owner_phone", "+1 561 310 8909"));
+    CHECK(!tvalidate("owner_phone", "22910 BURNHAM AVE")); // a street address is not a phone
+    CHECK(!tvalidate("owner_phone", "555-1234"));          // too few digits
+    CHECK(!tvalidate("owner_phone", "rosebert@gmail.com"));
 }
 
 TEST(schema_normalization) {
@@ -955,6 +968,8 @@ TEST(schema_normalization) {
     CHECK_EQ(tnormalize("event_date", "06/18/2026"), "2026-06-18");
     CHECK_EQ(tnormalize("parcel_id", "12a-33"), "12A-33");
     CHECK_EQ(tnormalize("owner", "  Jane   Smith "), "Jane Smith");
+    CHECK_EQ(tnormalize("owner_email", " JAIMEDELGADO19@YAHOO.COM "), "jaimedelgado19@yahoo.com");
+    CHECK_EQ(tnormalize("owner_phone", " (407)353-6377 "), "(407)353-6377");
 }
 
 TEST(schema_infers_mapping_across_dialects) {
