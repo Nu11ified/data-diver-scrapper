@@ -13,9 +13,6 @@
 
 namespace dd::doc {
 namespace {
-
-// ------------------------------------------------------------- helpers -----
-
 bool label_is_generic(std::string_view label) {
     static const std::vector<std::string> kGeneric = {
         "value", "cell",  "item", "field", "row",  "col",   "column", "data",
@@ -53,8 +50,6 @@ bool cell_text_is_numericish(std::string_view s) {
     return digits * 2 >= cleaned.size();
 }
 
-// --------------------------------------------------------------- html ------
-
 struct TableCandidate {
     std::vector<std::string> header;
     std::vector<const html::Node*> data_rows;
@@ -83,8 +78,6 @@ TableCandidate analyze_table(const html::Node* table) {
     });
     if (rows.empty()) return out;
 
-    // Header: first row made of th cells, else a first row that does not read
-    // as data (no numeric-heavy cells).
     std::size_t first_data = 0;
     const std::vector<const html::Node*> first_cells = row_cells(rows[0]);
     bool header_found = false;
@@ -123,9 +116,6 @@ const std::string* data_attr(const html::Node& node) {
     return nullptr;
 }
 
-// Extracts labelled cells from one repeated block. Labels come from, in order
-// of preference: data attributes, a label child ("<span>Owner:</span> value"),
-// an inline "Label: value" split, dt/dd pairing, then semantic class names.
 void block_cells(const html::Node* block, const std::string& block_path, RawRecord& record) {
     std::string pending_dt;
     html::walk(block, [&](const html::Node* n) {
@@ -151,7 +141,6 @@ void block_cells(const html::Node* block, const std::string& block_path, RawReco
             return;
         }
 
-        // "<b>Owner:</b> Jane Smith" inside one element.
         const std::string own = n->own_text();
         if (!own.empty() && n->element_child_count() == 1) {
             const html::Node* child = nullptr;
@@ -169,7 +158,6 @@ void block_cells(const html::Node* block, const std::string& block_path, RawReco
             }
         }
 
-        // Leaf with "Label: value" in its own text.
         if (n->element_child_count() == 0 && !own.empty()) {
             const std::size_t colon = own.find(':');
             if (colon != std::string::npos && colon > 0 && colon <= 40 &&
@@ -269,8 +257,6 @@ void extract_html(Model& model, std::string_view body) {
     }
 }
 
-// --------------------------------------------------------------- json ------
-
 void flatten_object(const json::Value& object, const std::string& prefix,
                     const std::string& path, RawRecord& record) {
     for (const auto& [key, value] : object.members()) {
@@ -331,7 +317,6 @@ void find_record_arrays(const json::Value& value, const std::string& path,
 void extract_json(Model& model, std::string_view body) {
     const json::Value root = json::parse(body);
 
-    // Text for classification: keys and scalar values.
     std::string text;
     const std::function<void(const json::Value&)> collect = [&](const json::Value& v) {
         if (v.is_object()) {
@@ -353,7 +338,6 @@ void extract_json(Model& model, std::string_view body) {
     JsonArrayCandidate best;
     find_record_arrays(root, "", best);
     if (best.array == nullptr) {
-        // A single object of scalars is one record (detail pages).
         if (root.is_object()) {
             RawRecord record;
             flatten_object(root, "", "", record);
@@ -372,8 +356,6 @@ void extract_json(Model& model, std::string_view body) {
         if (!record.cells.empty()) model.records.push_back(std::move(record));
     }
 }
-
-// ---------------------------------------------------------------- csv ------
 
 void extract_csv(Model& model, std::string_view body) {
     const csv::Table table = csv::parse(body);
@@ -396,8 +378,6 @@ void extract_csv(Model& model, std::string_view body) {
         if (!record.cells.empty()) model.records.push_back(std::move(record));
     }
 }
-
-// ----------------------------------------------------- pdf and plain text --
 
 std::vector<std::string> split_columns(const std::string& line) {
     std::vector<std::string> cols;
@@ -429,7 +409,6 @@ void extract_lines(Model& model, const std::vector<std::string>& lines) {
     model.text = str::collapse_ws(str::join(lines, " "));
     if (!lines.empty()) model.title = lines.front();
 
-    // Dominant column count across whitespace-aligned lines.
     std::map<std::size_t, std::size_t> width_votes;
     std::vector<std::vector<std::string>> split;
     split.reserve(lines.size());
@@ -471,7 +450,6 @@ void extract_lines(Model& model, const std::vector<std::string>& lines) {
     }
     model.container_signature = "text[" + std::to_string(width) + "]";
 }
-
 } // namespace
 
 std::string_view format_name(Format f) {
@@ -495,7 +473,6 @@ Format detect_format(std::string_view content_type, std::string_view body) {
             json::parse(body);
             return Format::Json;
         } catch (const Error&) {
-            // fall through: JSON-looking but malformed
         }
     }
     const std::string lowered = str::to_lower(trimmed.substr(0, 256));
@@ -511,7 +488,6 @@ Format detect_format(std::string_view content_type, std::string_view body) {
     if (str::contains(type, "csv")) return Format::Csv;
     if (str::contains(type, "pdf")) return Format::Pdf;
 
-    // CSV shape: consistent delimiter counts over the first lines.
     const char delim = csv::detect_delimiter(body);
     std::size_t consistent = 0;
     std::size_t expected = std::string::npos;
@@ -575,5 +551,4 @@ Model build(Format format, std::string_view body) {
 Model build_auto(std::string_view content_type, std::string_view body) {
     return build(detect_format(content_type, body), body);
 }
-
 } // namespace dd::doc

@@ -1,5 +1,3 @@
-// Headless renderer for JS-heavy county portals: prints the rendered DOM to
-// stdout so the C++ engine can consume it like any other fetched body.
 import puppeteer from "puppeteer";
 
 const url = process.argv[2];

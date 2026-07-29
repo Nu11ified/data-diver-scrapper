@@ -8,7 +8,6 @@
 
 namespace dd::store {
 namespace {
-
 std::string get_string(const json::Value& v, const char* key) {
     const json::Value* member = v.find(key);
     return member == nullptr ? std::string{} : member->as_string();
@@ -28,10 +27,7 @@ std::string unique_id(std::string_view basis) {
     return str::hex64(str::hash64(std::string{basis} + "|" + timeutil::iso_now() + "|" +
                                   std::to_string(timeutil::unix_now())));
 }
-
 } // namespace
-
-// ----------------------------------------------------------- RunRecord -----
 
 std::string RunRecord::serialize() const {
     json::Writer w;
@@ -102,8 +98,6 @@ RunRecord RunRecord::deserialize(const std::string& text) {
     return r;
 }
 
-// -------------------------------------------------------- RepairRecord -----
-
 std::string RepairRecord::serialize() const {
     json::Writer w;
     w.begin_object();
@@ -142,8 +136,6 @@ RepairRecord RepairRecord::deserialize(const std::string& text) {
     r.confidence = get_number(v, "confidence");
     r.accepted = get_bool(v, "accepted");
     const json::Value* resolution = v.find("resolution");
-    // Legacy records predate the resolution field: auto-accepted repairs were
-    // "auto", everything else was waiting for review.
     r.resolution = resolution == nullptr ? (r.accepted ? "auto" : "pending")
                                          : resolution->as_string();
     const json::Value* changes = v.find("changes");
@@ -153,8 +145,6 @@ RepairRecord RepairRecord::deserialize(const std::string& text) {
     if (r.id.empty() || r.source_id.empty()) throw Error("store: repair record missing id");
     return r;
 }
-
-// ---------------------------------------------------------------- Store ----
 
 Store::Store(std::string root) : root_{std::move(root)} {
     fileio::ensure_dir(root_);
@@ -261,8 +251,6 @@ void Store::persist_sources_locked() {
 void Store::seed(const std::string& seeds_path) {
     const std::lock_guard<std::mutex> lock{mutex_};
     if (!fileio::exists(seeds_path)) return;
-    // Seeds are configuration: ids added to the file join an existing store;
-    // sources the operator already has are left untouched.
     bool changed = false;
     const json::Value list = json::parse(fileio::read_file(seeds_path));
     for (const json::Value& entry : list.items()) {
@@ -283,7 +271,6 @@ void Store::seed(const std::string& seeds_path) {
         }
     }
     if (changed) persist_sources_locked();
-    // Materialize any missing working copies.
     for (const Source& s : sources_) {
         if (s.seed_from.empty() || fileio::exists(s.url)) continue;
         if (!fileio::exists(s.seed_from)) {
@@ -546,12 +533,10 @@ RepairRecord Store::resolve_repair(const std::string& id, bool approved) {
         state.source_id = it->source_id;
         state.mapping = schema::Mapping::deserialize(it->after_mapping_json);
         state.has_mapping = !state.mapping.fields.empty();
-        // The source changed shape; the old baseline no longer describes it.
         state.good_runs = 0;
         state.updated_at = timeutil::iso_now();
         save_source_state_locked(state);
     }
     return *it;
 }
-
 } // namespace dd::store

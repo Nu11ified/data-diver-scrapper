@@ -7,7 +7,6 @@
 #include <vector>
 
 namespace dd::html {
-
 struct Attribute {
     std::string name;
     std::string value;
@@ -16,9 +15,6 @@ struct Attribute {
 struct Node;
 using NodePtr = std::unique_ptr<Node>;
 
-// A tolerant DOM. County pages are frequently invalid HTML, so the parser
-// recovers rather than rejecting: unclosed tags are closed implicitly and stray
-// close tags are dropped.
 struct Node {
     enum class Kind { Document, Element, Text };
 
@@ -32,14 +28,10 @@ struct Node {
     const std::string* attr(std::string_view name) const;
     std::vector<std::string> classes() const;
 
-    // Concatenated descendant text with whitespace collapsed.
     std::string text_content() const;
 
-    // Direct text of this element only, ignoring nested elements. Used when an
-    // element carries both a label child and its own value text.
     std::string own_text() const;
 
-    // tag plus sorted class list. Repeated record blocks share a signature.
     std::string signature() const;
 
     std::size_t element_child_count() const;
@@ -62,5 +54,4 @@ private:
 Document parse(std::string_view html);
 std::string decode_entities(std::string_view s);
 void walk(const Node* node, const std::function<void(const Node*)>& visit);
-
 } // namespace dd::html

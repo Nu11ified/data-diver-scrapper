@@ -7,7 +7,6 @@
 
 namespace dd::classify {
 namespace {
-
 struct Example {
     std::string source;
     std::string label;
@@ -27,8 +26,6 @@ std::vector<Example> load_corpus(const std::string& corpus_dir) {
             if (!fs::is_regular_file(file)) continue;
             const std::string body = fileio::read_file(file);
             const doc::Model model = doc::build_auto("", body);
-            // No url during training: corpus file names must not teach the
-            // model anything.
             examples.push_back(Example{file, label, features::extract(model, "")});
         }
     }
@@ -60,7 +57,6 @@ double accuracy_of(const std::vector<LooPrediction>& predictions) {
     }
     return static_cast<double>(correct) / static_cast<double>(predictions.size());
 }
-
 } // namespace
 
 Classifier Classifier::train_from_corpus(const std::string& corpus_dir, TrainReport* report,
@@ -126,5 +122,4 @@ Prediction Classifier::classify(const doc::Model& model, const std::string& url)
     out.confidence = out.distribution.front().probability;
     return out;
 }
-
 } // namespace dd::classify

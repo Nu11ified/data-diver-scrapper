@@ -1,17 +1,3 @@
-// datadiver: county records in, one schema out, in your terminal.
-//
-//   datadiver                       interactive shell (paste URLs, stay in)
-//   datadiver align URL             one-shot: fetch, classify, match, extract
-//   datadiver watch URL [--interval N]
-//                                   re-fetch on an interval; show drift and
-//                                   healing live as the page changes
-//   datadiver ingest (--all | ID)   stateful ingestion into var/ (events,
-//                                   properties, baselines, healing)
-//   datadiver sources               list configured sources
-//   datadiver train                 retrain the classifier from data/corpus
-//
-// Common flags: --schema FILE (default data/schema.json), --model FILE,
-// --state DIR, --seeds FILE.
 
 #include "commands.hpp"
 #include "render.hpp"
@@ -40,7 +26,6 @@
 #include <vector>
 
 namespace {
-
 using dd::render::meter;
 using dd::render::paint;
 using dd::render::section;
@@ -94,8 +79,6 @@ std::string fmt_bytes(std::int64_t n) {
     return buffer;
 }
 
-// One alignment of one document, kept so watch can compare consecutive
-// fetches.
 struct Alignment {
     dd::doc::Model model;
     dd::classify::Prediction prediction;
@@ -220,7 +203,6 @@ void print_alignment(const dd::fetch::Result& fetched, const Alignment& a) {
     });
 }
 
-// Fetch and align one URL, printing the full report.
 std::optional<Alignment> run_align(const dd::schema::Registry& registry,
                                    const dd::columns::ColumnModel* column_model,
                                    const dd::classify::Classifier& classifier,
@@ -251,9 +233,6 @@ std::string now_clock() {
     return buffer;
 }
 
-// Watch a URL: refetch on an interval, skip unchanged bytes cheaply, and
-// when the page changes shape run the healer against the previous mapping
-// and show the repair live.
 int watch_url(const dd::schema::Registry& registry, const dd::classify::Classifier& classifier,
               const dd::columns::ColumnModel* column_model,
               const std::string& url, int interval_seconds) {
@@ -284,7 +263,6 @@ int watch_url(const dd::schema::Registry& registry, const dd::classify::Classifi
                                     now_clock().c_str());
                         print_alignment(fetched, current);
                     } else {
-                        // Would the previous mapping still work on this page?
                         const dd::schema::ExtractionResult with_old = dd::schema::apply_mapping(
                             registry, previous->mapping, current.model);
                         const double baseline = previous->extraction.rate;
@@ -342,7 +320,6 @@ void print_schema(const dd::schema::Registry& registry) {
     dd::render::table({"field", "kind", "role", "identity", "lexicon"}, rows);
 }
 
-// Whitespace-and-quote tokenizer; a dangling quote is an error, not a guess.
 std::optional<std::vector<std::string>> shell_tokens(const std::string& input) {
     std::vector<std::string> out;
     std::string current;
@@ -364,7 +341,6 @@ std::optional<std::vector<std::string>> shell_tokens(const std::string& input) {
     return out;
 }
 
-// Strict full-consumption number parsing; anything else is a usage error.
 std::optional<long> parse_long(const std::string& s, long lo, long hi) {
     if (s.empty()) return std::nullopt;
     char* end = nullptr;
@@ -395,14 +371,11 @@ bool looks_like_document(const std::string& input) {
 
 void print_run(const dd::store::RunRecord& run);
 
-// The column transformer is optional equipment: absent file means the
-// lexicon and validators carry matching alone.
 std::optional<dd::columns::ColumnModel> load_column_model(const std::string& path) {
     if (!dd::fileio::exists(path)) return std::nullopt;
     return dd::columns::ColumnModel::load(path);
 }
 
-// Store-backed state, built on first use so pasting a URL stays instant.
 struct ShellState {
     std::string state_dir;
     std::string seeds_path;
@@ -714,7 +687,6 @@ int usage() {
         "flags: --schema FILE  --model FILE  --state DIR  --seeds FILE\n");
     return 2;
 }
-
 } // namespace
 
 int main(int argc, char** argv) {

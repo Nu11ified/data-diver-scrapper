@@ -10,7 +10,6 @@
 
 namespace dd::html {
 namespace {
-
 bool is_void_tag(std::string_view tag) {
     static constexpr std::array<std::string_view, 14> kVoid = {
         "area", "base", "br",    "col",    "embed",  "hr",  "img",
@@ -18,11 +17,8 @@ bool is_void_tag(std::string_view tag) {
     return std::find(kVoid.begin(), kVoid.end(), tag) != kVoid.end();
 }
 
-// Tags whose content is raw text, not markup.
 bool is_rawtext_tag(std::string_view tag) { return tag == "script" || tag == "style"; }
 
-// Opening one of these implicitly closes a same-name ancestor at the same
-// level, which is how browsers recover from the common unclosed patterns.
 bool closes_same(std::string_view tag) {
     static constexpr std::array<std::string_view, 6> kSame = {"li", "tr", "td", "th", "option",
                                                               "p"};
@@ -103,7 +99,6 @@ private:
     }
 
     void consume_markup() {
-        // pos_ is at '<'.
         if (input_.compare(pos_, 4, "<!--") == 0) {
             const std::size_t end = input_.find("-->", pos_ + 4);
             pos_ = end == std::string_view::npos ? input_.size() : end + 3;
@@ -120,7 +115,6 @@ private:
         }
         if (pos_ + 1 >= input_.size() ||
             std::isalpha(static_cast<unsigned char>(input_[pos_ + 1])) == 0) {
-            // A bare '<' in text.
             add_text("<");
             ++pos_;
             return;
@@ -134,8 +128,6 @@ private:
         const std::size_t end = input_.find('>', pos_);
         pos_ = end == std::string_view::npos ? input_.size() : end + 1;
 
-        // Pop to the matching open element if one exists; otherwise drop the
-        // stray close tag.
         for (std::size_t i = stack_.size(); i-- > 1;) {
             if (stack_[i]->tag == tag) {
                 stack_.resize(i);
@@ -175,15 +167,11 @@ private:
     }
 
     void implicitly_close(std::string_view tag) {
-        // "<li>" while an "li" is open closes it; same for table cells/rows.
-        // "p" additionally closes when any block opens, but same-tag is the
-        // case that matters for record extraction.
         for (std::size_t i = stack_.size(); i-- > 1;) {
             if (stack_[i]->tag == tag) {
                 stack_.resize(i);
                 return;
             }
-            // Do not close through structural containers.
             if (stack_[i]->tag == "table" || stack_[i]->tag == "ul" || stack_[i]->tag == "ol" ||
                 stack_[i]->tag == "select" || stack_[i]->tag == "div") {
                 return;
@@ -283,7 +271,6 @@ private:
     NodePtr root_;
     std::vector<Node*> stack_;
 };
-
 } // namespace
 
 std::string decode_entities(std::string_view s) {
@@ -430,5 +417,4 @@ Document parse(std::string_view html) {
     TreeBuilder builder{html};
     return Document{builder.run()};
 }
-
 } // namespace dd::html

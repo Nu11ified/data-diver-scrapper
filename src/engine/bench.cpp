@@ -7,7 +7,6 @@
 
 namespace dd::bench {
 namespace {
-
 std::vector<std::string> string_or_list(const json::Value& value) {
     std::vector<std::string> out;
     if (value.is_array()) {
@@ -21,7 +20,6 @@ std::vector<std::string> string_or_list(const json::Value& value) {
 bool contains(const std::vector<std::string>& list, const std::string& value) {
     return std::find(list.begin(), list.end(), value) != list.end();
 }
-
 } // namespace
 
 std::vector<Golden> load_golden(const std::string& path) {
@@ -95,13 +93,10 @@ MappingScore score_mapping(const Golden& golden, const schema::Registry& registr
         } else if (contains(acceptable, label)) {
             ++score.tp;
         } else {
-            // A wrong mapping is a false positive, and where the key demanded
-            // a real label it is a false negative too.
             ++score.spurious;
             if (required) ++score.missing;
         }
     }
     return score;
 }
-
 } // namespace dd::bench

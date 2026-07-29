@@ -12,7 +12,6 @@
 
 namespace dd::columns {
 namespace {
-
 constexpr int kCls = 1;
 constexpr int kSep = 2;
 constexpr int kUnk = 3;
@@ -35,7 +34,6 @@ void validate_hyper(const Hyper& h) {
     if (!ok) throw Error("columns: invalid architecture dimensions");
 }
 
-// Offsets of every tensor inside the flat parameter buffer.
 struct Layout {
     int d, ffn, layers, seq, classes;
     std::size_t tok_emb, pos_emb;
@@ -92,7 +90,6 @@ Layout make_layout(const Hyper& h, int classes) {
     return l;
 }
 
-// out (n x cols) = x (n x rows) * w (rows x cols) + b
 void linear(const double* x, int n, int rows, int cols, const double* w, const double* b,
             double* out) {
     for (int i = 0; i < n; ++i) {
@@ -108,7 +105,6 @@ void linear(const double* x, int n, int rows, int cols, const double* w, const d
     }
 }
 
-// Gradients of the same linear op. dx may be null (embedding layer).
 void linear_backward(const double* x, const double* dout, int n, int rows, int cols,
                      const double* w, double* dw, double* db, double* dx) {
     for (int i = 0; i < n; ++i) {
@@ -185,7 +181,6 @@ void softmax_row(double* row, int n) {
     for (int i = 0; i < n; ++i) row[i] /= sum;
 }
 
-// Everything the backward pass needs, for one example.
 struct Trace {
     std::vector<int> ids;
     int n = 0;
@@ -201,8 +196,6 @@ struct Trace {
     std::vector<double> logits, probs;
 };
 
-// Stable cross-entropy from raw logits, so the reported loss and the p-y
-// gradient always describe the same function.
 double cross_entropy(const std::vector<double>& logits, int target) {
     double mx = logits[0];
     for (double v : logits) mx = std::max(mx, v);
@@ -250,7 +243,6 @@ struct Net {
             for (int i = 0; i < n; ++i) {
                 const double* prow = t.probs.data() + (static_cast<std::size_t>(h) * n + i) * n;
                 const double* dctx_i = d_ctx + static_cast<std::size_t>(i) * d + h * dh;
-                // dP_ij = dCtx_i . V_j ; then softmax backward to scores.
                 double dot = 0.0;
                 for (int j = 0; j < n; ++j) {
                     const double* vj = t.v.data() + static_cast<std::size_t>(j) * d + h * dh;
@@ -258,7 +250,6 @@ struct Net {
                     for (int e = 0; e < dh; ++e) dp += dctx_i[e] * vj[e];
                     dscore[static_cast<std::size_t>(j)] = dp;
                     dot += dp * prow[j];
-                    // dV_j += P_ij * dCtx_i
                     double* dvj = dv + static_cast<std::size_t>(j) * d + h * dh;
                     for (int e = 0; e < dh; ++e) dvj[e] += prow[j] * dctx_i[e];
                 }
@@ -339,7 +330,6 @@ struct Net {
         softmax_row(trace->probs.data(), lay.classes);
     }
 
-    // Cross-entropy backward through the whole net; adds into grad.
     void backprop(const double* p, const Trace& trace, int target, double* grad) const {
         const int d = lay.d;
         const int n = trace.n;
@@ -354,7 +344,6 @@ struct Net {
         for (std::size_t bi = lay.blocks.size(); bi-- > 0;) {
             const Layout::Block& blk = lay.blocks[bi];
             const Trace::BlockTrace& t = trace.blocks[bi];
-            // x_out = x_mid + relu(ln2(x_mid) W1 + b1) W2 + b2
             std::vector<double> dh(static_cast<std::size_t>(n) * lay.ffn, 0.0);
             linear_backward(t.h.data(), dx.data(), n, lay.ffn, d, p + blk.w2, grad + blk.w2,
                             grad + blk.b2, dh.data());
@@ -364,10 +353,8 @@ struct Net {
             std::vector<double> dbnorm(static_cast<std::size_t>(n) * d, 0.0);
             linear_backward(t.bnorm.data(), dh.data(), n, d, lay.ffn, p + blk.w1, grad + blk.w1,
                             grad + blk.b1, dbnorm.data());
-            // dx currently holds d(x_out); residual passes it to x_mid too.
             layer_norm_backward(dbnorm.data(), t.xhat2.data(), t.inv_std2.data(), n, d,
                                 p + blk.ln2_g, grad + blk.ln2_g, grad + blk.ln2_b, dx.data());
-            // x_mid = x_in + ctx Wo + bo
             std::vector<double> d_ctx(static_cast<std::size_t>(n) * d, 0.0);
             linear_backward(t.ctx.data(), dx.data(), n, d, d, p + blk.wo, grad + blk.wo,
                             grad + blk.bo, d_ctx.data());
@@ -396,7 +383,6 @@ struct Net {
         }
     }
 };
-
 } // namespace
 
 std::vector<int> tokenize(const std::string& name, const std::vector<std::string>& values,
@@ -731,5 +717,4 @@ void ColumnModel::save(const std::string& path) const {
 ColumnModel ColumnModel::load(const std::string& path) {
     return deserialize(fileio::read_file(path));
 }
-
 } // namespace dd::columns

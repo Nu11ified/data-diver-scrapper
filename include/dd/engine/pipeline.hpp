@@ -9,49 +9,26 @@
 #include <string>
 
 namespace dd::pipeline {
-
-// Runs the full ingestion for sources: fetch, detect, extract, classify,
-// map (learning or healing the mapping as needed, then applying operator
-// overrides), resolve to properties, and append events. Produces one
-// RunRecord per attempt with only measured numbers on it; failures surface
-// on the record with the stage that failed.
-// Expands a {parcels} placeholder in an enrichment source's URL into a
-// quoted, comma-separated list of the parcel ids already tracked for that
-// source's jurisdiction (capped at 150). Throws dd::Error when the store has
-// no parcels to enrich - the primary sources must run first.
 std::string expand_url_template(const store::Source& source, const store::Store& store);
 
 class Pipeline {
 public:
-    // The registry is the canonical schema this pipeline fills: the set of
-    // labels, their validators and their event roles, loaded from JSON.
     Pipeline(store::Store& store, classify::Classifier classifier, schema::Registry registry);
 
     store::RunRecord run_source(const store::Source& source);
 
-    // Ingests many sources concurrently: the network dominates a run, so
-    // fetches overlap. Results come back in the order given. `threads` of 0
-    // picks a bound from the hardware. Callers must not mutate the models
-    // while this runs.
     std::vector<store::RunRecord> run_sources(const std::vector<store::Source>& sources,
                                               int threads = 0);
 
-    // Convenience: run by id. Throws dd::Error for an unknown source.
     store::RunRecord run_source_id(const std::string& source_id);
 
-    // Replays the cached bytes of the source's last successful fetch through
-    // the full downstream pipeline (parse, classify, map, resolve). Throws
-    // dd::Error when the source has no fetch cache.
     store::RunRecord run_cached(const store::Source& source);
 
     const classify::Classifier& classifier() const noexcept { return classifier_; }
     const schema::Registry& registry() const noexcept { return registry_; }
 
-    // Hot-swaps the live classifier. Callers serialize this with runs.
     void set_classifier(classify::Classifier classifier);
 
-    // Installs (or replaces) the column transformer used as name evidence
-    // during mapping. Callers serialize this with runs.
     void set_column_model(columns::ColumnModel model);
     const columns::ColumnModel* column_model() const noexcept {
         return column_model_.trained() ? &column_model_ : nullptr;
@@ -67,5 +44,4 @@ private:
     schema::Registry registry_;
     columns::ColumnModel column_model_;
 };
-
 } // namespace dd::pipeline

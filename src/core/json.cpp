@@ -8,7 +8,6 @@
 
 namespace dd::json {
 namespace {
-
 constexpr int kMaxDepth = 64;
 
 class Parser {
@@ -232,7 +231,6 @@ private:
     std::string_view text_;
     std::size_t pos_ = 0;
 };
-
 } // namespace
 
 Value Value::boolean(bool v) {
@@ -488,5 +486,4 @@ void Writer::field_raw(std::string_view k, std::string_view already_json) {
     key(k);
     raw_value(already_json);
 }
-
 } // namespace dd::json

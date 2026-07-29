@@ -7,15 +7,12 @@
 #include <vector>
 
 namespace dd::classify {
-
 struct Prediction {
     std::string label;
     double confidence = 0.0;                  // posterior of the winning class
     std::vector<model::Scored> distribution;  // full posterior, sorted
 };
 
-// One leave-one-out probe: what the corpus says the document is, and what a
-// model trained on every other document called it.
 struct LooPrediction {
     std::string actual;
     std::string predicted;
@@ -29,22 +26,12 @@ struct TrainReport {
     std::vector<LooPrediction> predictions; // one per corpus document
 };
 
-// Source-type classifier: what kind of public-record document is this?
-// Labels come from the training corpus directory names.
 class Classifier {
 public:
-    // corpus_dir contains one subdirectory per label, each holding example
-    // documents in any supported format. Throws dd::Error when the corpus is
-    // missing or too small to train on.
-    // alpha is the naive Bayes smoothing strength used for both the
-    // leave-one-out folds and the final fit, so the reported accuracy is the
-    // accuracy of the model that ships.
     static Classifier train_from_corpus(const std::string& corpus_dir, TrainReport* report,
                                         double alpha = 1.0);
 
     static Classifier load(const std::string& model_path);
-    // The same model from its serialized text, for hosts without a
-    // filesystem.
     static Classifier from_json(const std::string& text);
     void save(const std::string& model_path) const;
 
@@ -60,5 +47,4 @@ private:
     std::string trained_at_;
     double trained_accuracy_ = 0.0;
 };
-
 } // namespace dd::classify

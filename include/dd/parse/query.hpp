@@ -6,13 +6,7 @@
 #include <string>
 #include <vector>
 
-// Query interface over the tolerant DOM: a forward DFS iterator (nodes know
-// their parent, so traversal needs no stack) plus composable selectors with
-// &&, || and !. Ranges work with standard algorithms - count_if over a
-// selector is a one-liner - and the extraction code uses the same interface,
-// so it is load-bearing, not decoration.
 namespace dd::html {
-
 class DfsIterator {
 public:
     using iterator_category = std::forward_iterator_tag;
@@ -49,7 +43,6 @@ private:
 DfsRange dfs(const Node* root);
 DfsRange dfs(const Document& document);
 
-// A selector is a predicate over nodes; combinators build boolean logic.
 class Selector {
 public:
     using Fn = std::function<bool(const Node&)>;
@@ -74,5 +67,4 @@ Selector is_element();
 std::vector<const Node*> select(const Node* root, const Selector& selector);
 std::vector<const Node*> select(const Document& document, const Selector& selector);
 const Node* select_first(const Node* root, const Selector& selector);
-
 } // namespace dd::html

@@ -7,7 +7,6 @@
 
 namespace dd::features {
 namespace {
-
 constexpr std::size_t kMaxBodyTokens = 600;
 
 void add(Bag& bag, const std::string& token) { ++bag[token]; }
@@ -22,7 +21,6 @@ void add_words(Bag& bag, std::string_view text, std::string_view prefix,
         if (++used >= limit) break;
     }
 }
-
 } // namespace
 
 bool is_stopword(std::string_view word) {
@@ -51,5 +49,4 @@ Bag extract(const doc::Model& model, std::string_view url) {
     if (!url.empty()) add_words(bag, url, "url:");
     return bag;
 }
-
 } // namespace dd::features

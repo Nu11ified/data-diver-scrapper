@@ -5,7 +5,6 @@
 #include <algorithm>
 
 namespace dd::html {
-
 DfsIterator& DfsIterator::operator++() {
     if (node_ == nullptr) return *this;
     if (!node_->children.empty()) {
@@ -102,5 +101,4 @@ const Node* select_first(const Node* root, const Selector& selector) {
     }
     return nullptr;
 }
-
 } // namespace dd::html

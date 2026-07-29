@@ -8,9 +8,6 @@
 
 namespace dd::entity {
 namespace {
-
-// Street suffix and directional spellings collapse to one form so
-// "1402 North Main Street" and "1402 N MAIN ST" produce the same key.
 const std::vector<std::pair<std::string_view, std::string_view>>& abbreviations() {
     static const std::vector<std::pair<std::string_view, std::string_view>> kAbbrev = {
         {"street", "st"},   {"avenue", "ave"},   {"road", "rd"},      {"lane", "ln"},
@@ -30,7 +27,6 @@ std::string canonical_word(const std::string& word) {
     }
     return word;
 }
-
 } // namespace
 
 std::string normalize_parcel(std::string_view parcel) {
@@ -41,8 +37,6 @@ std::string normalize_address(std::string_view address) {
     std::vector<std::string> out;
     for (const std::string& word : str::tokenize_words(address)) {
         std::string canonical = canonical_word(word);
-        // Treasurer exports zero-pad house numbers ("0555 Liberty St"); the
-        // assessor does not. Same number, same key.
         if (canonical.size() > 1 && str::is_digits(canonical)) {
             const std::size_t first = canonical.find_first_not_of('0');
             canonical = first == std::string::npos ? "0" : canonical.substr(first);
@@ -53,7 +47,6 @@ std::string normalize_address(std::string_view address) {
 }
 
 namespace {
-
 bool is_directional(const std::string& word) {
     return word == "n" || word == "s" || word == "e" || word == "w" || word == "ne" ||
            word == "nw" || word == "se" || word == "sw";
@@ -69,14 +62,12 @@ bool is_suffix(const std::string& word) {
 bool is_unit_marker(const std::string& word) {
     return word == "apt" || word == "ste" || word == "unit" || word == "no" || word == "#";
 }
-
 } // namespace
 
 Address parse_address(std::string_view address) {
     Address out;
     const std::vector<std::string> words = str::tokenize_words(normalize_address(address));
     if (words.empty()) return out;
-    // "3200 BLOCK OF ARGONNE AVENUE" names a stretch of street, not a building.
     for (std::size_t i = 0; i + 1 < words.size(); ++i) {
         if ((words[i] == "block" || words[i] == "blk") && words[i + 1] == "of") return out;
     }
@@ -105,7 +96,6 @@ Address parse_address(std::string_view address) {
         }
         street.push_back(word);
     }
-    // A trailing lone letter after a suffix is a unit ("3 COMMERCIAL PL A").
     if (out.unit.empty() && !street.empty() && street.back().size() == 1 &&
         std::isalpha(static_cast<unsigned char>(street.back()[0])) != 0 && street.size() > 1) {
         out.unit = street.back();
@@ -146,8 +136,6 @@ bool same_owner(std::string_view a, std::string_view b) {
     std::sort(ta.begin(), ta.end());
     std::sort(tb.begin(), tb.end());
     if (ta == tb) return true;
-    // Fuzzy fallback for typos: compare the sorted-token strings.
     return str::jaro_winkler(str::join(ta, " "), str::join(tb, " ")) >= 0.93;
 }
-
 } // namespace dd::entity

@@ -11,7 +11,6 @@
 #include <vector>
 
 namespace dd::store {
-
 struct Source {
     std::string id;
     std::string name;
@@ -19,21 +18,10 @@ struct Source {
     std::string jurisdiction;
     std::string added_at;
     bool enabled = true;
-    // Which edition of the world this source describes, as an ISO date or a
-    // year. An assessor publishes one roll per fiscal year and every row in
-    // it is equally current, so recency cannot be read off the record dates.
-    // Empty means the source is a live feed whose records carry their own
-    // dates.
     std::string as_of;
-    // When set, the file at `url` is created from this path if missing. Lets
-    // shipped demo sources live under var/ where their bytes can change the
-    // way a county site's bytes change.
     std::string seed_from;
 };
 
-// What the engine has learned about one source: its accepted mapping, the
-// structural fingerprint of the last good document, and the extraction-rate
-// baseline drift detection compares against.
 struct SourceState {
     std::string source_id;
     bool has_mapping = false;
@@ -43,13 +31,9 @@ struct SourceState {
     int good_runs = 0;
     std::string classification;
     std::string updated_at;
-    // Operator overrides: canonical field name -> source label. An empty
-    // label force-unmaps the field. Applied after inference and healing on
-    // every run, so they win over both.
     std::map<std::string, std::string> overrides;
 };
 
-// Partial update for one source; unset fields keep their current value.
 struct SourceUpdate {
     std::optional<std::string> name;
     std::optional<std::string> url;
@@ -57,18 +41,11 @@ struct SourceUpdate {
     std::optional<bool> enabled;
 };
 
-// The body and content type of the last successful fetch, replayed by the
-// benchmark so scale tests never hammer public endpoints. On disk the body
-// lives verbatim at <root>/cache/<source_id>; a JSON sidecar
-// <root>/cache/<source_id>.meta carries the content type and fetch time.
 struct CachedFetch {
     std::string content_type;
     std::string body;
 };
 
-// One ingestion attempt. Every number here is measured: timings from a
-// monotonic clock, bytes from the fetcher, memory from the OS, confidences
-// from the classifier and mapping scorer.
 struct RunRecord {
     std::string id;
     std::string source_id;
@@ -91,9 +68,6 @@ struct RunRecord {
 
     std::int64_t records_extracted = 0;
     std::int64_t events_new = 0;
-    // The most recent date any record in this fetch carried. A source that
-    // answers instantly with month old rows is stale even though the fetch
-    // succeeded, and only this distinguishes the two.
     std::string newest_record_date;
     double extraction_rate = 0.0;
     double mapping_confidence = 0.0;
@@ -110,8 +84,6 @@ struct RunRecord {
     static RunRecord deserialize(const std::string& text);
 };
 
-// A mapping repair, kept with its before and after so the UI can show what
-// the healer actually changed and on what evidence.
 struct RepairRecord {
     std::string id;
     std::string source_id;
@@ -123,9 +95,6 @@ struct RepairRecord {
     double after_rate = 0.0;
     double confidence = 0.0;
     bool accepted = false; // the auto-accept verdict at repair time
-    // "auto" (accepted at repair time), "pending" (queued for review),
-    // "approved" or "rejected" (a human resolved it). Legacy records without
-    // the field load as accepted -> "auto", else "pending".
     std::string resolution = "pending";
     std::vector<std::string> changes; // "owner: 'Owner Name' -> 'taxpayer'"
 
@@ -133,15 +102,10 @@ struct RepairRecord {
     static RepairRecord deserialize(const std::string& text);
 };
 
-// File-backed state under one root directory. Runs, events and repairs are
-// append-only JSONL; sources and per-source state are small JSON documents
-// written atomically. All access is serialized internally.
 class Store {
 public:
     explicit Store(std::string root);
 
-    // Loads the prefilled source list when no sources exist yet, and creates
-    // any seed_from working copies that are missing.
     void seed(const std::string& seeds_path);
 
     std::vector<Source> sources() const;
@@ -149,12 +113,8 @@ public:
     Source add_source(const std::string& name, const std::string& url,
                       const std::string& jurisdiction);
 
-    // Partial update; throws dd::Error for an unknown id or an update that
-    // would blank the name or url.
     Source update_source(const std::string& id, const SourceUpdate& update);
 
-    // Removes the source, its learned state, snapshot and fetch cache.
-    // Historical runs, events and repairs remain. Throws for an unknown id.
     void remove_source(const std::string& id);
 
     SourceState source_state(const std::string& source_id) const;
@@ -163,8 +123,6 @@ public:
     void record_run(const RunRecord& run);
     std::vector<RunRecord> runs(std::size_t limit, const std::string& source_id = "") const;
 
-    // Returns how many events were new; already-known ids are skipped, which
-    // is what makes re-ingestion idempotent.
     std::size_t add_events(const std::vector<events::PropertyEvent>& batch);
     std::vector<events::PropertyEvent> events_for(const std::string& property_key) const;
     std::vector<events::PropertyEvent> all_events() const;
@@ -182,10 +140,6 @@ public:
     void add_repair(const RepairRecord& repair);
     std::vector<RepairRecord> repairs(const std::string& source_id = "") const;
 
-    // Resolves a pending repair and rewrites repairs.jsonl atomically.
-    // Approval applies the repair's after_mapping to the source state and
-    // restarts its baseline. Throws for an unknown id or a repair that is
-    // not pending.
     RepairRecord resolve_repair(const std::string& id, bool approved);
 
     const std::string& root() const noexcept { return root_; }
@@ -206,5 +160,4 @@ private:
     std::vector<events::PropertyEvent> events_;
     std::map<std::string, std::size_t> event_index_; // id -> position
 };
-
 } // namespace dd::store

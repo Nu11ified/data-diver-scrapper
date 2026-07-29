@@ -1,9 +1,3 @@
-// One Durable Object per phone number: the tenancy boundary. Each thread
-// owns exactly one conversation forever. State is small and structured; the
-// transcript is a rolling window that compacts into a summary, so the thread
-// never fills up and the user never needs a fresh chat. Decisions (criteria
-// changes, approvals) are extracted into structured state before turns are
-// compacted away, which is what makes compaction lossless where it matters.
 
 import type { RuntimeContextInterface } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -98,9 +92,6 @@ export const ConversationThreadLive = ConversationThread.make<never>(
     const state = yield* Cloudflare.DurableObjectState;
 
     return Effect.gen(function* () {
-      // Every read happens per message: a Durable Object instance outlives
-      // many turns, so anything captured at construction is stale by the
-      // next one.
       const record = (
         userText: string,
         reply: string,
@@ -117,9 +108,6 @@ export const ConversationThreadLive = ConversationThread.make<never>(
           ];
           let nextSummary = summary;
           if (nextTurns.length > TURN_WINDOW) {
-            // Compact: fold everything but the tail into one paragraph. The
-            // structured state (criteria, pending) already captured every
-            // decision, so the words themselves can be summarized freely.
             const folded = nextTurns.slice(0, -TURNS_KEPT_AFTER_COMPACTION);
             const userAsks = folded.filter((t) => t.role === "user").length;
             const paragraph =
@@ -134,12 +122,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
           yield* state.storage.put("summary", nextSummary);
         });
 
-
-
       return {
-        // The worker computes candidate matches from the compiled county and
-        // hands them in; this object owns criteria, pending state and the
-        // conversation itself.
         handleMessage: (input: HandleMessageInput) =>
           Effect.gen(function* () {
             const criteria =
@@ -165,7 +148,6 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 (criteria.minDebtToValue <= 0 || m.debtToValue >= criteria.minDebtToValue),
             );
 
-            // Approval gate for a pending outreach draft.
             if (pending?.kind === "approve_outreach") {
               if (lower === "approve" || lower === "yes") {
                 const sent =
@@ -183,7 +165,6 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               }
             }
 
-            // A number picks a property from the last review list.
             if (pending?.kind === "review" && /^\d+$/.test(lower)) {
               const index = Number.parseInt(lower, 10) - 1;
               const match = pending.matches[index];

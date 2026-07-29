@@ -10,7 +10,6 @@
 #endif
 
 namespace dd::metrics {
-
 std::int64_t peak_rss_bytes() {
     rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) != 0) return 0;
@@ -52,5 +51,4 @@ double cpu_time_ms() {
         static_cast<double>(usage.ru_stime.tv_usec) / 1000.0;
     return user + sys;
 }
-
 } // namespace dd::metrics

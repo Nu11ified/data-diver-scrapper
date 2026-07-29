@@ -8,7 +8,6 @@
 
 namespace dd::csv {
 namespace {
-
 bool looks_numeric(std::string_view s) {
     const std::string cleaned = str::trim(s);
     if (cleaned.empty()) return false;
@@ -26,7 +25,6 @@ bool looks_numeric(std::string_view s) {
     }
     return digits > 0;
 }
-
 } // namespace
 
 char detect_delimiter(std::string_view text) {
@@ -127,13 +125,10 @@ bool first_row_is_header(const std::vector<std::vector<std::string>>& rows) {
         if (looks_numeric(cell)) ++numeric_in_first;
         if (str::trim(cell).empty()) ++empty_in_first;
     }
-    // Column names are words, and every column has one.
     if (empty_in_first > 0) return false;
     if (numeric_in_first > 0) return false;
     if (rows.size() == 1) return true;
 
-    // If a column is numeric in the data rows but not in the first row, the
-    // first row is naming that column.
     for (std::size_t col = 0; col < first.size(); ++col) {
         std::size_t numeric_below = 0;
         std::size_t seen = 0;
@@ -145,11 +140,9 @@ bool first_row_is_header(const std::vector<std::vector<std::string>>& rows) {
         if (seen > 0 && numeric_below * 2 > seen) return true;
     }
 
-    // Otherwise fall back on the first row being fully distinct short labels.
     const bool all_short = std::all_of(first.begin(), first.end(), [](const std::string& cell) {
         return str::trim(cell).size() <= 40;
     });
     return all_short;
 }
-
 } // namespace dd::csv

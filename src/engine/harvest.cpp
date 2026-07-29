@@ -8,7 +8,6 @@
 
 namespace dd::harvest {
 namespace {
-
 constexpr const char* kCatalog = "https://api.us.socrata.com/api/catalog/v1";
 
 std::string url_encode(const std::string& s) {
@@ -25,12 +24,10 @@ std::string url_encode(const std::string& s) {
     return out;
 }
 
-// A scalar cell rendered as the string a scraper would see.
 std::string cell_text(const json::Value& v) {
     if (!v.is_scalar()) return {};
     return v.as_string();
 }
-
 } // namespace
 
 Options default_options() {
@@ -46,7 +43,6 @@ Options default_options() {
 }
 
 namespace {
-
 std::string exact_hit(const schema::Registry& registry, const std::string& slug) {
     if (slug.empty()) return {};
     for (const schema::FieldDef& field : registry.fields()) {
@@ -92,7 +88,6 @@ bool plausible_dataset_id(const std::string& id) {
     }
     return true;
 }
-
 } // namespace
 
 WeakLabel weak_label(const schema::Registry& registry, const std::string& field_name,
@@ -324,8 +319,6 @@ std::vector<Discovered> discover(std::size_t datasets_per_query,
     net.timeout_seconds = 20;
     std::vector<Discovered> out;
     std::set<std::string> seen;
-    // Property queries only: the column corpus needs unrelated datasets for
-    // negatives, a source catalog does not.
     static const std::vector<std::string> kQueries = {
         "property tax", "tax sale", "delinquent", "code violations", "building permits",
         "property assessment", "foreclosure", "sheriff sale", "deed", "parcel",
@@ -385,5 +378,4 @@ std::vector<Discovered> discover(std::size_t datasets_per_query,
     }
     return out;
 }
-
 } // namespace dd::harvest

@@ -1,6 +1,3 @@
-// Behaviour tests for the Data Diver engine. Each test exercises a module
-// through its public interface only; ctest runs this binary from the source
-// tree so fixtures resolve by relative path.
 
 #include <random>
 #include "dd/ml/classify.hpp"
@@ -44,7 +41,6 @@
 #include <vector>
 
 namespace {
-
 struct TestCase {
     std::string name;
     std::function<void()> body;
@@ -124,8 +120,6 @@ std::string tnormalize(const char* field, std::string_view value) {
     return dd::schema::normalize(*test_registry().find(field), value);
 }
 
-// ---------------------------------------------------------------- core -----
-
 TEST(str_basics) {
     CHECK_EQ(dd::str::trim("  a b  "), "a b");
     CHECK_EQ(dd::str::to_lower("AbC"), "abc");
@@ -178,8 +172,6 @@ TEST(fileio_roundtrip) {
     CHECK_EQ(lines.size(), std::size_t{3});
     CHECK_EQ(lines[2], "third");
 }
-
-// ---------------------------------------------------------------- json -----
 
 TEST(json_parse_scalars) {
     CHECK(dd::json::parse("null").is_null());
@@ -236,8 +228,6 @@ TEST(json_writer) {
     w.end_object();
     CHECK_EQ(w.str(), R"({"name":"a\"b","n":3,"list":[1.5,false,null]})");
 }
-
-// ---------------------------------------------------------------- html -----
 
 TEST(html_basic_tree) {
     const dd::html::Document doc = dd::html::parse(
@@ -306,8 +296,6 @@ TEST(html_void_and_comments) {
     CHECK_EQ(doc.find_all("img").size(), std::size_t{1});
 }
 
-// ----------------------------------------------------------------- csv -----
-
 TEST(csv_basic) {
     const dd::csv::Table t = dd::csv::parse("Parcel,Owner,Amount\n123,Smith,10.50\n456,Jones,7\n");
     CHECK_EQ(t.header.size(), std::size_t{3});
@@ -340,15 +328,11 @@ TEST(csv_headerless_numeric_first_row) {
     CHECK_EQ(t.rows.size(), std::size_t{2});
 }
 
-// ------------------------------------------------------------- metrics -----
-
 TEST(metrics_report_real_values) {
     CHECK(dd::metrics::current_rss_bytes() > 1024 * 1024);
     CHECK(dd::metrics::peak_rss_bytes() >= dd::metrics::current_rss_bytes() / 2);
     CHECK(dd::metrics::cpu_time_ms() > 0.0);
 }
-
-// --------------------------------------------------------------- fetch -----
 
 TEST(fetch_local_file) {
     const std::string dir = "build/test_tmp";
@@ -380,12 +364,7 @@ TEST(fetch_rejects_unknown_scheme) {
     CHECK(dd::str::contains(r.error, "scheme"));
 }
 
-// ----------------------------------------------------------------- pdf -----
-
 namespace pdfgen {
-
-// Builds a minimal one-page PDF whose content stream is `content`,
-// optionally Flate compressed. Real header, real objects, real layout.
 std::string make_pdf(const std::string& content, bool compress) {
     std::string stream_data = content;
     std::string filter;
@@ -415,7 +394,6 @@ std::string make_pdf(const std::string& content, bool compress) {
     pdf += "%%EOF\n";
     return pdf;
 }
-
 } // namespace pdfgen
 
 TEST(pdf_rejects_non_pdf) { CHECK_THROWS(dd::pdf::extract_text_lines("<html></html>")); }
@@ -430,7 +408,6 @@ TEST(pdf_plain_stream_text) {
     CHECK_EQ(lines[0], "Delinquent Tax List");
     CHECK(dd::str::contains(lines[2], "123-456"));
     CHECK(dd::str::contains(lines[2], "Jane Smith"));
-    // The -500 kern must render as a column gap, not the number itself.
     CHECK(!dd::str::contains(lines[2], "500"));
 }
 
@@ -454,8 +431,6 @@ TEST(pdf_string_escapes) {
     CHECK_EQ(lines[0], "Smith (Jane) \\ Co *");
 }
 
-// ------------------------------------------------------------- document ----
-
 TEST(document_detects_formats) {
     using dd::doc::Format;
     CHECK(dd::doc::detect_format("", "%PDF-1.4 xxxxxxxx") == Format::Pdf);
@@ -466,7 +441,6 @@ TEST(document_detects_formats) {
     CHECK(dd::doc::detect_format("", "a,b,c\n1,2,3\n4,5,6\n") == Format::Csv);
     CHECK(dd::doc::detect_format("text/csv", "weird single line") == Format::Csv);
     CHECK(dd::doc::detect_format("", "just words here") == Format::Text);
-    // Malformed JSON falls through to text rather than claiming success.
     CHECK(dd::doc::detect_format("", "{broken") == Format::Text);
 }
 
@@ -597,8 +571,6 @@ TEST(document_empty_yields_no_records) {
     CHECK(m.records.empty());
 }
 
-// ------------------------------------------------------------ features -----
-
 TEST(features_prefix_and_filter) {
     const std::string page =
         "<html><head><title>Delinquent Roll</title></head><body><h1>The County List</h1>"
@@ -614,8 +586,6 @@ TEST(features_prefix_and_filter) {
     CHECK(bag.count("the") == 0);       // stopword
     CHECK(bag.count("url:https") == 0); // stopword
 }
-
-// --------------------------------------------------------------- model -----
 
 TEST(model_learns_and_reports_posteriors) {
     dd::model::NaiveBayes nb;
@@ -662,7 +632,6 @@ TEST(model_alpha_shapes_posterior_and_survives_roundtrip) {
     const auto smooth_scored = smooth.predict(probe);
     CHECK_EQ(sharp_scored[0].label, "fruit");
     CHECK_EQ(smooth_scored[0].label, "fruit");
-    // Less smoothing means the observed token dominates harder.
     CHECK(sharp_scored[0].probability > smooth_scored[0].probability);
 
     const dd::model::NaiveBayes loaded = dd::model::NaiveBayes::deserialize(sharp.serialize());
@@ -675,10 +644,6 @@ TEST(model_rejects_bad_serialization) {
     CHECK_THROWS(dd::model::NaiveBayes::deserialize(
         "{\"kind\":\"naive_bayes_multinomial\",\"classes\":[]}"));
 }
-
-// ------------------------------------------------------------ classify -----
-
-// -------------------------------------------------------------- bench -----
 
 TEST(bench_scores_mapping_against_answer_key) {
     const dd::schema::Registry registry = dd::schema::Registry::from_json(R"({"fields": [
@@ -695,7 +660,6 @@ TEST(bench_scores_mapping_against_answer_key) {
     CHECK(dd::bench::classification_ok(golden, "trustee_auction"));
     CHECK(!dd::bench::classification_ok(golden, "probate_case"));
 
-    // a correct, b left unmapped (acceptable), c mapped where the key forbids.
     const dd::bench::MappingScore score = dd::bench::score_mapping(
         golden, registry, {{"a", "col_x"}, {"c", "col_z"}});
     CHECK_EQ(score.tp, std::size_t{1});
@@ -704,22 +668,17 @@ TEST(bench_scores_mapping_against_answer_key) {
     CHECK_NEAR(score.precision(), 0.5, 1e-9);
     CHECK_NEAR(score.recall(), 1.0, 1e-9);
 
-    // a unmapped is a miss: the key requires a label there.
     const dd::bench::MappingScore missing =
         dd::bench::score_mapping(golden, registry, {{"b", "col_y"}});
     CHECK_EQ(missing.missing, std::size_t{1});
     CHECK_EQ(missing.tp, std::size_t{1});
 
-    // A wrong mapping on a required field is a false positive AND a false
-    // negative: the right label was not produced.
     const dd::bench::MappingScore wrong =
         dd::bench::score_mapping(golden, registry, {{"a", "col_wrong"}});
     CHECK_EQ(wrong.spurious, std::size_t{1});
     CHECK_EQ(wrong.missing, std::size_t{1});
     CHECK_NEAR(wrong.recall(), 0.0, 1e-9);
 }
-
-// ------------------------------------------------------- column model -----
 
 dd::columns::Hyper tiny_hyper() {
     dd::columns::Hyper h;
@@ -764,9 +723,7 @@ TEST(columns_tokenizer_budgets_name_and_values) {
         "Owner Name", {"MARIA LOPEZ", "JAMES HILL"}, 64);
     CHECK(ids.size() <= 64);
     CHECK_EQ(ids[0], 1);  // CLS
-    // Lowercasing: 'O' and 'o' tokenize identically.
     CHECK_EQ(dd::columns::tokenize("O", {}, 8)[1], dd::columns::tokenize("o", {}, 8)[1]);
-    // Truncation to max_len holds even for absurd values.
     CHECK_EQ(dd::columns::tokenize(std::string(500, 'x'), {std::string(500, 'y')}, 32).size(),
              std::size_t{32});
 }
@@ -797,8 +754,6 @@ TEST(columns_gradients_match_finite_differences) {
         params[i] = saved;
         const double numeric = (up - down) / (2.0 * eps);
         if (std::abs(numeric) < 1e-8 && std::abs(grad[i]) < 1e-8) continue;
-        // Central differences bottom out near machine precision, so tiny
-        // gradients pass on absolute agreement, the rest on relative.
         const double rel = std::abs(numeric - grad[i]) /
                            std::max({std::abs(numeric), std::abs(grad[i]), 1e-8});
         CHECK(std::abs(numeric - grad[i]) < 1e-9 || rel < 1e-4);
@@ -822,8 +777,6 @@ TEST(columns_model_learns_value_shapes) {
     CHECK(train_report.epoch_loss.front() > train_report.epoch_loss.back());
     CHECK(train_report.holdout_accuracy > 0.9);
 
-    // Generalisation past the lexicon: a header seen in no training example,
-    // decided by the value shape alone.
     const dd::columns::Prediction digits = model.predict("zzqx", {"4821", "9034", "1187"});
     CHECK_EQ(digits.label, "digits");
     const dd::columns::Prediction words = model.predict("zzqx", {"maria lopez", "chen wei"});
@@ -845,9 +798,6 @@ TEST(columns_model_serializes_roundtrip) {
     CHECK_NEAR(before.confidence, after.confidence, 1e-12);
     CHECK_THROWS(dd::columns::ColumnModel::deserialize("{\"kind\":\"other\"}"));
 
-    // Malformed architectures must be rejected before any buffer math: the
-    // negative seq_len here wraps the layout arithmetic to a tiny "valid"
-    // parameter count if unchecked.
     const auto model_json = [](const char* hyper, const char* classes, const char* params) {
         return std::string{"{\"kind\":\"column_transformer\",\"hyper\":"} + hyper +
                ",\"classes\":" + classes + ",\"params\":" + params + "}";
@@ -896,12 +846,8 @@ TEST(classifier_trains_with_high_holdout_accuracy) {
         dd::classify::Classifier::train_from_corpus("data/corpus", &train_report);
     CHECK_EQ(train_report.classes, std::size_t{8});
     CHECK(train_report.examples >= 40);
-    // The corpus is mostly live datasets whose labels come from catalog
-    // search queries, so leave-one-out carries that label noise. The
-    // hand-verified benchmark is the accuracy that matters.
     CHECK(train_report.leave_one_out_accuracy >= 0.80);
 
-    // A document the corpus has never seen, in tax-delinquency dialect.
     const std::string page =
         "<html><head><title>Overdue Property Tax Accounts</title></head><body>"
         "<h1>Delinquent Tax Accounts</h1>"
@@ -916,7 +862,6 @@ TEST(classifier_trains_with_high_holdout_accuracy) {
     CHECK(p.confidence > 0.5);
     CHECK_EQ(p.distribution.size(), std::size_t{8});
 
-    // And a probate docket must not classify as tax delinquency.
     const std::string probate =
         "<html><head><title>Estate Docket</title></head><body><h1>Probate Filings</h1>"
         "<p>The decedent estates below have petitions for letters testamentary. The executor "
@@ -951,8 +896,6 @@ TEST(classifier_missing_corpus_reports_error) {
     CHECK_THROWS(dd::classify::Classifier::train_from_corpus("data/no_such_dir", nullptr));
 }
 
-// -------------------------------------------------------------- schema -----
-
 TEST(schema_money_parsing) {
     CHECK_NEAR(*dd::schema::parse_money("$8,421.37"), 8421.37, 1e-9);
     CHECK_NEAR(*dd::schema::parse_money("120"), 120.0, 1e-9);
@@ -960,7 +903,6 @@ TEST(schema_money_parsing) {
     CHECK(!dd::schema::parse_money("Jane Smith").has_value());
     CHECK(!dd::schema::parse_money("12-34").has_value());
     CHECK(!dd::schema::parse_money("").has_value());
-    // Accounting parentheses mean negative, and must balance.
     CHECK_NEAR(*dd::schema::parse_money("($1,000)"), -1000.0, 1e-9);
     CHECK_NEAR(*dd::schema::parse_money("(500.25)"), -500.25, 1e-9);
     CHECK(!dd::schema::parse_money("(1,000").has_value());
@@ -975,12 +917,10 @@ TEST(schema_date_parsing) {
     CHECK(!dd::schema::parse_date("Jane Smith").has_value());
     CHECK(!dd::schema::parse_date("123-456-789").has_value());
     CHECK(!dd::schema::parse_date("99/99/2026").has_value());
-    // Calendar validity, not just day <= 31.
     CHECK(!dd::schema::parse_date("2026-02-31").has_value());
     CHECK(!dd::schema::parse_date("2026-04-31").has_value());
     CHECK_EQ(*dd::schema::parse_date("2024-02-29"), "2024-02-29");
     CHECK(!dd::schema::parse_date("2023-02-29").has_value());
-    // Timestamps continue a date; arbitrary text does not.
     CHECK_EQ(*dd::schema::parse_date("2026-07-27T22:46:46.000"), "2026-07-27");
     CHECK_EQ(*dd::schema::parse_date("4/26/2018 12:00:00 AM"), "2018-04-26");
     CHECK(!dd::schema::parse_date("2026-02-11garbage").has_value());
@@ -1018,7 +958,6 @@ TEST(schema_normalization) {
 }
 
 TEST(schema_infers_mapping_across_dialects) {
-    // Dialect one: conventional column names.
     const dd::doc::Model a = dd::doc::build_auto(
         "text/csv",
         "Parcel Number,Owner Name,Property Address,Amount Due,Sale Date\n"
@@ -1033,7 +972,6 @@ TEST(schema_infers_mapping_across_dialects) {
     CHECK(ma.find("auction_date") != nullptr);
     CHECK(ma.confidence > 0.7);
 
-    // Dialect two: a different county's vocabulary for the same facts.
     const dd::doc::Model b = dd::doc::build_auto(
         "application/json",
         R"({"rows": [
@@ -1100,8 +1038,6 @@ TEST(schema_mapping_serialize_roundtrip) {
     CHECK_EQ(owner->source_label, "Owner");
 }
 
-// -------------------------------------------------------------- entity -----
-
 TEST(entity_normalization) {
     CHECK_EQ(dd::entity::normalize_parcel("123-456-789"), "123456789");
     CHECK_EQ(dd::entity::normalize_parcel(" 12a.33 "), "12A33");
@@ -1118,7 +1054,6 @@ TEST(entity_property_key) {
     const std::string with_address = dd::entity::property_key("Hamilton County", "", "19 Birch Lane");
     CHECK_EQ(with_address, "hamilton_county|a:19 birch ln");
     CHECK(dd::entity::property_key("X", "", "").empty());
-    // Same parcel in a different jurisdiction is a different property.
     CHECK(dd::entity::property_key("A", "123", "") != dd::entity::property_key("B", "123", ""));
 }
 
@@ -1128,8 +1063,6 @@ TEST(entity_same_owner) {
     CHECK(!dd::entity::same_owner("Jane Smith", "Bob Ray"));
     CHECK(!dd::entity::same_owner("", "Bob Ray"));
 }
-
-// -------------------------------------------------------------- events -----
 
 dd::events::PropertyEvent make_event(dd::events::Kind kind, const std::string& date,
                                      const std::string& source = "s1") {
@@ -1158,7 +1091,6 @@ TEST(events_kind_from_source) {
 TEST(events_lifecycle_advances_in_order) {
     using dd::events::Kind;
     using dd::events::State;
-    // Deliberately shuffled input: the reducer must order by date itself.
     std::vector<dd::events::PropertyEvent> evs = {
         make_event(Kind::AuctionScheduled, "2026-05-01"),
         make_event(Kind::TaxDelinquency, "2026-01-01"),
@@ -1235,8 +1167,6 @@ TEST(events_serialize_roundtrip) {
     CHECK_THROWS(dd::events::PropertyEvent::deserialize("{\"kind\":\"nope\"}"));
 }
 
-// --------------------------------------------------------------- store -----
-
 std::string fresh_dir(const std::string& name) {
     const std::string dir = "build/test_tmp/" + name;
     std::filesystem::remove_all(dir);
@@ -1312,7 +1242,6 @@ TEST(store_seed_creates_sources_and_working_copies) {
     store.seed(seeds);
     CHECK_EQ(store.sources().size(), std::size_t{1});
     CHECK(dd::fileio::exists(root + "/local/demo.html"));
-    // Seeding twice must not duplicate.
     store.seed(seeds);
     CHECK_EQ(store.sources().size(), std::size_t{1});
 }
@@ -1359,12 +1288,9 @@ TEST(store_runs_events_repairs_roundtrip) {
     CHECK(repairs[0].accepted);
 }
 
-// ------------------------------------------------------------ pipeline -----
-
 dd::classify::Classifier test_classifier() {
     return dd::classify::Classifier::load("data/model/source_classifier.json");
 }
-
 
 TEST(pipeline_learns_and_ingests_table_site) {
     const std::string root = fresh_dir("pipe_learn");
@@ -1388,18 +1314,15 @@ TEST(pipeline_learns_and_ingests_table_site) {
     CHECK(run.rss_bytes > 1024 * 1024);
     CHECK(!run.structure_fingerprint.empty());
 
-    // The learned state is persisted with a baseline.
     const dd::store::SourceState state = store.source_state(source.id);
     CHECK(state.has_mapping);
     CHECK_NEAR(state.baseline_rate, run.extraction_rate, 1e-9);
     CHECK_EQ(state.good_runs, 1);
 
-    // Events resolve to jurisdiction-scoped properties.
     const std::vector<std::string> keys = store.property_keys();
     CHECK_EQ(keys.size(), std::size_t{6});
     CHECK(dd::str::contains(keys[0], "millbrook_county|p:"));
 
-    // Re-ingesting the same bytes creates nothing new.
     const dd::store::RunRecord again = pipeline.run_source(source);
     CHECK(again.ok);
     CHECK_EQ(again.events_new, std::int64_t{0});
@@ -1435,8 +1358,6 @@ TEST(pipeline_handles_json_csv_pdf_dialects) {
     CHECK_EQ(pd.format, "pdf");
     CHECK_EQ(pd.records_extracted, std::int64_t{4});
 
-    // The sold-at-auction row must produce a SoldAtAuction event and drive
-    // that property's lifecycle there.
     bool found_sold = false;
     for (const std::string& key : store.property_keys()) {
         const std::vector<dd::events::PropertyEvent> evs = store.events_for(key);
@@ -1464,7 +1385,6 @@ TEST(pipeline_detects_drift_and_heals) {
     dd::store::Store store{root};
     const std::string site = root + "/local/site.html";
 
-    // Day one: the county publishes a table.
     dd::fileio::write_file_atomic(site, dd::fileio::read_file("data/fixtures/millbrook_tax.html"));
     const dd::store::Source source = store.add_source("Millbrook Drift", site, "Millbrook County");
     dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
@@ -1474,8 +1394,6 @@ TEST(pipeline_detects_drift_and_heals) {
     CHECK_EQ(first.events_new, std::int64_t{6});
     const std::string old_fingerprint = first.structure_fingerprint;
 
-    // Day two: the county redesigns. Same facts, new markup, renamed labels,
-    // one new delinquent parcel.
     dd::fileio::write_file_atomic(site,
                                   dd::fileio::read_file("data/fixtures/millbrook_tax_v2.html"));
     const dd::store::RunRecord second = pipeline.run_source(source);
@@ -1485,10 +1403,8 @@ TEST(pipeline_detects_drift_and_heals) {
     CHECK(second.repair_accepted);
     CHECK(second.structure_fingerprint != old_fingerprint);
     CHECK(second.extraction_rate > 0.8);
-    // Six parcels unchanged (dedup), one newly delinquent.
     CHECK_EQ(second.events_new, std::int64_t{1});
 
-    // The repair is on the record with its evidence and its diff.
     const std::vector<dd::store::RepairRecord> repairs = store.repairs(source.id);
     CHECK_EQ(repairs.size(), std::size_t{1});
     CHECK(repairs[0].accepted);
@@ -1502,7 +1418,6 @@ TEST(pipeline_detects_drift_and_heals) {
     }
     CHECK(mentions_owner);
 
-    // The healed mapping is now the accepted one and keeps working.
     const dd::store::RunRecord third = pipeline.run_source(source);
     CHECK(third.ok);
     CHECK(!third.drift_detected);
@@ -1510,7 +1425,6 @@ TEST(pipeline_detects_drift_and_heals) {
 }
 
 TEST(heal_assessment_ignores_healthy_updates) {
-    // Content changed but extraction still works: not drift.
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv", "Parcel,Owner\n111-22,Jane\n444-55,Bob\n777-88,Sue\n");
     const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), m);
@@ -1550,8 +1464,6 @@ TEST(model_summaries_surface_discriminative_vocabulary) {
 }
 
 TEST(pipeline_resolves_across_sources) {
-    // Two different Millbrook sources describe the same parcels: the tax roll
-    // and the assessment roll. Records must land on the same properties.
     const std::string root = fresh_dir("pipe_relations");
     dd::store::Store store{root};
     dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
@@ -1565,20 +1477,17 @@ TEST(pipeline_resolves_across_sources) {
     CHECK(second.ok);
     CHECK_EQ(second.classification, "assessor_roll");
 
-    // Still six properties, each now carrying evidence from both sources.
     const std::vector<std::string> keys = store.property_keys();
     CHECK_EQ(keys.size(), std::size_t{6});
     for (const std::string& key : keys) {
         const std::vector<dd::events::PropertyEvent> evs = store.events_for(key);
         CHECK_EQ(evs.size(), std::size_t{2});
         CHECK(evs[0].source_id != evs[1].source_id);
-        // The assessment is evidence only: the distress state stays put.
         CHECK(dd::events::reduce(evs).state == dd::events::State::TaxDelinquent);
     }
 }
 
 TEST(fetch_encodes_spaces_in_urls) {
-    // Bad scheme still fails, but a rejected URL must not be the reason.
     const dd::fetch::Result r = dd::fetch::get("gopher://x/a b");
     CHECK(!dd::str::contains(r.error, "Malformed"));
 }
@@ -1604,7 +1513,6 @@ TEST(store_update_and_remove_source) {
     const dd::store::Source s =
         store.add_source("Millbrook Tax", "data/fixtures/millbrook_tax.html", "Millbrook County");
 
-    // Partial update: untouched fields keep their values.
     dd::store::SourceUpdate update;
     update.name = "Millbrook Treasurer";
     update.enabled = false;
@@ -1622,8 +1530,6 @@ TEST(store_update_and_remove_source) {
     blank.url = "  ";
     CHECK_THROWS(store.update_source(s.id, blank));
 
-    // Removal deletes the learned state, snapshot and cache but keeps runs
-    // and events: history is history.
     dd::pipeline::Pipeline pipeline{store, test_classifier(), test_registry()};
     CHECK(pipeline.run_source(*store.find_source(s.id)).ok);
     CHECK(dd::fileio::exists(root + "/state/" + s.id + ".json"));
@@ -1643,7 +1549,6 @@ TEST(store_update_and_remove_source) {
 }
 
 TEST(repair_resolution_serialization_and_back_compat) {
-    // Legacy records predate the resolution field: the accepted flag decides.
     const dd::store::RepairRecord legacy_auto = dd::store::RepairRecord::deserialize(
         R"({"id":"r1","source_id":"s1","at":"2026-07-01T00:00:00Z","accepted":true})");
     CHECK_EQ(legacy_auto.resolution, "auto");
@@ -1651,7 +1556,6 @@ TEST(repair_resolution_serialization_and_back_compat) {
         R"({"id":"r2","source_id":"s1","at":"2026-07-01T00:00:00Z","accepted":false})");
     CHECK_EQ(legacy_pending.resolution, "pending");
 
-    // New records carry it through serialization.
     dd::store::RepairRecord repair;
     repair.id = "r3";
     repair.source_id = "s1";
@@ -1671,8 +1575,6 @@ TEST(store_resolve_repair_applies_mapping) {
     const dd::store::SourceState before = store.source_state(s.id);
     CHECK(before.has_mapping);
 
-    // A pending repair whose after_mapping was learned from the redesigned
-    // page (the same shape the healer would propose for it).
     const dd::doc::Model v2 = dd::doc::build_auto(
         "text/html", dd::fileio::read_file("data/fixtures/millbrook_tax_v2.html"));
     const dd::schema::Mapping v2_mapping = dd::schema::infer_mapping(test_registry(), v2);
@@ -1696,8 +1598,6 @@ TEST(store_resolve_repair_applies_mapping) {
     CHECK(owner != nullptr);
     CHECK_EQ(owner->source_label, "taxpayer");
 
-    // The rewrite is durable and final: reopening sees it, and a resolved
-    // repair cannot be resolved again.
     dd::store::Store reopened{root};
     CHECK_EQ(reopened.repairs(s.id).front().resolution, "approved");
     CHECK_THROWS(store.resolve_repair("pending_1", false));
@@ -1712,8 +1612,6 @@ TEST(pipeline_applies_operator_overrides) {
         store.add_source("Millbrook", "data/fixtures/millbrook_tax.html", "Millbrook County");
     CHECK(pipeline.run_source(source).ok);
 
-    // The operator unmaps auction_date and pins owner to the address column
-    // (a deliberate correction the scorer would never make on its own).
     dd::store::SourceState state = store.source_state(source.id);
     state.overrides["auction_date"] = "";
     state.overrides["owner"] = "Property Address";
@@ -1734,7 +1632,6 @@ TEST(pipeline_applies_operator_overrides) {
     CHECK(!has_auction);
     CHECK_EQ(owner_label, "Property Address");
 
-    // Overrides persist across a store reopen.
     dd::store::Store reopened{root};
     CHECK_EQ(reopened.source_state(source.id).overrides.at("owner"), "Property Address");
 }
@@ -1764,7 +1661,6 @@ TEST(pipeline_replays_cached_fetch) {
     CHECK(pipeline.run_source(source).ok);
     CHECK(store.has_fetch_cache(source.id));
 
-    // Replays run the full pipeline on the cached bytes without refetching.
     const dd::store::RunRecord replay = pipeline.run_cached(source);
     CHECK(replay.ok);
     CHECK_EQ(replay.records_extracted, std::int64_t{6});
@@ -1772,8 +1668,6 @@ TEST(pipeline_replays_cached_fetch) {
 }
 
 TEST(schema_is_configuration_not_code) {
-    // A different domain entirely, defined purely in JSON: the engine fills
-    // whatever labels the schema declares.
     const dd::schema::Registry licenses = dd::schema::Registry::from_json(R"({
       "fields": [
         {"name": "license_number", "kind": "id", "identity": true,
@@ -1814,13 +1708,11 @@ TEST(schema_coerces_embedded_values) {
     const dd::schema::FieldDef& date = *test_registry().find("event_date");
     const dd::schema::FieldDef& owner = *test_registry().find("owner");
 
-    // Direct values pass untouched.
     const dd::schema::Coercion direct = dd::schema::coerce(parcel, "123-456-789");
     CHECK(direct.ok);
     CHECK(!direct.reformatted);
     CHECK_EQ(direct.value, "123-456-789");
 
-    // Composite values yield the validating token, marked as reformatted.
     const dd::schema::Coercion acct = dd::schema::coerce(parcel, "Account: 123-456");
     CHECK(acct.ok);
     CHECK(acct.reformatted);
@@ -1836,8 +1728,6 @@ TEST(schema_coerces_embedded_values) {
     CHECK(filed.reformatted);
     CHECK_EQ(filed.value, "2026-07-28");
 
-    // Weak kinds never coerce: extracting a "name" out of arbitrary text
-    // would be a guess, not a validation.
     CHECK(!dd::schema::coerce(owner, "c/o agent for JANE SMITH et al 12345678901234567890"
                                      "12345678901234567890123456789012345678901234567890").ok);
     CHECK(!dd::schema::coerce(parcel, "no digits here at all").ok);
@@ -1865,14 +1755,11 @@ TEST(schema_maps_composite_columns_through_coercion) {
     CHECK_EQ(result.records[1].values.at("amount_due"), "250.50");
     CHECK_NEAR(result.rate, 1.0, 1e-9);
 
-    // The mapping remembers that these columns need extraction.
     const dd::schema::Mapping loaded = dd::schema::Mapping::deserialize(mapping.serialize());
     CHECK(loaded.find("parcel_id")->reformatted);
 }
 
 TEST(schema_candidates_surface_near_misses_for_review) {
-    // street_name must NOT be auto-accepted as owner, but it must appear as
-    // a reviewable candidate a human can refuse.
     const dd::doc::Model m = dd::doc::build_auto(
         "application/json",
         R"([{"address": "12 Pier St", "street_name": "OGDEN", "violation_date": "2026-01-05"},
@@ -1901,8 +1788,6 @@ TEST(schema_neural_evidence_maps_headers_the_lexicon_cannot) {
         {"name": "owner", "kind": "name", "synonyms": ["owner", "taxpayer"]}
     ]})");
 
-    // A tiny transformer taught that digit-run columns carry parcel_id and
-    // word-pair columns carry owner, under many different header names.
     std::mt19937 rng{23};
     std::vector<dd::columns::Example> corpus;
     static const char* kIdNames[] = {"tms", "sbl", "geo_ref", "prop_key", "roll_no"};
@@ -1932,8 +1817,6 @@ TEST(schema_neural_evidence_maps_headers_the_lexicon_cannot) {
     config.threads = 2;
     nn.train(corpus, {}, config);
 
-    // "gpin_key" appears in no synonym list and no training example; only the
-    // transformer's read of the name shape and digit values can map it.
     const dd::doc::Model m = dd::doc::build_auto(
         "application/json",
         R"([{"gpin_key": "482113", "deeded_to": "maria lopez"},
@@ -1962,21 +1845,16 @@ TEST(schema_mapping_deserialize_rejects_duplicates_and_bad_scores) {
 
 TEST(harvest_weak_labels_mask_near_misses_and_conflicts) {
     const dd::schema::Registry& registry = test_registry();
-    // Exact lexicon hit labels the field.
     const dd::harvest::WeakLabel exact = dd::harvest::weak_label(registry, "apn", "APN");
     CHECK_EQ(exact.field, "parcel_id");
     CHECK(!exact.masked);
-    // A near miss (owner_nm contains lexicon vocabulary) must be masked, not
-    // taught as a hard negative.
     const dd::harvest::WeakLabel near = dd::harvest::weak_label(registry, "owner_nm", "");
     CHECK(near.field.empty());
     CHECK(near.masked);
-    // API name and display name hitting different fields is ambiguous.
     const dd::harvest::WeakLabel conflict =
         dd::harvest::weak_label(registry, "apn", "Case Number");
     CHECK(conflict.field.empty());
     CHECK(conflict.masked);
-    // No lexicon contact at all is a safe "none".
     const dd::harvest::WeakLabel none =
         dd::harvest::weak_label(registry, "wind_speed_mph", "Wind Speed");
     CHECK(none.field.empty());
@@ -1985,8 +1863,6 @@ TEST(harvest_weak_labels_mask_near_misses_and_conflicts) {
 
 TEST(entity_address_parts_join_across_office_dialects) {
     using dd::entity::parse_address;
-    // The treasurer prints a padded number and a trailing directional, the
-    // assessor prints neither. Same building.
     const dd::entity::Address treasurer = parse_address("0555 LIBERTY ST E");
     const dd::entity::Address assessor = parse_address("555 Liberty ST");
     CHECK_EQ(treasurer.number, "555");
@@ -1996,15 +1872,12 @@ TEST(entity_address_parts_join_across_office_dialects) {
     CHECK_EQ(dd::entity::address_join_key(treasurer), dd::entity::address_join_key(assessor));
     CHECK(dd::entity::compatible(treasurer, assessor));
 
-    // Contradictions on a part both sides publish are not the same building.
     CHECK(!dd::entity::compatible(parse_address("100 MAIN ST E"), parse_address("100 MAIN ST W")));
     CHECK(!dd::entity::compatible(parse_address("100 MAIN ST"), parse_address("100 MAIN AVE")));
 
-    // Units distinguish condos in one building.
     CHECK(dd::entity::address_join_key(parse_address("3 COMMERCIAL PL A")) !=
           dd::entity::address_join_key(parse_address("3 COMMERCIAL PL C")));
 
-    // Block references and placeholders locate nothing.
     CHECK(!parse_address("3200 BLOCK OF ARGONNE AVENUE").locatable);
     CHECK(!parse_address("0 ADMIRAL TAUSSIG BLVD").locatable);
     CHECK(!parse_address("S S 50TH ST").locatable);
@@ -2027,8 +1900,6 @@ TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
     store.add_source("https://b.example/assess", "Assessor", "Testville VA");
     const std::vector<dd::store::Source> sources = store.sources();
 
-    // The treasurer earned low owner confidence; the assessor high. Trust
-    // must decide the conflict, not insertion order.
     auto save_state = [&](const std::string& source_id, double owner_confidence) {
         dd::store::SourceState state = store.source_state(source_id);
         state.has_mapping = true;
@@ -2058,7 +1929,6 @@ TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
         e.id = dd::events::PropertyEvent::compute_id(e);
         return e;
     };
-    // Same house, two id spaces: treasurer account 111, assessor parcel 999.
     store.add_events({
         make(sources[0].id, "111", "0436 W 31ST ST", "PARK PLACE DEV LLC",
              dd::events::Kind::TaxDelinquency, 110091.0, "2026-07-01"),
@@ -2077,7 +1947,6 @@ TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
     CHECK_EQ(merged.keys.size(), std::size_t{2});
     CHECK_NEAR(merged.due, 110091.0, 1e-9);
     CHECK_NEAR(merged.assessed, 500000.0, 1e-9);
-    // The assessor's 0.97 owner mapping beats the treasurer's 0.62.
     CHECK_EQ(merged.fields.at("owner").value, "Parker Plaza Holdings");
     CHECK_NEAR(merged.fields.at("owner").confidence, 0.97, 1e-9);
     CHECK_EQ(merged.conflicts.size(), std::size_t{1});
@@ -2085,8 +1954,6 @@ TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
     CHECK_EQ(merged.conflicts[0].kept_source, sources[1].id);
     CHECK_EQ(merged.conflicts[0].dropped_value, "PARK PLACE DEV LLC");
 
-    // Placeholder addresses must not merge: distinct parcels sharing
-    // "0 NAVY BASE RD" stay distinct properties.
     store.add_events({
         make(sources[1].id, "701", "0 NAVY BASE RD", "US Navy",
              dd::events::Kind::AssessmentRecorded, 0.0, "2026-06-02"),
@@ -2107,14 +1974,12 @@ TEST(html_query_dfs_and_selectors_compose) {
         </body></html>)");
 
     using namespace dd::html;
-    // DFS order visits every node exactly once; standard algorithms apply.
     const std::size_t tables = static_cast<std::size_t>(std::count_if(
         dfs(doc).begin(), dfs(doc).end(), [](const Node& n) {
             return n.kind == Node::Kind::Element && n.tag == "table";
         }));
     CHECK_EQ(tables, std::size_t{2});
 
-    // Boolean logic over selectors.
     CHECK_EQ(select(doc, tag("table") && has_class("data")).size(), std::size_t{1});
     CHECK_EQ(select(doc, tag("table") && !has_class("data")).size(), std::size_t{1});
     CHECK_EQ(select(doc, has_class("results")).size(), std::size_t{2});
@@ -2127,8 +1992,6 @@ TEST(html_query_dfs_and_selectors_compose) {
 }
 
 TEST(fetch_render_scheme_uses_external_renderer) {
-    // The renderer is any command that prints HTML for a url; here a shell
-    // one-liner stands in for the headless browser.
     setenv("DD_RENDERER", "cat data/fixtures/millbrook_tax.html #", 1);
     const dd::fetch::Result rendered = dd::fetch::get("render+https://spa.example/parcels");
     CHECK(rendered.ok);
@@ -2162,7 +2025,6 @@ TEST(pipeline_runs_sources_concurrently_without_losing_records) {
         CHECK_EQ(runs[i].source_id, sources[i].id); // order preserved
         CHECK(runs[i].records_extracted > 0);
     }
-    // Every source wrote its own state and run record through the locked store.
     CHECK_EQ(store.runs(100).size(), sources.size());
     for (const dd::store::Source& s : sources) {
         CHECK(store.source_state(s.id).has_mapping);
@@ -2198,8 +2060,6 @@ TEST(compile_prefers_the_current_edition_and_keeps_the_previous) {
         e.id = dd::events::PropertyEvent::compute_id(e);
         return e;
     };
-    // The older roll carries the later sale date, so record dates alone would
-    // pick the wrong value. The edition decides instead.
     store.add_events({assessment(current.id, "2025", "615400", "2020-01-01"),
                       assessment(prior.id, "2024", "611700", "2024-06-01")});
 
@@ -2210,7 +2070,6 @@ TEST(compile_prefers_the_current_edition_and_keeps_the_previous) {
     CHECK_EQ(p.fields.at("assessed_value").value, "615400");
     CHECK_EQ(p.fields.at("assessed_value").as_of, "2025");
     CHECK_NEAR(p.assessed, 615400.0, 1e-9);
-    // The earlier edition survives, which is what makes the change knowable.
     CHECK_NEAR(p.assessed_previous, 611700.0, 1e-9);
     CHECK_EQ(p.history.at("assessed_value").size(), std::size_t{2});
     CHECK_EQ(p.history.at("assessed_value").front().as_of, "2025");
@@ -2224,15 +2083,12 @@ TEST(schema_registry_rejects_bad_files) {
     CHECK_THROWS(dd::schema::Registry::from_json(
         R"({"fields": [{"name": "a", "kind": "id", "identity": true},
                        {"name": "a", "kind": "id"}]})"));
-    // No identity field: records could never resolve to properties.
     CHECK_THROWS(dd::schema::Registry::from_json(
         R"({"fields": [{"name": "amount", "kind": "money"}]})"));
     CHECK_THROWS(dd::schema::Registry::load("data/no_such_schema.json"));
 }
 
 TEST(document_survives_bespoke_legacy_markup) {
-    // 1990s county CMS output: uppercase tags, unclosed rows and cells, FONT
-    // soup, nbsp entities. Extraction must still find the case table.
     const std::string body = dd::fileio::read_file("data/fixtures/millbrook_code_enforcement.html");
     const dd::doc::Model m = dd::doc::build_auto("text/html", body);
     CHECK_EQ(m.records.size(), std::size_t{3});
@@ -2244,9 +2100,6 @@ TEST(document_survives_bespoke_legacy_markup) {
     CHECK_EQ(case_no->value, "CE-26-0771");
 }
 
-// Real government open-data endpoints. Needs a network; when the fetch fails
-// the test reports itself skipped instead of failing the suite, but a
-// successful fetch must classify and extract correctly.
 TEST(pipeline_ingests_real_government_source) {
     const std::string root = fresh_dir("pipe_real");
     dd::store::Store store{root};
@@ -2269,7 +2122,6 @@ TEST(pipeline_ingests_real_government_source) {
     CHECK(run.extraction_rate > 0.8);
     CHECK(run.events_new > 0);
 }
-
 } // namespace
 
 int main() {

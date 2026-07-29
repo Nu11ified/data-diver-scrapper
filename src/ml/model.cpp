@@ -7,7 +7,6 @@
 #include <cmath>
 
 namespace dd::model {
-
 NaiveBayes::Class& NaiveBayes::class_for(const std::string& label) {
     for (Class& c : classes_) {
         if (c.name == label) return c;
@@ -53,7 +52,6 @@ std::vector<Scored> NaiveBayes::predict(const features::Bag& bag) const {
         log_scores.push_back(score);
     }
 
-    // Softmax in log space for a proper posterior.
     const double max_log = *std::max_element(log_scores.begin(), log_scores.end());
     double total = 0.0;
     for (double& s : log_scores) {
@@ -69,7 +67,6 @@ std::vector<Scored> NaiveBayes::predict(const features::Bag& bag) const {
 }
 
 std::vector<ClassSummary> NaiveBayes::summarize(std::size_t top_n) const {
-    // Corpus-wide token totals for the lift denominator.
     std::map<std::string, std::int64_t> corpus_counts;
     std::int64_t corpus_tokens = 0;
     for (const Class& c : classes_) {
@@ -96,9 +93,6 @@ std::vector<ClassSummary> NaiveBayes::summarize(std::size_t top_n) const {
                                      static_cast<double>(corpus_tokens);
             weights.push_back(TokenWeight{token, count, in_class / in_corpus});
         }
-        // Class-exclusive tokens all share the maximum lift, so rank by
-        // lift weighted with log frequency: the vocabulary the class uses
-        // often comes first.
         auto score = [](const TokenWeight& t) {
             return t.lift * std::log1p(static_cast<double>(t.count));
         };
@@ -173,5 +167,4 @@ NaiveBayes NaiveBayes::deserialize(const std::string& text) {
     if (nb.classes_.empty()) throw Error("model: no classes in serialized model");
     return nb;
 }
-
 } // namespace dd::model

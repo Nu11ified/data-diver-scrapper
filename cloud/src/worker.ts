@@ -1,7 +1,3 @@
-// The scraping and conversation service. TypeScript owns the network and
-// storage, the Data Diver WASM engine owns parsing, classification, matching
-// and event building, and one Durable Object per phone number owns each
-// conversation. Failures report their stage; nothing fabricates a result.
 
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -269,10 +265,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
         }
 
-        // Inbound message: the SendBlue webhook shape carries from_number and
-        // content; the simulator posts the same shape. Tenancy is the phone
-        // number: each number routes to its own Durable Object, always the
-        // same one, so the thread is permanent.
         if (url.pathname === "/sms" && request.method === "POST") {
           const bodyText = yield* request.text;
           const parsed = JSON.parse(bodyText) as {
@@ -294,7 +286,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       });
 
     return {
-      // Storage failures become explicit 500s; nothing escapes untyped.
       fetch: handleFetch.pipe(
         Effect.catchTag("R2Error", (cause) =>
           Effect.succeed(json({ ok: false, error: cause.message }, 500)),

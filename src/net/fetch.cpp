@@ -12,7 +12,6 @@
 
 namespace dd::fetch {
 namespace {
-
 bool has_prefix(const std::string& s, std::string_view prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
@@ -61,9 +60,6 @@ void global_init_once() {
     std::call_once(flag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
-// Query URLs pasted from data-portal builders often carry raw spaces, which
-// curl rejects outright. Encode them; everything else passes through as the
-// caller wrote it.
 std::string encode_spaces(const std::string& url) {
     return str::replace_all(url, " ", "%20");
 }
@@ -124,7 +120,6 @@ Result fetch_http(const std::string& url, const Options& options) {
 }
 
 #endif // DD_HAVE_CURL
-
 } // namespace
 
 bool is_local(const std::string& url) {
@@ -254,8 +249,6 @@ bool likely_script_rendered(const std::string& content_type, const std::string& 
         if (str::contains(lowered, marker)) shell = true;
     }
 
-    // Script-to-text ratio: a framework shell is mostly code, a server
-    // rendered page mostly prose and table cells.
     std::size_t script_bytes = 0;
     std::size_t at = 0;
     while ((at = lowered.find("<script", at)) != std::string::npos) {
@@ -315,5 +308,4 @@ Fetched get_auto(const std::string& url, const Options& options) {
     rendered.render_note = "static body was a framework shell";
     return rendered;
 }
-
 } // namespace dd::fetch

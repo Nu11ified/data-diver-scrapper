@@ -11,9 +11,6 @@
 
 namespace dd::schema {
 namespace {
-
-// --------------------------------------------------------- value checks ----
-
 bool has_alpha(std::string_view s) {
     return std::any_of(s.begin(), s.end(),
                        [](char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0; });
@@ -51,10 +48,6 @@ std::string format_iso(int year, int month, int day) {
     return std::string{buffer};
 }
 
-// ------------------------------------------------------- label matching ----
-
-// Similarity between a source label and one synonym: exact slug match is 1,
-// otherwise combine token overlap with fuzzy whole-string similarity.
 double label_synonym_similarity(const std::string& label_slug,
                                 const std::vector<std::string>& label_tokens,
                                 std::string_view synonym) {
@@ -64,9 +57,6 @@ double label_synonym_similarity(const std::string& label_slug,
     const std::vector<std::string> syn_tokens = str::tokenize_words(synonym);
     if (syn_tokens.empty() || label_tokens.empty()) return 0.0;
 
-    // A one-word synonym is weak evidence: it only matches a label that IS
-    // that word. Partial credit here is how "name" wrongly claimed
-    // "street_name" for the owner field.
     if (syn_tokens.size() == 1 && label_tokens.size() > 1) return 0.0;
 
     double overlap = 0.0;
@@ -77,9 +67,6 @@ double label_synonym_similarity(const std::string& label_slug,
         }
         overlap += best >= 0.92 ? best : 0.0;
     }
-    // Divide by the longer side so "date" only half-matches "Sale Date":
-    // a synonym that leaves label tokens unexplained is a weaker claim than
-    // one that covers them all.
     const double token_score =
         overlap / static_cast<double>(std::max(syn_tokens.size(), label_tokens.size()));
     const double fuzzy = str::jaro_winkler(label_slug, syn_slug);
@@ -91,18 +78,11 @@ constexpr double kLabelWeight = 0.55;
 constexpr double kValueWeight = 0.45;
 constexpr std::size_t kSampleLimit = 25;
 
-// Money, date and id validators are decisive: values that pass are strong
-// evidence in themselves. Text-family kinds validate almost anything, so for
-// them the label must carry the case on its own. This is what stops a
-// street_name column from becoming the owner because both end in "name".
 bool validator_is_weak(Kind k) {
     return k == Kind::Name || k == Kind::Address || k == Kind::Status || k == Kind::Text;
 }
 constexpr double kWeakValidatorLabelFloor = 0.70;
 
-// Pass statistics of sampled values under `label` for `field`, measured on
-// the actual document the mapping will run against. Coercion counts as a
-// pass; `reformatted` reports when most passing values needed extraction.
 struct PassStats {
     double rate = 0.0;
     bool reformatted = false;
@@ -131,7 +111,6 @@ PassStats measured_pass(const FieldDef& field, const std::string& label,
     return out;
 }
 
-// Registry order decides the display order of mapping fields.
 std::size_t field_order(const Registry& registry, std::string_view name) {
     const std::vector<FieldDef>& fields = registry.fields();
     for (std::size_t i = 0; i < fields.size(); ++i) {
@@ -153,10 +132,7 @@ double mean_confidence(const std::vector<FieldMapping>& fields) {
     for (const FieldMapping& fm : fields) total += fm.confidence;
     return total / static_cast<double>(fields.size());
 }
-
 } // namespace
-
-// -------------------------------------------------------------- kinds ------
 
 std::string_view kind_name(Kind k) {
     switch (k) {
@@ -178,8 +154,6 @@ std::optional<Kind> kind_from_name(std::string_view name) {
     }
     return std::nullopt;
 }
-
-// ------------------------------------------------------------ registry -----
 
 Registry Registry::from_json(const std::string& text) {
     const json::Value root = json::parse(text);
@@ -215,7 +189,6 @@ Registry Registry::from_json(const std::string& text) {
         if (synonyms != nullptr && synonyms->is_array()) {
             for (const json::Value& s : synonyms->items()) def.synonyms.push_back(s.as_string());
         }
-        // The field's own name always matches itself.
         def.synonyms.push_back(str::join(str::tokenize_words(def.name), " "));
         out.fields_.push_back(std::move(def));
     }
@@ -247,8 +220,6 @@ std::vector<const FieldDef*> Registry::with_role(std::string_view role) const {
     }
     return out;
 }
-
-// ---------------------------------------------------------- validators -----
 
 std::optional<double> parse_money(std::string_view value) {
     std::string digits;
@@ -303,14 +274,11 @@ std::optional<std::string> parse_date(std::string_view value) {
     const std::string cleaned = str::trim(value);
     if (cleaned.empty() || cleaned.size() > 40) return std::nullopt;
 
-    // A date may continue into a timestamp ("2026-07-27T22:46:46", "4/26/2018
-    // 12:00:00 AM") but not into arbitrary text.
     const auto timestamp_tail = [&](int consumed) {
         if (consumed <= 0 || static_cast<std::size_t>(consumed) > cleaned.size()) return false;
         const std::string_view rest = std::string_view{cleaned}.substr(consumed);
         return rest.empty() || rest.front() == 'T' || rest.front() == ' ';
     };
-    // YYYY-MM-DD or YYYY/MM/DD
     int y = 0, m = 0, d = 0, used = 0;
     if ((std::sscanf(cleaned.c_str(), "%4d-%2d-%2d%n", &y, &m, &d, &used) == 3 ||
          std::sscanf(cleaned.c_str(), "%4d/%2d/%2d%n", &y, &m, &d, &used) == 3) &&
@@ -318,7 +286,6 @@ std::optional<std::string> parse_date(std::string_view value) {
         const std::string iso = format_iso(y, m, d);
         if (!iso.empty()) return iso;
     }
-    // MM/DD/YYYY or MM-DD-YYYY
     used = 0;
     if ((std::sscanf(cleaned.c_str(), "%2d/%2d/%4d%n", &m, &d, &y, &used) == 3 ||
         std::sscanf(cleaned.c_str(), "%2d-%2d-%4d%n", &m, &d, &y, &used) == 3) &&
@@ -326,7 +293,6 @@ std::optional<std::string> parse_date(std::string_view value) {
         const std::string iso = format_iso(y, m, d);
         if (!iso.empty()) return iso;
     }
-    // "June 15, 2026" / "15 June 2026"
     const std::vector<std::string> words = str::tokenize_words(cleaned);
     if (words.size() == 3) {
         if (const int month = month_from_name(words[0]); month != 0) {
@@ -372,7 +338,6 @@ bool validate(const FieldDef& field, std::string_view raw) {
         if (!has_alpha(value)) return false;
         const std::string lowered = str::to_lower(value);
         if (str::contains(lowered, "po box")) return true;
-        // A leading or embedded street number.
         return digit_count(value) >= 1 && digit_count(value) * 2 <= value.size();
     }
     case Kind::Money: {
@@ -410,9 +375,6 @@ std::string normalize(const FieldDef& field, std::string_view raw) {
 }
 
 namespace {
-
-// Candidate substrings inside a composite value: whitespace tokens with edge
-// punctuation stripped, plus the remainder after a label-style colon.
 std::vector<std::string> embedded_candidates(std::string_view raw) {
     std::vector<std::string> out;
     const std::string value = str::trim(raw);
@@ -430,7 +392,6 @@ std::vector<std::string> embedded_candidates(std::string_view raw) {
 }
 
 bool kind_coercible(Kind k) { return k == Kind::Id || k == Kind::Money || k == Kind::Date; }
-
 } // namespace
 
 Coercion coerce(const FieldDef& field, std::string_view raw) {
@@ -445,8 +406,6 @@ Coercion coerce(const FieldDef& field, std::string_view raw) {
     }
     return {};
 }
-
-// ------------------------------------------------------------- mapping -----
 
 double score_label(const FieldDef& field, const std::string& label) {
     const std::string slug = str::slug(label);
@@ -530,11 +489,6 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
                                         double floor, const columns::ColumnModel* neural) {
     std::vector<Candidate> candidates;
     for (const std::string& label : model.labels) {
-        // Name evidence comes from two independent sources: the lexicon and,
-        // when a trained column model is on hand, its verdict on this
-        // column's name and sample values. The posterior only counts for the
-        // field the model actually picked, and only when it is confident -
-        // a hedged distribution is not name evidence.
         std::string neural_field;
         double neural_confidence = 0.0;
         if (neural != nullptr && neural->trained()) {
@@ -573,17 +527,12 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
                          return a.confidence > b.confidence;
                      });
 
-    // Mark what automatic assignment keeps: the auto rules (threshold plus
-    // the weak-validator label floor), greedy, one field per label.
     std::vector<std::string> used_fields;
     std::vector<std::string> used_labels;
     for (Candidate& c : candidates) {
         if (c.confidence < kAcceptThreshold) continue;
         const FieldDef* field = registry.find(c.field);
         if (field == nullptr) continue;
-        // Text validators pass anything, so only lexicon evidence can clear
-        // the weak-validator floor; the transformer's posterior counts as
-        // name evidence only where values can veto it.
         if (validator_is_weak(field->kind) && c.label_similarity < kWeakValidatorLabelFloor) {
             continue;
         }
@@ -638,7 +587,6 @@ Mapping apply_overrides(const Registry& registry, const Mapping& mapping,
         if (std::find(model.labels.begin(), model.labels.end(), label) == model.labels.end()) {
             continue; // pinned label absent from this document: stay unmapped
         }
-        // The override owns its label: no other field may keep it.
         std::erase_if(out.fields,
                       [&](const FieldMapping& fm) { return fm.source_label == label; });
         const PassStats pass = measured_pass(*field, label, model);
@@ -696,5 +644,4 @@ ExtractionResult apply_mapping(const Registry& registry, const Mapping& mapping,
     out.rate = out.records.empty() ? 0.0 : total / static_cast<double>(out.records.size());
     return out;
 }
-
 } // namespace dd::schema

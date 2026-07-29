@@ -19,7 +19,6 @@
 
 namespace dd::cli {
 namespace {
-
 using render::meter;
 using render::paint;
 using render::section;
@@ -53,8 +52,6 @@ std::vector<std::string> sample_values(const doc::Model& model, const std::strin
 
 enum class Answer { Yes, No, Abort };
 
-// A non-answer must never become a stored decision: reprompt on anything
-// unrecognised, abort the whole review on end of input.
 Answer ask_yes_no(std::istream& in, const std::string& question) {
     while (true) {
         std::printf("%s [y/n] ", question.c_str());
@@ -67,7 +64,6 @@ Answer ask_yes_no(std::istream& in, const std::string& question) {
         std::printf("    please answer y or n (end input to abort)\n");
     }
 }
-
 } // namespace
 
 void counties(store::Store& store) {
@@ -111,7 +107,6 @@ void counties(store::Store& store) {
 }
 
 namespace {
-
 std::string fmt_money(double v) {
     char raw[32];
     std::snprintf(raw, sizeof(raw), "%.0f", v);
@@ -133,7 +128,6 @@ std::string field_or(const compile::Property& p, const char* field) {
     const auto it = p.fields.find(field);
     return it == p.fields.end() ? "" : it->second.value;
 }
-
 } // namespace
 
 void county_properties(store::Store& store, const schema::Registry& registry,
@@ -404,7 +398,6 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
         }
     }
 
-    // Per-class results and confusion from the winning run.
     std::map<std::string, std::pair<std::size_t, std::size_t>> per_class; // correct, total
     std::map<std::string, std::size_t> confusion;
     std::vector<classify::LooPrediction> disagreements;
@@ -431,9 +424,6 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
         for (const auto& [pair, count] : confusion) {
             std::printf("  %s %s (x%zu)\n", stamp("review").c_str(), pair.c_str(), count);
         }
-        // Naming the files makes the confusion table an audit an operator can
-        // act on: harvested labels come from a search query, so a
-        // disagreement is as likely to be a wrong folder as a wrong model.
         std::printf("\n  %s\n", paint("dim", "documents that disagree with their folder:").c_str());
         std::size_t shown = 0;
         for (const classify::LooPrediction& p : disagreements) {
@@ -464,7 +454,6 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
 }
 
 namespace {
-
 std::map<std::string, std::string> as_field_map(const schema::Mapping& mapping) {
     std::map<std::string, std::string> out;
     for (const schema::FieldMapping& fm : mapping.fields) out[fm.field] = fm.source_label;
@@ -494,7 +483,6 @@ void print_totals(const char* who, const BenchTotals& t, const std::string& cost
                 pct(t.mapping.recall()).c_str(), pct(t.mapping.f1()).c_str(), t.ms, t.docs,
                 cost.c_str());
 }
-
 } // namespace
 
 int harvest(const schema::Registry& registry, const std::string& corpus_path,
@@ -754,5 +742,4 @@ int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& 
     }
     return 0;
 }
-
 } // namespace dd::cli

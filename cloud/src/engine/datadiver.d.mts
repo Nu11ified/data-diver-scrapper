@@ -1,4 +1,3 @@
-// Surface of the Emscripten glue, pinned so nothing downstream is untyped.
 export interface EmscriptenModule {
   ccall(
     name: string,

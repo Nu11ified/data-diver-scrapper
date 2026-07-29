@@ -12,8 +12,6 @@
 
 namespace dd::pdf {
 namespace {
-
-// A PDF content stream token: string data to show, a number, or an operator.
 struct Token {
     enum class Kind { String, Number, Operator, ArrayOpen, ArrayClose, Name };
     Kind kind;
@@ -44,9 +42,6 @@ std::string inflate_stream(std::string_view compressed) {
 }
 #endif
 
-// Splits the raw bytes into decoded stream contents. Works without the xref
-// table: county PDFs frequently have broken cross references, and for text
-// recovery a linear object scan is enough.
 std::vector<std::string> decoded_streams(std::string_view bytes) {
     std::vector<std::string> streams;
     std::size_t pos = 0;
@@ -54,8 +49,6 @@ std::vector<std::string> decoded_streams(std::string_view bytes) {
         const std::size_t stream_kw = bytes.find("stream", pos);
         if (stream_kw == std::string_view::npos) break;
 
-        // The dictionary for this stream sits between the previous "obj" (or
-        // start) and the keyword.
         const std::size_t obj_kw = bytes.rfind("obj", stream_kw);
         const std::size_t dict_begin = obj_kw == std::string_view::npos ? 0 : obj_kw;
         const std::string_view dict = bytes.substr(dict_begin, stream_kw - dict_begin);
@@ -84,9 +77,6 @@ std::vector<std::string> decoded_streams(std::string_view bytes) {
 #endif
             continue;
         }
-        // Other filters (DCT, LZW, ASCII85) do not carry the text we need or
-        // are rare in generated reports; skipping them loses nothing we could
-        // honestly recover here.
         if (dd::str::contains(dict, "/Filter")) continue;
         streams.emplace_back(data);
     }
@@ -265,8 +255,6 @@ private:
     std::size_t pos_ = 0;
 };
 
-// Kern adjustments beyond this many thousandths of an em read as a column
-// gap rather than letter spacing.
 constexpr double kColumnKern = 180.0;
 
 void flush_line(std::vector<std::string>& lines, std::string& line) {
@@ -302,7 +290,6 @@ void extract_from_stream(std::string_view content, std::vector<std::string>& lin
                 shown(stack.back().text);
             }
         } else if (op == "TJ") {
-            // Stack holds ArrayOpen, elements..., ArrayClose.
             std::string joined;
             for (const Token& t : stack) {
                 if (t.kind == Token::Kind::String) {
@@ -346,7 +333,6 @@ void extract_from_stream(std::string_view content, std::vector<std::string>& lin
     }
     flush_line(lines, line);
 }
-
 } // namespace
 
 bool looks_like_pdf(std::string_view bytes) {
@@ -362,5 +348,4 @@ std::vector<std::string> extract_text_lines(std::string_view bytes) {
     }
     return lines;
 }
-
 } // namespace dd::pdf

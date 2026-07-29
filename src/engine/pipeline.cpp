@@ -17,7 +17,6 @@
 
 namespace dd::pipeline {
 namespace {
-
 std::string new_run_id(const std::string& source_id) {
     return str::hex64(str::hash64(source_id + "|" + timeutil::iso_now() + "|" +
                                   std::to_string(metrics::cpu_time_ms())));
@@ -36,9 +35,6 @@ std::vector<events::PropertyEvent> to_events(const schema::Registry& registry,
         classification, class_confidence, extraction);
 }
 
-// The full extraction picture for one source, kept for the schema view: the
-// dialect's own labels, the classifier's posterior, the mapping with its per
-// field evidence, the measured per-field rates, and the records themselves.
 std::string extraction_snapshot(const store::RunRecord& run, const doc::Model& model,
                                 const classify::Prediction& prediction,
                                 const schema::Mapping& mapping,
@@ -54,8 +50,6 @@ std::string extraction_snapshot(const store::RunRecord& run, const doc::Model& m
     w.begin_array();
     for (const std::string& label : model.labels) w.string_value(label);
     w.end_array();
-    // The dialect side of one record, verbatim, so the UI can show the same
-    // fact in both languages.
     w.key("raw_sample");
     w.begin_array();
     if (!model.records.empty()) {
@@ -101,14 +95,11 @@ std::string extraction_snapshot(const store::RunRecord& run, const doc::Model& m
     return w.take();
 }
 
-// Exponential moving average keeps the baseline honest about gradual change
-// while still reacting to a collapse.
 double update_baseline(double baseline, int good_runs, double rate) {
     if (good_runs <= 0) return rate;
     constexpr double kAlpha = 0.3;
     return baseline * (1.0 - kAlpha) + rate * kAlpha;
 }
-
 } // namespace
 
 Pipeline::Pipeline(store::Store& store, classify::Classifier classifier,
@@ -130,7 +121,6 @@ store::RunRecord Pipeline::run_source_id(const std::string& source_id) {
 }
 
 namespace {
-
 bool quote_safe(const std::string& value) {
     if (value.empty()) return false;
     for (char c : value) {
@@ -139,7 +129,6 @@ bool quote_safe(const std::string& value) {
     return true;
 }
 
-// The parcels this jurisdiction already tracks.
 std::vector<std::string> tracked_parcels(const store::Source& source, const store::Store& store) {
     const std::string prefix = str::slug(source.jurisdiction) + "|p:";
     std::vector<std::string> out;
@@ -152,10 +141,6 @@ std::vector<std::string> tracked_parcels(const store::Source& source, const stor
     return out;
 }
 
-// The street names of every address this jurisdiction has seen, without the
-// house number or the suffix. Offices that publish different id spaces still
-// share streets, which is how a delinquency keyed by a billing account finds
-// its assessment keyed by a parcel.
 std::vector<std::string> tracked_streets(const store::Source& source, store::Store& store) {
     static const std::vector<std::string> kSuffixes = {
         "ST", "AVE", "AV", "RD", "DR", "BLVD", "LN", "CT", "PL", "CIR", "TER", "WAY",
@@ -188,9 +173,6 @@ std::vector<std::string> tracked_streets(const store::Source& source, store::Sto
     return out;
 }
 
-// The house numbers of tracked addresses. Paired with the street names this
-// narrows an enrichment query to the specific buildings in play rather than
-// returning an arbitrary slice of every street.
 std::vector<std::string> tracked_numbers(const store::Source& source, store::Store& store) {
     const std::string prefix = str::slug(source.jurisdiction) + "|";
     std::vector<std::string> out;
@@ -209,13 +191,8 @@ std::vector<std::string> tracked_numbers(const store::Source& source, store::Sto
     }
     return out;
 }
-
 } // namespace
 
-// Once the mapping knows which column carries the event date, the fetch can
-// ask for that column in descending order, so a refetch returns the newest
-// records rather than an arbitrary page of them. The source teaches the
-// engine what its date column is called; the engine then uses it.
 std::string order_by_learned_date(std::string url, const schema::Registry& registry,
                                   const store::SourceState& state) {
     if (!state.has_mapping || !str::contains(url, "/resource/")) return url;
@@ -254,8 +231,6 @@ std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Sou
     std::vector<store::RunRecord> out(sources.size());
     if (sources.empty()) return out;
 
-    // Enrichment sources query the parcels the others discover, so they run
-    // in a second wave. Everything inside a wave is concurrent.
     std::vector<std::size_t> primary;
     std::vector<std::size_t> enrichment;
     for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -268,8 +243,6 @@ std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Sou
         const int workers = std::min<int>(
             static_cast<int>(wave.size()),
             threads > 0 ? threads : std::max(2, std::min(8, hardware)));
-        // Hosts without threads (a WASM runtime reports one core) take the
-        // inline path; no std::thread is ever constructed there.
         if (workers <= 1) {
             for (const std::size_t i : wave) out[i] = run_source(sources[i]);
             return;
@@ -300,7 +273,6 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     run.source_id = source.id;
     run.started_at = timeutil::iso_now();
 
-    // ------------------------------------------------------------ fetch ----
     std::string url;
     try {
         url = order_by_learned_date(expand_url_template(source, store_), registry_,
@@ -344,7 +316,6 @@ store::RunRecord Pipeline::run_cached(const store::Source& source) {
     run.source_id = source.id;
     run.started_at = timeutil::iso_now();
 
-    // The "fetch" is the cache read: measured, like every other number.
     const Stopwatch cache_watch;
     const std::optional<store::CachedFetch> cached = store_.fetch_cache(source.id);
     if (!cached.has_value()) throw Error("pipeline: no fetch cache for " + source.id);
@@ -369,7 +340,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
         return run;
     };
 
-    // ------------------------------------------------- detect and extract --
     const Stopwatch parse_watch;
     doc::Model model;
     try {
@@ -386,7 +356,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
         return finish(false, "parse", "document yielded no text and no records");
     }
 
-    // --------------------------------------------------------- classify ----
     const Stopwatch classify_watch;
     classify::Prediction prediction;
     try {
@@ -404,7 +373,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
                       "no records extracted from " + run.format + " document");
     }
 
-    // ------------------------------------------------- map, detect drift ---
     const Stopwatch map_watch;
     store::SourceState state = store_.source_state(source.id);
     run.baseline_rate = state.baseline_rate;
@@ -439,8 +407,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
             if (proposal.acceptable) {
                 run.repair_accepted = true;
                 mapping = proposal.candidate;
-                // The source changed shape: the old baseline no longer
-                // describes this structure. Restart it from the repair.
                 state.good_runs = 0;
                 logging::info("pipeline: accepted mapping repair for " + source.id);
             } else {
@@ -461,9 +427,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
         }
     }
 
-    // Operator overrides win over inference and healing, every run: a pinned
-    // field maps to its label with the pass rate measured on this document,
-    // and a force-unmapped field stays out.
     if (!state.overrides.empty()) {
         mapping = schema::apply_overrides(registry_, mapping, state.overrides, model);
     }
@@ -479,12 +442,8 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
     run.extraction_rate = extraction.rate;
     run.mapping_confidence = mapping.confidence;
 
-    // --------------------------------------------- resolve and add events --
     std::vector<events::PropertyEvent> batch =
         to_events(registry_, source, run, prediction.label, prediction.confidence, extraction);
-    // An enrichment feed asks a wide question (every parcel on these streets)
-    // to answer a narrow one, so it may only add detail to properties the
-    // jurisdiction already tracks. Without this it would import a street.
     if (str::contains(source.url, "{parcels}") || str::contains(source.url, "{streets}")) {
         const std::size_t before = batch.size();
         std::set<std::string> known_keys;
@@ -522,7 +481,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
     store_.save_latest_records(source.id,
                                extraction_snapshot(run, model, prediction, mapping, extraction));
 
-    // ------------------------------------------------------ update state ---
     state.source_id = source.id;
     state.baseline_rate = update_baseline(state.baseline_rate, state.good_runs, extraction.rate);
     state.good_runs += 1;
@@ -533,5 +491,4 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
 
     return finish(true, "done", "");
 }
-
 } // namespace dd::pipeline

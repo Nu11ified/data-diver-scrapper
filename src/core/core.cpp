@@ -13,13 +13,10 @@
 
 namespace dd {
 namespace {
-
 bool is_alnum(unsigned char c) { return std::isalnum(c) != 0; }
-
 } // namespace
 
 namespace str {
-
 std::string trim(std::string_view s) {
     std::size_t b = 0;
     std::size_t e = s.size();
@@ -207,11 +204,9 @@ std::string hex64(std::uint64_t v) {
     out << std::hex << std::setw(16) << std::setfill('0') << v;
     return out.str();
 }
-
 } // namespace str
 
 namespace timeutil {
-
 std::int64_t unix_now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -230,7 +225,6 @@ std::string iso_from_unix(std::int64_t t) {
 std::string iso_now() { return iso_from_unix(unix_now()); }
 
 namespace {
-
 std::optional<std::int64_t> epoch_seconds(std::string_view stamp) {
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
     const std::string text{stamp};
@@ -247,7 +241,6 @@ std::optional<std::int64_t> epoch_seconds(std::string_view stamp) {
     tm.tm_sec = s;
     return static_cast<std::int64_t>(timegm(&tm));
 }
-
 } // namespace
 
 double hours_between(std::string_view earlier, std::string_view later) {
@@ -256,7 +249,6 @@ double hours_between(std::string_view earlier, std::string_view later) {
     if (!a.has_value() || !b.has_value()) return -1.0;
     return static_cast<double>(*b - *a) / 3600.0;
 }
-
 } // namespace timeutil
 
 double Stopwatch::elapsed_ms() const {
@@ -267,7 +259,6 @@ double Stopwatch::elapsed_ms() const {
 void Stopwatch::reset() { start_ = std::chrono::steady_clock::now(); }
 
 namespace fileio {
-
 std::string read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw Error("cannot open file: " + path);
@@ -335,12 +326,10 @@ std::vector<std::string> list_dir(const std::string& path) {
     std::sort(entries.begin(), entries.end());
     return entries;
 }
-
 } // namespace fileio
 
 namespace logging {
 namespace {
-
 Level g_level = Level::Info;
 std::mutex g_mutex;
 
@@ -349,7 +338,6 @@ void emit(Level level, std::string_view tag, std::string_view msg) {
     const std::lock_guard<std::mutex> lock{g_mutex};
     std::cerr << timeutil::iso_now() << " [" << tag << "] " << msg << '\n';
 }
-
 } // namespace
 
 void set_level(Level level) { g_level = level; }
@@ -357,7 +345,5 @@ void debug(std::string_view msg) { emit(Level::Debug, "debug", msg); }
 void info(std::string_view msg) { emit(Level::Info, "info", msg); }
 void warn(std::string_view msg) { emit(Level::Warn, "warn", msg); }
 void error(std::string_view msg) { emit(Level::Error, "error", msg); }
-
 } // namespace logging
-
 } // namespace dd

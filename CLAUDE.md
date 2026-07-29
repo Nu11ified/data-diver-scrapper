@@ -1,6 +1,12 @@
 # Data Diver: working rules
 
-If you need a paragraph-long comment to justify why the workaround is OK, the code is wrong — fix the code.
+If you need a paragraph-long comment to justify why the workaround is OK, the code is wrong. Fix the code.
+
+Do not narrate the code in comments. No file-header essays, no block comments above
+functions restating what the signature already says, no commentary explaining why a
+change was made. Names and types carry that. The only comment worth writing states a
+constraint the code cannot show, such as an external format quirk or an ordering
+requirement, and it fits on one line. When in doubt, delete it.
 
 Reference the /docs/cpp-guide.md for how to write the CPP effectively
 

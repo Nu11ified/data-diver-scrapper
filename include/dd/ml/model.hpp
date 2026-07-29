@@ -8,16 +8,11 @@
 #include <vector>
 
 namespace dd::model {
-
 struct Scored {
     std::string label;
     double probability = 0.0;
 };
 
-// Introspection: what one class learned. Top tokens are ranked by lift, the
-// ratio of the token's in-class frequency to its corpus frequency, so the
-// discriminative vocabulary surfaces instead of the words every county page
-// shares.
 struct TokenWeight {
     std::string token;
     std::int64_t count = 0;
@@ -31,15 +26,10 @@ struct ClassSummary {
     std::vector<TokenWeight> top_tokens;
 };
 
-// Multinomial naive Bayes with Laplace smoothing. Small, fast, and honest
-// about uncertainty: predict() returns a posterior distribution, and the
-// probability of the winning class is the confidence the UI shows.
 class NaiveBayes {
 public:
     void add_example(const std::string& label, const features::Bag& bag);
 
-    // Sorted by probability, highest first. Tokens never seen in training are
-    // ignored rather than letting smoothing skew towards small classes.
     std::vector<Scored> predict(const features::Bag& bag) const;
 
     std::size_t class_count() const noexcept { return classes_.size(); }
@@ -48,9 +38,6 @@ public:
 
     std::vector<ClassSummary> summarize(std::size_t top_n) const;
 
-    // Lidstone smoothing strength. 1.0 is Laplace; smaller values trust the
-    // observed counts more. Tunable because its effect on held-out accuracy
-    // is measurable, and measured is how it should be chosen.
     void set_alpha(double alpha);
     double alpha() const noexcept { return alpha_; }
 
@@ -72,5 +59,4 @@ private:
     std::size_t examples_ = 0;
     double alpha_ = 1.0;
 };
-
 } // namespace dd::model

@@ -8,7 +8,6 @@
 
 namespace dd::render {
 namespace {
-
 std::string code_for(std::string_view style) {
     if (style == "dim") return "\033[2m";
     if (style == "bold") return "\033[1m";
@@ -19,9 +18,6 @@ std::string code_for(std::string_view style) {
     return "";
 }
 
-// Display width of a string ignoring ANSI escapes. The meter glyphs are
-// multi-byte UTF-8 but single-column; count bytes outside escapes and
-// outside UTF-8 continuation bytes.
 std::size_t visible_width(std::string_view s) {
     std::size_t width = 0;
     bool in_escape = false;
@@ -39,7 +35,6 @@ std::size_t visible_width(std::string_view s) {
     }
     return width;
 }
-
 } // namespace
 
 bool colors_enabled() {
@@ -126,5 +121,4 @@ void table(const std::vector<std::string>& header,
     std::printf("%s\n", paint("dim", rule).c_str());
     for (const std::vector<std::string>& row : rows) print_row(row, false);
 }
-
 } // namespace dd::render

@@ -9,7 +9,6 @@
 
 namespace dd::compile {
 namespace {
-
 void sort_events(std::vector<events::PropertyEvent>* evs) {
     std::stable_sort(evs->begin(), evs->end(),
                      [](const events::PropertyEvent& a, const events::PropertyEvent& b) {
@@ -27,12 +26,6 @@ std::string first_address(const std::vector<events::PropertyEvent>& evs) {
     return {};
 }
 
-
-
-// Whether two raw values mean the same thing for this field: compare through
-// the field's normalizer so "$110,091" equals "110091.00" and case noise is
-// not a conflict; addresses compare through the entity normalizer so street
-// dialects ("ST" vs "STREET", padded house numbers) are not conflicts.
 bool same_value(const schema::FieldDef& field, const std::string& a, const std::string& b) {
     if (field.kind == schema::Kind::Address) {
         return entity::normalize_address(a) == entity::normalize_address(b);
@@ -56,8 +49,6 @@ void resolve_fields(const schema::Registry& registry,
                 if (field_it != source_it->second.end()) confidence = field_it->second;
             }
 
-            // Record what this edition says before deciding the current
-            // value, so an older roll stays available for comparison.
             std::vector<Observation>& seen = property->history[field.name];
             const bool already = std::any_of(
                 seen.begin(), seen.end(), [&](const Observation& o) {
@@ -65,12 +56,6 @@ void resolve_fields(const schema::Registry& registry,
                 });
             if (!already) seen.push_back(Observation{e.as_of, it->second, e.source_id});
 
-            // Editions of the same dated series are ordered by edition: every
-            // row in an assessment roll is equally current, so no per record
-            // date can tell this year's roll from last year's. A live feed
-            // carries no edition and is never ranked against a roll that way,
-            // so those comparisons fall through to measured trust, then
-            // recency.
             const bool both_dated = !e.as_of.empty() && !best.as_of.empty();
             bool wins;
             if (!found) {
@@ -130,7 +115,6 @@ void measure_signals(Property* property) {
         const std::optional<double> parsed = schema::parse_money(assessed->second.value);
         if (parsed.has_value() && *parsed > 0.0) property->assessed = *parsed;
     }
-    // The same field one edition earlier, which makes the change measurable.
     const auto seen = property->history.find("assessed_value");
     if (seen != property->history.end()) {
         for (const Observation& o : seen->second) {
@@ -143,7 +127,6 @@ void measure_signals(Property* property) {
         }
     }
 }
-
 } // namespace
 
 std::map<std::string, std::map<std::string, double>> source_trust(store::Store& store) {
@@ -174,10 +157,6 @@ std::vector<Property> county_from_events(
     const std::string& county) {
     const std::string wanted = str::slug(county);
 
-    // Group store keys: one building may appear under a treasurer account, an
-    // assessor parcel and a complaint id at once, so keys join on the parts
-    // of the address every office agrees about. A group whose members
-    // contradict each other on a part they both publish is not merged.
     std::map<std::string, std::vector<std::string>> groups;
     std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
     std::map<std::string, entity::Address> address_by_key;
@@ -192,9 +171,6 @@ std::vector<Property> county_from_events(
         events_by_key[key] = std::move(evs);
     }
 
-    // An address that resolves to several parcels inside one office is not a
-    // unique identifier for a building: an airport or an apartment complex
-    // files many parcels at one street address. Those groups do not merge.
     const auto address_is_unique = [&](const std::vector<std::string>& keys) {
         std::map<std::string, std::set<std::string>> parcels_per_source;
         for (const std::string& key : keys) {
@@ -219,8 +195,6 @@ std::vector<Property> county_from_events(
     }
     groups = std::move(unique_groups);
 
-    // Split any group whose addresses contradict: 100 MAIN ST E and
-    // 100 MAIN ST W share a join key but are different buildings.
     std::map<std::string, std::vector<std::string>> resolved_groups;
     for (auto& [group, keys] : groups) {
         std::vector<std::vector<std::string>> buckets;
@@ -369,5 +343,4 @@ std::string render_county_json(const std::string& county,
     w.end_object();
     return w.take();
 }
-
 } // namespace dd::compile

@@ -1,12 +1,3 @@
-// The WASM boundary of the engine. The host (a Cloudflare Worker) owns the
-// network and the database; this module owns everything the repository is
-// about: parsing, classification, schema matching, extraction, event
-// building and county compilation. One seam, JSON strings both ways, so the
-// host language never touches engine memory layouts.
-//
-// Contract: every function returns a malloc'd NUL-terminated JSON string the
-// caller must release with dd_free. Success is {"ok":true,...}; failure is
-// {"ok":false,"error":"..."} and never a fabricated result.
 
 #include "dd/core/core.hpp"
 #include "dd/core/json.hpp"
@@ -22,7 +13,6 @@
 #include <string>
 
 namespace {
-
 char* to_c(const std::string& s) {
     char* out = static_cast<char*>(std::malloc(s.size() + 1));
     if (out != nullptr) std::memcpy(out, s.c_str(), s.size() + 1);
@@ -58,11 +48,9 @@ std::vector<dd::events::PropertyEvent> read_events(const std::string& text) {
     }
     return out;
 }
-
 } // namespace
 
 extern "C" {
-
 void dd_free(char* p) { std::free(p); }
 
 char* dd_version() {
@@ -75,9 +63,6 @@ char* dd_version() {
     return to_c(w.take());
 }
 
-// One document through the full pipeline: parse, classify, match, extract,
-// build events. The host passes the bytes it fetched plus the configuration
-// the engine would otherwise read from disk.
 char* dd_process_document(const char* schema_json, const char* classifier_json,
                           const char* column_model_json, const char* content_type,
                           const char* body, const char* source_id, const char* jurisdiction,
@@ -142,8 +127,6 @@ char* dd_process_document(const char* schema_json, const char* classifier_json,
     }
 }
 
-// Compiles one county from events the host loaded out of its database.
-// trust_json maps source id to {field: mapping confidence}.
 char* dd_compile_county(const char* schema_json, const char* events_json,
                         const char* trust_json, const char* county) {
     try {
@@ -173,5 +156,4 @@ char* dd_compile_county(const char* schema_json, const char* events_json,
         return failure(e.what());
     }
 }
-
 } // extern "C"

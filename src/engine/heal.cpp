@@ -4,13 +4,8 @@
 
 namespace dd::heal {
 namespace {
-
-// The stored mapping has failed when it extracts less than this fraction of
-// its learned baseline.
 constexpr double kCollapseRatio = 0.6;
 
-// A repair must recover at least this fraction of the baseline rate before
-// it can even be considered.
 constexpr double kRecoveryRatio = 0.7;
 
 constexpr double kAutoAcceptConfidence = 0.75;
@@ -19,7 +14,6 @@ std::string describe(const schema::Mapping& mapping, std::string_view field) {
     const schema::FieldMapping* fm = mapping.find(field);
     return fm == nullptr ? std::string{"(unmapped)"} : "'" + fm->source_label + "'";
 }
-
 } // namespace
 
 double auto_accept_threshold() { return kAutoAcceptConfidence; }
@@ -67,10 +61,6 @@ Proposal propose(const schema::Registry& registry, const doc::Model& model,
         return out;
     }
 
-    // Confidence is the mapping's own evidence-based confidence combined with
-    // how much of the learned baseline the repair recovers. With no baseline
-    // (first drift before any good run) the recovery term falls back to the
-    // measured rate itself.
     const double recovery =
         baseline_rate > 0.0 ? std::min(1.0, out.result.rate / baseline_rate) : out.result.rate;
     out.confidence = 0.5 * out.candidate.confidence + 0.5 * recovery;
@@ -92,5 +82,4 @@ Proposal propose(const schema::Registry& registry, const doc::Model& model,
     if (out.changes.empty()) out.changes.push_back("mapping unchanged; values revalidated");
     return out;
 }
-
 } // namespace dd::heal

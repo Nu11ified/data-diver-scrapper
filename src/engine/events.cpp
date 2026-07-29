@@ -8,7 +8,6 @@
 #include <algorithm>
 
 namespace dd::events {
-
 std::string_view state_name(State s) {
     switch (s) {
     case State::Normal: return "NORMAL";
@@ -54,8 +53,6 @@ Kind kind_from_source_label(std::string_view label, std::string_view status) {
 }
 
 std::string PropertyEvent::compute_id(const PropertyEvent& e) {
-    // Content identity, not row identity: the same fact seen in another run
-    // hashes the same, so re-ingestion cannot duplicate history.
     std::string basis = e.property_key;
     basis.push_back('|');
     basis += kind_name(e.kind);
@@ -170,7 +167,6 @@ Lifecycle reduce(std::vector<PropertyEvent> events) {
 }
 
 namespace {
-
 std::string pick_role(const schema::Registry& registry,
                       const std::map<std::string, std::string>& values,
                       std::string_view role) {
@@ -180,7 +176,6 @@ std::string pick_role(const schema::Registry& registry,
     }
     return {};
 }
-
 } // namespace
 
 std::vector<PropertyEvent> build_events(const schema::Registry& registry,
@@ -216,5 +211,4 @@ std::vector<PropertyEvent> build_events(const schema::Registry& registry,
     }
     return out;
 }
-
 } // namespace dd::events

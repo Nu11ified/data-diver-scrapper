@@ -1,7 +1,3 @@
-// Typed wrapper around the Data Diver WASM engine. One seam: JSON strings
-// cross it, everything on this side is schema-checked before use, and every
-// engine failure surfaces as a typed error instead of a shaped-like-success
-// value.
 
 import wasmModule from "./datadiver.wasm";
 import createModule, { type EmscriptenModule } from "./datadiver.mjs";
@@ -71,8 +67,6 @@ let modulePromise: Promise<EmscriptenModule> | undefined;
 
 const engine = (): Promise<EmscriptenModule> => {
   modulePromise ??= createModule({
-    // The bundler uploads the .wasm as a CompiledWasm module; hand it to the
-    // glue so nothing is fetched at runtime.
     instantiateWasm: (imports, onSuccess) => {
       void WebAssembly.instantiate(wasmModule, imports).then((instance) => {
         onSuccess(instance, wasmModule);
