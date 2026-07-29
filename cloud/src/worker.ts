@@ -562,21 +562,43 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     });
 
     const EVENT_LIMIT = 20_000;
+    const COMPILED_TTL_MS = 6 * 60 * 60_000;
+
+    const countySlug = (county: string): string =>
+      county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+    const countyWhere = (county: string) => {
+      const slug = countySlug(county);
+      return {
+        OR: [
+          { propertyKey: { startsWith: `${slug}|` } },
+          { propertyKey: { contains: `_${slug}|` } },
+          { propertyKey: { contains: `${slug}_`, mode: "insensitive" as const } },
+        ],
+      };
+    };
+
+    /// Cheap summary of what the county's events currently are. Compiling is
+    /// the expensive step, so the cache turns on whether anything was ingested
+    /// since, not on a clock: a fresh run changes the count or the newest
+    /// recordedAt and the next read recompiles.
+    const countyStamp = (county: string) =>
+      Effect.promise(async () => {
+        const result = await db().event.aggregate({
+          where: countyWhere(county),
+          _count: { _all: true },
+          _max: { recordedAt: true },
+        });
+        return `${result._count._all}:${result._max.recordedAt?.toISOString() ?? "none"}`;
+      });
 
     const loadCountyEvents = (county: string) =>
       Effect.promise(async (): Promise<readonly PropertyEvent[]> => {
         // A property key is "<jurisdiction>|<id>", so a bare substring let
         // "york" pull New York's events into York's county view. Matching the
         // segment before the pipe keeps jurisdictions apart.
-        const slug = county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
         const rows = await db().event.findMany({
-          where: {
-            OR: [
-              { propertyKey: { startsWith: `${slug}|` } },
-              { propertyKey: { contains: `_${slug}|` } },
-              { propertyKey: { contains: `${slug}_`, mode: "insensitive" } },
-            ],
-          },
+          where: countyWhere(county),
           orderBy: { eventDate: "asc" },
           take: EVENT_LIMIT,
         });
@@ -626,8 +648,35 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
       });
 
+    const CompiledCache = Schema.Struct({
+      stamp: Schema.String,
+      at: Schema.String,
+      payload: Schema.String,
+    });
+
     const compileCountyPayload = (county: string) =>
       Effect.gen(function* () {
+        const cacheKey = `compiled/${countySlug(county)}.json`;
+        const stamp = yield* countyStamp(county);
+        const cached = yield* bucket.get(cacheKey);
+        if (cached !== null) {
+          const decoded = yield* Schema.decodeUnknownEffect(CompiledCache)(
+            JSON.parse(yield* cached.text()),
+          ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          const fresh =
+            decoded !== undefined &&
+            decoded.stamp === stamp &&
+            Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS;
+          if (fresh && decoded !== undefined) {
+            const parsed = JSON.parse(decoded.payload) as {
+              readonly records: readonly CountyRecord[];
+            };
+            // The properties table was already written when this was compiled,
+            // so re-persisting it would only repeat work the cache exists to
+            // avoid.
+            return Option.some({ payload: decoded.payload, records: parsed.records });
+          }
+        }
         const events = yield* loadCountyEvents(county);
         if (events.length >= EVENT_LIMIT) {
           // Compiling a truncated slice and presenting it as the county is how
@@ -682,6 +731,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const parsed = JSON.parse(payload) as { readonly records: readonly CountyRecord[] };
         const jurisdiction = events[0]?.property_key.split("|")[0] ?? county;
         yield* persist(jurisdiction, parsed.records);
+        yield* bucket.put(
+          cacheKey,
+          JSON.stringify({ stamp, at: new Date().toISOString(), payload }),
+        );
         return Option.some({ payload, records: parsed.records });
       });
 
