@@ -6,10 +6,16 @@ export class OAuthError extends Data.TaggedError("OAuthError")<{
   readonly message: string;
 }> {}
 
-// Public OAuth client id of the Codex CLI; the flow only works for this app.
 export const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE = "https://auth.openai.com";
-const SCOPE = "openid profile email offline_access";
+export const DEVICE_VERIFICATION_URL = `${AUTH_BASE}/codex/device`;
+const DEVICE_REDIRECT_URI = `${AUTH_BASE}/deviceauth/callback`;
+const DEVICE_API_BASE = `${AUTH_BASE}/api/accounts/deviceauth`;
+
+type Fetcher = (
+  input: string | URL | globalThis.Request,
+  init?: RequestInit,
+) => Promise<Response>;
 
 const base64Url = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes))
@@ -17,33 +23,108 @@ const base64Url = (bytes: Uint8Array): string =>
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-export const makeVerifier = (): string => base64Url(crypto.getRandomValues(new Uint8Array(48)));
-
-export const challengeFor = (verifier: string): Effect.Effect<string> =>
+const challengeFor = (verifier: string): Effect.Effect<string> =>
   Effect.promise(async () => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
     return base64Url(new Uint8Array(digest));
   });
 
-export interface AuthorizeRequest {
-  readonly redirectUri: string;
-  readonly state: string;
-  readonly challenge: string;
+const DeviceCodeResponse = Schema.Struct({
+  device_auth_id: Schema.String,
+  user_code: Schema.optional(Schema.String),
+  usercode: Schema.optional(Schema.String),
+  interval: Schema.Union([Schema.String, Schema.Number]),
+});
+
+const DeviceAuthorizationResponse = Schema.Struct({
+  authorization_code: Schema.String,
+  code_challenge: Schema.String,
+  code_verifier: Schema.String,
+});
+
+export interface DeviceCode {
+  readonly deviceAuthId: string;
+  readonly userCode: string;
+  readonly intervalSeconds: number;
 }
 
-export const authorizeUrl = (request: AuthorizeRequest): string => {
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: CODEX_CLIENT_ID,
-    redirect_uri: request.redirectUri,
-    scope: SCOPE,
-    state: request.state,
-    code_challenge: request.challenge,
-    code_challenge_method: "S256",
-    id_token_add_organizations: "true",
+export type DeviceCodePoll =
+  | { readonly status: "pending" }
+  | {
+      readonly status: "authorized";
+      readonly authorizationCode: string;
+      readonly codeChallenge: string;
+      readonly codeVerifier: string;
+    };
+
+const oauthError = (cause: unknown): OAuthError =>
+  new OAuthError({
+    message: cause instanceof Error ? cause.message : String(cause),
   });
-  return `${AUTH_BASE}/oauth/authorize?${params.toString()}`;
-};
+
+export const requestDeviceCode = (
+  fetcher: Fetcher = fetch,
+): Effect.Effect<DeviceCode, OAuthError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetcher(`${DEVICE_API_BASE}/usercode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ client_id: CODEX_CLIENT_ID }),
+      });
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`device code endpoint returned ${response.status}: ${body.slice(0, 300)}`);
+      }
+      const value = await Schema.decodeUnknownPromise(DeviceCodeResponse)(JSON.parse(body));
+      const userCode = value.user_code ?? value.usercode ?? "";
+      const intervalSeconds =
+        typeof value.interval === "number" ? value.interval : Number.parseInt(value.interval, 10);
+      if (userCode === "" || !Number.isFinite(intervalSeconds) || intervalSeconds < 1) {
+        throw new Error("device code endpoint returned an invalid code or polling interval");
+      }
+      return {
+        deviceAuthId: value.device_auth_id,
+        userCode,
+        intervalSeconds,
+      };
+    },
+    catch: oauthError,
+  });
+
+export const pollDeviceCode = (
+  deviceCode: Pick<DeviceCode, "deviceAuthId" | "userCode">,
+  fetcher: Fetcher = fetch,
+): Effect.Effect<DeviceCodePoll, OAuthError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetcher(`${DEVICE_API_BASE}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          device_auth_id: deviceCode.deviceAuthId,
+          user_code: deviceCode.userCode,
+        }),
+      });
+      if (response.status === 403 || response.status === 404) {
+        return { status: "pending" } as const;
+      }
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`device authorization returned ${response.status}: ${body.slice(0, 300)}`);
+      }
+      const value = await Schema.decodeUnknownPromise(DeviceAuthorizationResponse)(
+        JSON.parse(body),
+      );
+      return {
+        status: "authorized",
+        authorizationCode: value.authorization_code,
+        codeChallenge: value.code_challenge,
+        codeVerifier: value.code_verifier,
+      } as const;
+    },
+    catch: oauthError,
+  });
 
 const ExchangeResponse = Schema.Struct({
   access_token: Schema.String,
@@ -57,10 +138,13 @@ const RefreshResponse = Schema.Struct({
   id_token: Schema.optional(Schema.String),
 });
 
-const postToken = (form: URLSearchParams): Effect.Effect<unknown, OAuthError> =>
+const postToken = (
+  form: URLSearchParams,
+  fetcher: Fetcher = fetch,
+): Effect.Effect<unknown, OAuthError> =>
   Effect.tryPromise({
     try: async () => {
-      const response = await fetch(`${AUTH_BASE}/oauth/token`, {
+      const response = await fetcher(`${AUTH_BASE}/oauth/token`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: form.toString(),
@@ -92,7 +176,10 @@ export interface ExchangeRequest {
   readonly verifier: string;
 }
 
-export const exchangeCode = (request: ExchangeRequest): Effect.Effect<TokenSet, OAuthError> =>
+const exchangeCode = (
+  request: ExchangeRequest,
+  fetcher: Fetcher = fetch,
+): Effect.Effect<TokenSet, OAuthError> =>
   postToken(
     new URLSearchParams({
       grant_type: "authorization_code",
@@ -101,6 +188,7 @@ export const exchangeCode = (request: ExchangeRequest): Effect.Effect<TokenSet, 
       client_id: CODEX_CLIENT_ID,
       code_verifier: request.verifier,
     }),
+    fetcher,
   ).pipe(
     Effect.flatMap((input) =>
       Schema.decodeUnknownEffect(ExchangeResponse)(input).pipe(Effect.mapError(badResponse)),
@@ -111,6 +199,25 @@ export const exchangeCode = (request: ExchangeRequest): Effect.Effect<TokenSet, 
       idToken: tokens.id_token,
     })),
   );
+
+export const exchangeDeviceCode = (
+  authorized: Extract<DeviceCodePoll, { readonly status: "authorized" }>,
+  fetcher: Fetcher = fetch,
+): Effect.Effect<TokenSet, OAuthError> =>
+  Effect.gen(function* () {
+    const expectedChallenge = yield* challengeFor(authorized.codeVerifier);
+    if (expectedChallenge !== authorized.codeChallenge) {
+      return yield* new OAuthError({ message: "device authorization returned invalid PKCE data" });
+    }
+    return yield* exchangeCode(
+      {
+        code: authorized.authorizationCode,
+        redirectUri: DEVICE_REDIRECT_URI,
+        verifier: authorized.codeVerifier,
+      },
+      fetcher,
+    );
+  });
 
 export const refreshTokens = (
   refreshToken: string,

@@ -40,12 +40,13 @@ import { CodexError, complete } from "./codex/client.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
 import {
   CredentialPayload,
-  authorizeUrl,
-  challengeFor,
-  exchangeCode,
+  DEVICE_VERIFICATION_URL,
+  exchangeDeviceCode,
   identityFromIdToken,
-  makeVerifier,
+  pollDeviceCode,
   refreshTokens,
+  requestDeviceCode,
+  type TokenSet,
 } from "./codex/oauth.ts";
 import {
   EngineError,
@@ -105,7 +106,9 @@ interface CountyRecord {
 
 const ConnectState = Schema.Struct({
   phone: Schema.String,
-  verifier: Schema.String,
+  deviceAuthId: Schema.String,
+  userCode: Schema.String,
+  intervalSeconds: Schema.Number,
   createdAt: Schema.String,
 });
 
@@ -121,6 +124,14 @@ const json = (value: unknown, status = 200): HttpServerResponse.HttpServerRespon
     status,
     headers: { "content-type": "application/json" },
   });
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 export default class Scraper extends Cloudflare.Worker<Scraper>()(
   "Scraper",
@@ -211,6 +222,59 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }),
         );
         return Option.some(next);
+      });
+
+    const storeCredential = (phone: string, tokens: TokenSet) =>
+      Effect.gen(function* () {
+        const identity = yield* identityFromIdToken(tokens.idToken);
+        const masterKey = yield* importMasterKey(masterKeyB64);
+        const payload: CredentialPayload = {
+          provider: "codex",
+          accountId: identity.accountId,
+          email: identity.email,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          idToken: tokens.idToken,
+          obtainedAt: new Date().toISOString(),
+        };
+        const encrypted = yield* seal(masterKey, JSON.stringify(payload));
+        yield* Effect.tryPromise({
+          try: async () => {
+            const prisma = db();
+            const tenant = await prisma.tenant.upsert({
+              where: { phone },
+              create: { phone },
+              update: {},
+            });
+            const row = {
+              provider: "codex",
+              ciphertext: encrypted.ciphertext,
+              iv: encrypted.iv,
+              wrappedKey: encrypted.wrappedKey,
+              accountLabel: identity.email !== "" ? identity.email : identity.accountId,
+            };
+            await prisma.credential.upsert({
+              where: { tenantId: tenant.id },
+              create: { tenantId: tenant.id, ...row },
+              update: row,
+            });
+          },
+          catch: (cause): Error =>
+            cause instanceof Error ? cause : new Error(String(cause)),
+        }).pipe(Effect.orDie);
+        return identity;
+      });
+
+    const loadConnectState = (token: string) =>
+      Effect.gen(function* () {
+        const object = yield* bucket.get(`connect/${token}`);
+        if (object === null) return Option.none<(typeof ConnectState)["Type"]>();
+        return yield* Schema.decodeUnknownEffect(ConnectState)(
+          JSON.parse(yield* object.text()),
+        ).pipe(
+          Effect.map(Option.some),
+          Effect.catch(() => Effect.succeed(Option.none<(typeof ConnectState)["Type"]>())),
+        );
       });
 
     const scoutTurn = (
@@ -1338,12 +1402,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
           // A single-use link, minted whenever the user needs to sign in.
           const mintConnectUrl = Effect.gen(function* () {
+            const deviceCode = yield* requestDeviceCode();
             const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
             yield* bucket.put(
               `connect/${token}`,
               JSON.stringify({
                 phone,
-                verifier: makeVerifier(),
+                deviceAuthId: deviceCode.deviceAuthId,
+                userCode: deviceCode.userCode,
+                intervalSeconds: deviceCode.intervalSeconds,
                 createdAt: new Date().toISOString(),
               }),
             );
@@ -1505,12 +1572,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             codexAccount: preflight.codexAccount,
           };
           if ((lower === "connect" || lower === "connect codex") && masterKeyB64 !== "") {
+            const deviceCode = yield* requestDeviceCode();
             const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
             yield* bucket.put(
               `connect/${token}`,
               JSON.stringify({
                 phone,
-                verifier: makeVerifier(),
+                deviceAuthId: deviceCode.deviceAuthId,
+                userCode: deviceCode.userCode,
+                intervalSeconds: deviceCode.intervalSeconds,
                 createdAt: new Date().toISOString(),
               }),
             );
@@ -1667,94 +1737,81 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const connectTokenMatch = /^\/connect\/([a-f0-9]{32,})$/.exec(url.pathname);
         if (connectTokenMatch !== null && request.method === "GET") {
           const token = connectTokenMatch[1] ?? "";
-          const object = yield* bucket.get(`connect/${token}`);
-          if (object === null) {
-            return json({ ok: false, error: "connect link is invalid or already used" }, 404);
+          const connectState = Option.getOrUndefined(yield* loadConnectState(token));
+          if (connectState === undefined) {
+            yield* bucket.delete(`connect/${token}`);
+            return json(
+              { ok: false, error: "connect link is invalid; text /connect for a new one" },
+              410,
+            );
           }
-          const connectState = yield* Schema.decodeUnknownEffect(ConnectState)(
-            JSON.parse(yield* object.text()),
+          if (Date.now() - Date.parse(connectState.createdAt) > CONNECT_TTL_MS) {
+            yield* bucket.delete(`connect/${token}`);
+            return json({ ok: false, error: "connect link expired; text /connect again" }, 410);
+          }
+          const code = escapeHtml(connectState.userCode);
+          const verificationUrl = escapeHtml(DEVICE_VERIFICATION_URL);
+          const pollAfterMs = Math.max(2, Math.min(connectState.intervalSeconds, 15)) * 1_000;
+          return HttpServerResponse.text(
+            `<!doctype html><html><head><meta charset="utf-8">` +
+              `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+              `<title>Connect Data Diver</title>` +
+              `<style>body{font:16px system-ui;color:#171717;background:#f6f5f2;margin:0}` +
+              `main{max-width:34rem;margin:10vh auto;padding:2rem}` +
+              `section{background:white;border:1px solid #ddd8ce;border-radius:18px;padding:2rem}` +
+              `code{display:block;font-size:2rem;font-weight:700;letter-spacing:.12em;margin:1.5rem 0}` +
+              `a{display:inline-block;background:#171717;color:white;text-decoration:none;padding:.9rem 1.2rem;border-radius:10px}` +
+              `#status{color:#625f58;margin-top:1.5rem}</style></head>` +
+              `<body><main><section><h1>Connect ChatGPT</h1>` +
+              `<p>Open ChatGPT sign-in and enter this one-time code:</p>` +
+              `<code>${code}</code>` +
+              `<a href="${verificationUrl}" target="_blank" rel="noopener">Open ChatGPT sign-in</a>` +
+              `<p>After entering the code, return to this page to finish connecting.</p>` +
+              `<p id="status">Waiting for authorization…</p></section></main>` +
+              `<script>const status=document.getElementById("status");` +
+              `async function poll(){try{const response=await fetch(location.pathname+"/status",{method:"POST"});` +
+              `const body=await response.json();if(response.status===202){setTimeout(poll,${pollAfterMs});return}` +
+              `if(response.ok&&body.connected){status.textContent="Connected. Return to Messages and continue the conversation.";return}` +
+              `status.textContent=body.error||"Could not finish sign-in. Text /connect for a new code."` +
+              `}catch{status.textContent="Connection check failed. Retrying…";setTimeout(poll,${pollAfterMs})}}` +
+              `setTimeout(poll,${pollAfterMs});</script></body></html>`,
+            { headers: { "content-type": "text/html; charset=utf-8" } },
           );
+        }
+
+        const connectStatusMatch =
+          /^\/connect\/([a-f0-9]{32,})\/status$/.exec(url.pathname);
+        if (connectStatusMatch !== null && request.method === "POST") {
+          const token = connectStatusMatch[1] ?? "";
+          const connectState = Option.getOrUndefined(yield* loadConnectState(token));
+          if (connectState === undefined) {
+            return json({ ok: false, error: "connect link is invalid or already used" }, 410);
+          }
           if (Date.now() - Date.parse(connectState.createdAt) > CONNECT_TTL_MS) {
             yield* bucket.delete(`connect/${token}`);
             return json({ ok: false, error: "connect link expired; text CONNECT again" }, 410);
           }
-          const challenge = yield* challengeFor(connectState.verifier);
-          const location = authorizeUrl({
-            redirectUri: `${origin}/connect/callback`,
-            state: token,
-            challenge,
+          const authorized = yield* pollDeviceCode({
+            deviceAuthId: connectState.deviceAuthId,
+            userCode: connectState.userCode,
           });
-          return HttpServerResponse.text("", { status: 302, headers: { location } });
+          if (authorized.status === "pending") {
+            return json({ ok: true, connected: false }, 202);
+          }
+          const tokens = yield* exchangeDeviceCode(authorized);
+          const identity = yield* storeCredential(connectState.phone, tokens);
+          yield* bucket.delete(`connect/${token}`);
+          return json({
+            ok: true,
+            connected: true,
+            account: identity.email !== "" ? identity.email : identity.accountId,
+          });
         }
 
-        if (url.pathname === "/connect/callback" && request.method === "GET") {
-          const code = url.searchParams.get("code") ?? "";
-          const token = url.searchParams.get("state") ?? "";
-          if (code === "" || token === "") {
-            return json({ ok: false, error: "code and state are required" }, 400);
-          }
-          const object = yield* bucket.get(`connect/${token}`);
-          if (object === null) {
-            return json({ ok: false, error: "connect link is invalid or already used" }, 410);
-          }
-          const connectState = yield* Schema.decodeUnknownEffect(ConnectState)(
-            JSON.parse(yield* object.text()),
-          );
-          yield* bucket.delete(`connect/${token}`);
-          if (Date.now() - Date.parse(connectState.createdAt) > CONNECT_TTL_MS) {
-            return json({ ok: false, error: "connect link expired; text CONNECT again" }, 410);
-          }
-          const masterKey = yield* importMasterKey(masterKeyB64);
-          const tokens = yield* exchangeCode({
-            code,
-            redirectUri: `${origin}/connect/callback`,
-            verifier: connectState.verifier,
-          });
-          const identity = yield* identityFromIdToken(tokens.idToken);
-          const payload: CredentialPayload = {
-            provider: "codex",
-            accountId: identity.accountId,
-            email: identity.email,
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            idToken: tokens.idToken,
-            obtainedAt: new Date().toISOString(),
-          };
-          const sealed = yield* seal(masterKey, JSON.stringify(payload));
-          const stored = yield* Effect.tryPromise({
-            try: async () => {
-              const prisma = db();
-              const tenant = await prisma.tenant.upsert({
-                where: { phone: connectState.phone },
-                create: { phone: connectState.phone },
-                update: {},
-              });
-              const row = {
-                provider: "codex",
-                ciphertext: sealed.ciphertext,
-                iv: sealed.iv,
-                wrappedKey: sealed.wrappedKey,
-                accountLabel: identity.email !== "" ? identity.email : identity.accountId,
-              };
-              await prisma.credential.upsert({
-                where: { tenantId: tenant.id },
-                create: { tenantId: tenant.id, ...row },
-                update: row,
-              });
-            },
-            catch: (cause): Error =>
-              cause instanceof Error ? cause : new Error(String(cause)),
-          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
-          if (stored instanceof Error) {
-            return json({ ok: false, error: stored.message }, 500);
-          }
-          return HttpServerResponse.text(
-            `<!doctype html><meta charset="utf-8"><title>Data Diver</title>` +
-              `<body style="font-family:system-ui;max-width:32rem;margin:4rem auto">` +
-              `<h1>Codex connected</h1><p>${identity.email !== "" ? identity.email : identity.accountId} ` +
-              `is now linked to ${connectState.phone}. Tokens are stored encrypted. ` +
-              `You can close this tab and return to your text thread.</p></body>`,
-            { headers: { "content-type": "text/html; charset=utf-8" } },
+        if (url.pathname === "/connect/callback") {
+          return json(
+            { ok: false, error: "this login flow was replaced; text /connect for a new code" },
+            410,
           );
         }
 
