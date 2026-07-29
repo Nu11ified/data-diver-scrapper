@@ -9,6 +9,7 @@
 #include "dd/engine/entity.hpp"
 #include "dd/engine/events.hpp"
 #include "dd/ml/features.hpp"
+#include "dd/net/crawl.hpp"
 #include "dd/net/fetch.hpp"
 #include "dd/parse/html.hpp"
 #include "dd/core/json.hpp"
@@ -239,6 +240,72 @@ TEST(html_basic_tree) {
     CHECK_EQ(headings[0], "Delinquent List");
     CHECK_EQ(doc.find_all("b").size(), std::size_t{1});
     CHECK(dd::str::contains(doc.text(), "Hello world"));
+}
+
+TEST(crawl_resolves_urls_against_the_page) {
+    const std::string base = "https://county.gov/tax/sales/june.html?year=2026";
+    CHECK_EQ(dd::crawl::resolve_url(base, "list.html"),
+             std::string{"https://county.gov/tax/sales/list.html"});
+    CHECK_EQ(dd::crawl::resolve_url(base, "/parcels/1"),
+             std::string{"https://county.gov/parcels/1"});
+    CHECK_EQ(dd::crawl::resolve_url(base, "../roll.csv"),
+             std::string{"https://county.gov/tax/roll.csv"});
+    CHECK_EQ(dd::crawl::resolve_url(base, "//cdn.county.gov/a.json"),
+             std::string{"https://cdn.county.gov/a.json"});
+    CHECK_EQ(dd::crawl::resolve_url(base, "https://other.gov/x"),
+             std::string{"https://other.gov/x"});
+    CHECK_EQ(dd::crawl::resolve_url(base, "page.html#row3"),
+             std::string{"https://county.gov/tax/sales/page.html"});
+    // Links that go nowhere a crawler can follow
+    CHECK(dd::crawl::resolve_url(base, "#top").empty());
+    CHECK(dd::crawl::resolve_url(base, "mailto:clerk@county.gov").empty());
+    CHECK(dd::crawl::resolve_url(base, "javascript:void(0)").empty());
+    CHECK_EQ(dd::crawl::host_of("https://County.GOV/x"), std::string{"county.gov"});
+}
+
+TEST(crawl_obeys_robots_txt) {
+    const std::string text =
+        "User-agent: *\n"
+        "Disallow: /private\n"
+        "Disallow: /search\n"
+        "Allow: /search/results\n"
+        "Crawl-delay: 2\n"
+        "\n"
+        "User-agent: EvilBot\n"
+        "Disallow: /\n";
+    const dd::crawl::Robots robots =
+        dd::crawl::Robots::parse(text, "DataDiver/0.1 (public-record research)");
+    CHECK(robots.allowed("/tax/sales"));
+    CHECK(!robots.allowed("/private/notes"));
+    CHECK(!robots.allowed("/search"));
+    CHECK(robots.allowed("/search/results/page2")); // longer Allow wins
+    CHECK_EQ(robots.crawl_delay_seconds(), 2.0);
+
+    // A record naming our agent overrides the wildcard record.
+    const std::string mine =
+        "User-agent: *\nDisallow: /\n\nUser-agent: datadiver\nDisallow: /admin\n";
+    const dd::crawl::Robots ours = dd::crawl::Robots::parse(mine, "DataDiver/0.1");
+    CHECK(ours.allowed("/tax"));
+    CHECK(!ours.allowed("/admin/panel"));
+
+    CHECK(dd::crawl::Robots::allow_all().allowed("/anything"));
+}
+
+TEST(crawl_prefers_pagination_links) {
+    const std::string page =
+        "<html><body>"
+        "<a href='/help'>Help</a>"
+        "<table><tr><td><a href='/parcel/1'>101-22</a></td></tr></table>"
+        "<a href='/list?page=2' rel='next'>Next</a>"
+        "<a href='/list?page=3'>3</a>"
+        "</body></html>";
+    const std::vector<std::string> links =
+        dd::crawl::links_from("https://county.gov/list", page, 10);
+    CHECK_EQ(links.size(), std::size_t{4});
+    // Pagination is queued first so a multi-page table is walked before depth.
+    CHECK_EQ(links[0], std::string{"https://county.gov/list?page=2"});
+    CHECK_EQ(links[1], std::string{"https://county.gov/list?page=3"});
+    CHECK_EQ(dd::crawl::links_from("https://county.gov/list", page, 1).size(), std::size_t{1});
 }
 
 TEST(css_selector_matches_like_a_dom) {

@@ -8,6 +8,7 @@
 #include "dd/engine/exporter.hpp"
 #include "dd/engine/harvest.hpp"
 #include "dd/engine/events.hpp"
+#include "dd/net/crawl.hpp"
 #include "dd/parse/document.hpp"
 
 #include <algorithm>
@@ -662,6 +663,72 @@ int freshness(store::Store& store, double stale_hours) {
                   live, stale_hours, stale);
     std::printf("  %s\n", paint("dim", note).c_str());
     return stale > 0 ? 1 : 0;
+}
+
+int crawl_site(const schema::Registry& registry, const classify::Classifier& classifier,
+               const columns::ColumnModel* column_model, const std::string& seed,
+               std::size_t max_pages, std::size_t max_depth) {
+    section("Crawling " + seed);
+    crawl::Options options;
+    options.max_pages = max_pages;
+    options.max_depth = max_depth;
+
+    struct Found {
+        std::string url;
+        std::string classification;
+        std::size_t records = 0;
+        double extraction = 0.0;
+        std::size_t fields = 0;
+    };
+    std::vector<Found> found;
+    std::size_t parsed = 0;
+
+    const crawl::Stats stats = crawl::crawl(
+        seed, options,
+        [&](const crawl::Page& page) {
+            const doc::Model model = doc::build_auto(page.content_type, page.body);
+            if (model.records.empty()) return true;
+            ++parsed;
+            const schema::Mapping mapping = schema::infer_mapping(registry, model, column_model);
+            if (mapping.fields.empty()) return true;  // no identity evidence: not records
+            const schema::ExtractionResult extraction =
+                schema::apply_mapping(registry, mapping, model);
+            if (extraction.rate <= 0.0) return true;
+            found.push_back(Found{page.url, classifier.classify(model, page.url).label,
+                                  model.records.size(), extraction.rate, mapping.fields.size()});
+            return true;
+        },
+        [](const std::string& line) { std::printf("  %s\n", line.c_str()); });
+
+    render::kv({
+        {"pages fetched", std::to_string(stats.fetched)},
+        {"pages with records", std::to_string(parsed)},
+        {"pages that mapped", std::to_string(found.size())},
+        {"refused by robots", std::to_string(stats.skipped_robots)},
+        {"duplicates skipped", std::to_string(stats.skipped_duplicate)},
+        {"failed", std::to_string(stats.failed)},
+        {"fetch time", std::to_string(static_cast<long long>(stats.fetch_ms)) + " ms"},
+    });
+
+    if (found.empty()) {
+        std::printf("  %s nothing on this site extracted against the schema\n",
+                    stamp("failed").c_str());
+        return 1;
+    }
+    std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) {
+        return a.records * a.extraction > b.records * b.extraction;
+    });
+    std::vector<std::vector<std::string>> rows;
+    for (const Found& f : found) {
+        std::string url = f.url;
+        if (url.size() > 58) url = url.substr(0, 57) + "…";
+        rows.push_back({url, f.classification, std::to_string(f.records),
+                        std::to_string(f.fields), meter(f.extraction)});
+    }
+    render::table({"page", "classified", "records", "fields", "extraction"}, rows);
+    std::printf("  %s\n", paint("dim", "'add \"County\" \"Name\" URL' turns one of these into a "
+                                       "source").c_str());
+    return 0;
 }
 
 int catalog(store::Store& store, std::size_t datasets_per_query, bool add) {

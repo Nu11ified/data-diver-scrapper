@@ -36,5 +36,9 @@ int catalog(store::Store& store, std::size_t datasets_per_query, bool add);
 
 int freshness(store::Store& store, double stale_hours);
 
+int crawl_site(const schema::Registry& registry, const classify::Classifier& classifier,
+               const columns::ColumnModel* column_model, const std::string& seed,
+               std::size_t max_pages, std::size_t max_depth);
+
 int bench(store::Store& store, pipeline::Pipeline& pipeline, const std::string& golden_path);
 } // namespace dd::cli

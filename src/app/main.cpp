@@ -447,6 +447,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  harvest [N]            build the column corpus from live portals\n"
                         "  harvest docs [N]       grow the document corpus with real datasets\n"
                         "  catalog [add] [N]      discover county sources nationwide\n"
+                        "  crawl URL [PAGES] [DEPTH]  follow a county site, align every page\n"
                         "  fresh [HOURS]          how current each source's records are\n"
                         "  train columns [EPOCHS] train the column transformer, validate by domain\n"
                         "  export COUNTY [FILE]   the compiled county as canonical JSON\n"
@@ -586,6 +587,27 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             }
             state.ensure();
             dd::cli::freshness(*state.store, *hours);
+            continue;
+        }
+        if (command == "crawl") {
+            if (parts.size() < 2) {
+                std::printf("  usage: crawl URL [MAX_PAGES (1-500)] [MAX_DEPTH (0-5)]\n");
+                continue;
+            }
+            std::optional<long> pages{25};
+            std::optional<long> depth{2};
+            if (parts.size() >= 3) pages = parse_long(parts[2], 1, 500);
+            if (parts.size() >= 4) depth = parse_long(parts[3], 0, 5);
+            if (parts.size() > 4 || !pages.has_value() || !depth.has_value()) {
+                std::printf("  usage: crawl URL [MAX_PAGES (1-500)] [MAX_DEPTH (0-5)]\n");
+                continue;
+            }
+            state.ensure();
+            const std::optional<dd::columns::ColumnModel> nn =
+                load_column_model(state.columns_model_path);
+            dd::cli::crawl_site(registry, classifier, nn.has_value() ? &*nn : nullptr, parts[1],
+                                static_cast<std::size_t>(*pages),
+                                static_cast<std::size_t>(*depth));
             continue;
         }
         if (command == "catalog") {

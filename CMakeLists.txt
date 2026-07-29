@@ -19,6 +19,7 @@ add_library(dd_engine STATIC
   src/parse/csv.cpp
   src/parse/pdf.cpp
   src/parse/document.cpp
+  src/net/crawl.cpp
   src/net/fetch.cpp
   src/ml/features.cpp
   src/ml/model.cpp
