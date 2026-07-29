@@ -11,6 +11,10 @@ struct Example {
     std::vector<std::string> values;
     std::string label;
     std::string domain;
+    /// "lexicon" when the column's name named the field, "validator" when its
+    /// values did. Scoring the two apart is how generalization beyond the
+    /// lexicon gets measured instead of assumed.
+    std::string label_source;
 };
 
 std::vector<Example> load_corpus(const std::string& path);

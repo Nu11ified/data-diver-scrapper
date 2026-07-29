@@ -22,7 +22,8 @@ Options default_options();
 struct Stats {
     std::size_t datasets_seen = 0;
     std::size_t datasets_sampled = 0;
-    std::size_t labeled = 0;
+    std::size_t labeled = 0;            // named by the lexicon
+    std::size_t validator_labeled = 0;  // named by their values instead
     std::size_t none = 0;
     std::size_t masked = 0;
     std::size_t domains = 0;
@@ -30,10 +31,17 @@ struct Stats {
 
 struct WeakLabel {
     std::string field;    // empty unless an unambiguous exact hit
-    bool masked = false;  // drop from the corpus entirely
+    bool masked = false;  // the name is a near miss: the lexicon cannot decide
 };
 WeakLabel weak_label(const schema::Registry& registry, const std::string& field_name,
                      const std::string& display_name);
+
+/// A label argued from the values alone, so it is independent of the lexicon
+/// the name-based labels come from. Only strongly validated fields qualify:
+/// a name or text validator accepts too much to be evidence of anything.
+/// Empty unless exactly one field claims the values.
+std::string validator_label(const schema::Registry& registry,
+                            const std::vector<std::string>& values);
 
 std::vector<columns::Example> run(const schema::Registry& registry, const Options& options,
                                   const std::function<void(const std::string&)>& log,

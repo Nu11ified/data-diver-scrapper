@@ -426,6 +426,8 @@ std::vector<Example> load_corpus(const std::string& path) {
         if (const json::Value* v = row.find("name"); v != nullptr) e.name = v->as_string();
         if (const json::Value* v = row.find("label"); v != nullptr) e.label = v->as_string();
         if (const json::Value* v = row.find("domain"); v != nullptr) e.domain = v->as_string();
+        if (const json::Value* v = row.find("label_source"); v != nullptr)
+            e.label_source = v->as_string();
         if (const json::Value* v = row.find("values"); v != nullptr) {
             for (const json::Value& item : v->items()) e.values.push_back(item.as_string());
         }
@@ -442,6 +444,7 @@ void append_corpus(const std::string& path, const std::vector<Example>& examples
         w.field("name", e.name);
         w.field("label", e.label);
         w.field("domain", e.domain);
+        if (!e.label_source.empty()) w.field("label_source", e.label_source);
         w.key("values");
         w.begin_array();
         for (const std::string& v : e.values) w.string_value(v);

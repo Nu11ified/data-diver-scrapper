@@ -115,6 +115,31 @@ WeakLabel weak_label(const schema::Registry& registry, const std::string& field_
     return WeakLabel{"", false};
 }
 
+std::string validator_label(const schema::Registry& registry,
+                            const std::vector<std::string>& values) {
+    if (values.size() < 2) return {};
+    std::string winner;
+    std::size_t claims = 0;
+    for (const schema::FieldDef& field : registry.fields()) {
+        switch (field.kind) {
+        case schema::Kind::Name:
+        case schema::Kind::Address:
+        case schema::Kind::Status:
+        case schema::Kind::Text: continue;  // accepts too much to be evidence
+        default: break;
+        }
+        std::size_t good = 0;
+        for (const std::string& value : values) {
+            if (schema::validate(field, value)) ++good;
+        }
+        if (good == values.size()) {
+            ++claims;
+            winner = field.name;
+        }
+    }
+    return claims == 1 ? winner : std::string{};
+}
+
 std::vector<columns::Example> run(const schema::Registry& registry, const Options& options,
                                   const std::function<void(const std::string&)>& log,
                                   Stats* stats) {
@@ -213,18 +238,30 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
                     if (!text.empty()) example.values.push_back(text);
                 }
                 const WeakLabel label = weak_label(registry, field_name, display);
-                if (label.masked) {
-                    ++local.masked;
-                    continue;
-                }
-                if (label.field.empty()) {
-                    if (none_kept >= options.max_none_per_dataset) continue;
-                    ++none_kept;
-                    example.label = "none";
-                    ++local.none;
-                } else {
+                if (!label.field.empty()) {
                     example.label = label.field;
+                    example.label_source = "lexicon";
                     ++local.labeled;
+                } else {
+                    // A near miss is where a model would earn its keep, so it
+                    // is kept when the values themselves name the field. That
+                    // label owes nothing to the lexicon, which is what makes
+                    // it worth training on.
+                    const std::string by_values = validator_label(registry, example.values);
+                    if (!by_values.empty()) {
+                        example.label = by_values;
+                        example.label_source = "validator";
+                        ++local.validator_labeled;
+                    } else if (label.masked) {
+                        ++local.masked;
+                        continue;
+                    } else {
+                        if (none_kept >= options.max_none_per_dataset) continue;
+                        ++none_kept;
+                        example.label = "none";
+                        example.label_source = "lexicon";
+                        ++local.none;
+                    }
                 }
                 domains.insert(dataset_domain);
                 out.push_back(std::move(example));
