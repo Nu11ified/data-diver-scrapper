@@ -1,0 +1,111 @@
+{
+  "macro_f1": 0.4371841833380295,
+  "positive_accuracy": 0.6666666865348816,
+  "per_class": {
+    "address": {
+      "precision": 0.4,
+      "recall": 1.0,
+      "f1": 0.5714285714285715,
+      "support": 4
+    },
+    "amount_due": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 1
+    },
+    "auction_date": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 1
+    },
+    "buyer": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 1
+    },
+    "case_number": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 1
+    },
+    "description": {
+      "precision": 0.3333333333333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "support": 1
+    },
+    "event_date": {
+      "precision": 0.8571428571428571,
+      "recall": 1.0,
+      "f1": 0.923076923076923,
+      "support": 6
+    },
+    "latitude": {
+      "precision": 0.8,
+      "recall": 0.8,
+      "f1": 0.8000000000000002,
+      "support": 5
+    },
+    "longitude": {
+      "precision": 1.0,
+      "recall": 0.8,
+      "f1": 0.888888888888889,
+      "support": 5
+    },
+    "owner_phone": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 1
+    },
+    "parcel_id": {
+      "precision": 0.2,
+      "recall": 1.0,
+      "f1": 0.33333333333333337,
+      "support": 1
+    },
+    "status": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 3
+    },
+    "zip": {
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6666666666666666,
+      "support": 6
+    }
+  },
+  "train": 316,
+  "holdout": 87,
+  "classes": [
+    "address",
+    "amount_due",
+    "assessed_value",
+    "auction_date",
+    "buyer",
+    "case_number",
+    "defendant",
+    "description",
+    "event_date",
+    "latitude",
+    "legal_description",
+    "longitude",
+    "mailing_address",
+    "none",
+    "owner",
+    "owner_phone",
+    "parcel_id",
+    "plaintiff",
+    "property_use",
+    "sale_price",
+    "status",
+    "zip"
+  ],
+  "best_epoch": 15
+}

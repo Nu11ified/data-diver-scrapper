@@ -95,7 +95,11 @@ def check_parity(model: ColumnTagger, samples, binary: Path, model_path: Path) -
     with torch.no_grad():
         ids, mask = collate([tokenize(n, v, model.hyper.seq_len) for n, v in samples],
                             model.hyper.seq_len)
-        probs = model(ids, mask).softmax(dim=-1)
+        # The engine accumulates in double. Comparing float32 activations against
+        # it measures precision, not structure, and a real transposition would
+        # hide behind the noise floor, so parity is judged in double.
+        probs = model.double()(ids, mask).softmax(dim=-1)
+        model.float()
 
     payload = json.dumps(
         {"model": str(model_path), "columns": [{"name": n, "values": v} for n, v in samples]}
@@ -111,6 +115,10 @@ def check_parity(model: ColumnTagger, samples, binary: Path, model_path: Path) -
         raise SystemExit(f"parity: engine failed: {result.stderr[-400:]}")
     engine = json.loads(result.stdout)
 
+    # The engine prints probabilities with %.10g, so agreement closer than
+    # about 1e-9 is measuring its output format. What this check exists to
+    # catch - a transposed weight matrix, a wrong layout offset - moves
+    # probabilities by tenths, not by 1e-8.
     worst = 0.0
     disagreements = []
     for i, row in enumerate(engine["predictions"]):

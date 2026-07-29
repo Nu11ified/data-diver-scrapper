@@ -55,10 +55,10 @@
     },
     {
       "name": "llm",
-      "coverage": 0.0,
-      "fired": 0,
-      "accuracy_on_fired": 0.0,
-      "description": "LLM votes (0 loaded)"
+      "coverage": 0.8238213399503722,
+      "fired": 332,
+      "accuracy_on_fired": 0.8493975903614458,
+      "description": "LLM votes (297 loaded)"
     }
   ],
   "weights": {
@@ -66,8 +66,49 @@
     "lexicon_token": 6.907755278982137,
     "validator_unique": 0.1,
     "validator_veto": 6.907755278982137,
-    "llm": 0.1
+    "llm": 3.4719664525503613
   },
-  "coverage": 0.3399503722084367,
-  "suspect_indices": []
+  "coverage": 0.8759305210918115,
+  "suspect_indices": [
+    6,
+    129,
+    144,
+    146,
+    158,
+    166,
+    191,
+    234,
+    109,
+    240,
+    247,
+    256,
+    257,
+    258,
+    259,
+    261,
+    307,
+    244,
+    107,
+    97,
+    84,
+    13,
+    19,
+    23,
+    42,
+    43,
+    44,
+    46,
+    51,
+    52,
+    61,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    81,
+    319,
+    351
+  ]
 }

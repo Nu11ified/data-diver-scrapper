@@ -498,13 +498,31 @@ int harvest(const schema::Registry& registry, const std::string& corpus_path,
         std::printf("  %s nothing harvested\n", stamp("failed").c_str());
         return 1;
     }
+    // Merge rather than replace: a harvest is one sample of the portals, and
+    // clobbering throws away every column an earlier run paid to fetch.
+    std::vector<columns::Example> merged;
+    std::set<std::pair<std::string, std::string>> seen;
+    try {
+        for (const columns::Example& e : columns::load_corpus(corpus_path)) {
+            if (seen.insert({e.domain, e.name}).second) merged.push_back(e);
+        }
+    } catch (const Error&) {
+        // No corpus yet, or an unreadable one: this harvest becomes the corpus.
+    }
+    const std::size_t before = merged.size();
+    for (const columns::Example& e : examples) {
+        if (seen.insert({e.domain, e.name}).second) merged.push_back(e);
+    }
     std::remove(corpus_path.c_str());
-    columns::append_corpus(corpus_path, examples);
+    columns::append_corpus(corpus_path, merged);
     render::kv({
         {"datasets sampled", std::to_string(stats.datasets_sampled) + " of " +
                                  std::to_string(stats.datasets_seen) + " seen"},
         {"portals", std::to_string(stats.domains)},
-        {"columns", std::to_string(examples.size())},
+        {"columns this run", std::to_string(examples.size())},
+        {"corpus size", std::to_string(merged.size()) + " (" +
+                            std::to_string(merged.size() - before) + " new, " +
+                            std::to_string(before) + " kept)"},
         {"lexicon-labeled", std::to_string(stats.labeled)},
         {"validator-labeled", std::to_string(stats.validator_labeled)},
         {"none", std::to_string(stats.none)},

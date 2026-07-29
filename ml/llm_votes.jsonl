@@ -293,3 +293,146 @@
 {"domain": "data.winnipeg.ca", "name": "Time Slot", "label": "none", "confidence": 1.0}
 {"domain": "data.winnipeg.ca", "name": "Earliest One Hour", "label": "none", "confidence": 0.99}
 {"domain": "data.winnipeg.ca", "name": "Earliest Half Hour", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "Ratio of complaints received at high risk/repeat offender facilities compared to all facilities inspected", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "Initiative Name ", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "FY 16-17 Target", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "FY 15-16 Target", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "FY 15-16 Actual", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "JL Code ", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "Year", "label": "none", "confidence": 0.98}
+{"domain": "data.cityofchicago.org", "name": "DOING BUSINESS AS NAME", "label": "none", "confidence": 0.93}
+{"domain": "data.cityofchicago.org", "name": "ADDRESS", "label": "address", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "BUSINESS ACTIVITY ID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "LICENSE CODE", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "NEIGHBORHOOD", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "LICENSE APPROVED FOR ISSUANCE", "label": "event_date", "confidence": 0.93}
+{"domain": "data.cityofchicago.org", "name": "LICENSE ID", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofchicago.org", "name": "ZIP CODE", "label": "zip", "confidence": 1.0}
+{"domain": "data.cityofchicago.org", "name": "LONGITUDE", "label": "longitude", "confidence": 1.0}
+{"domain": "data.cityofchicago.org", "name": "LOCATION", "label": "none", "confidence": 0.9}
+{"domain": "data.cityofchicago.org", "name": "LATITUDE", "label": "latitude", "confidence": 1.0}
+{"domain": "data.cityofchicago.org", "name": "ACCOUNT NUMBER", "label": "none", "confidence": 0.98}
+{"domain": "data.delaware.gov", "name": "Current license valid to", "label": "none", "confidence": 0.94}
+{"domain": "data.delaware.gov", "name": "Trade name", "label": "none", "confidence": 0.94}
+{"domain": "data.delaware.gov", "name": "Country", "label": "none", "confidence": 0.99}
+{"domain": "data.delaware.gov", "name": "City", "label": "none", "confidence": 0.99}
+{"domain": "data.delaware.gov", "name": "Business name", "label": "none", "confidence": 0.94}
+{"domain": "data.delaware.gov", "name": "Current license valid from", "label": "event_date", "confidence": 0.83}
+{"domain": "data.delaware.gov", "name": "Zip", "label": "zip", "confidence": 0.98}
+{"domain": "data.cityofberkeley.info", "name": "B1_CITY", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofberkeley.info", "name": "Tax_Code", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofberkeley.info", "name": "DBA", "label": "none", "confidence": 0.95}
+{"domain": "data.cityofberkeley.info", "name": "B1_PER_SUB_TYPE", "label": "none", "confidence": 0.98}
+{"domain": "data.cityofberkeley.info", "name": "BusDesc", "label": "property_use", "confidence": 0.93}
+{"domain": "data.cityofberkeley.info", "name": "RecordID", "label": "none", "confidence": 0.98}
+{"domain": "data.cityofberkeley.info", "name": "APN", "label": "parcel_id", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "GETBUSID", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "TRADENAME", "label": "none", "confidence": 0.96}
+{"domain": "data.calgary.ca", "name": "HOMEOCCIND", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "ADDRESS", "label": "address", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "COMDISTCD", "label": "none", "confidence": 1.0}
+{"domain": "data.calgary.ca", "name": "COMDISTNM", "label": "none", "confidence": 0.99}
+{"domain": "data.calgary.ca", "name": "LICENCETYPES", "label": "property_use", "confidence": 0.91}
+{"domain": "data.cityofnewyork.us", "name": "Census Tract", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "GRADE", "label": "none", "confidence": 0.94}
+{"domain": "data.cityofnewyork.us", "name": "ZIPCODE", "label": "zip", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "BORO", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "SCORE", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "ACTION", "label": "none", "confidence": 0.95}
+{"domain": "data.cityofnewyork.us", "name": "DBA", "label": "none", "confidence": 0.97}
+{"domain": "data.cityofnewyork.us", "name": "VIOLATION DESCRIPTION", "label": "description", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "Location", "label": "none", "confidence": 0.8}
+{"domain": "data.cityofnewyork.us", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "PHONE", "label": "owner_phone", "confidence": 0.97}
+{"domain": "data.cityofnewyork.us", "name": "INSPECTION DATE", "label": "event_date", "confidence": 0.98}
+{"domain": "data.cityofnewyork.us", "name": "RestaurantName", "label": "none", "confidence": 0.96}
+{"domain": "data.cityofnewyork.us", "name": "IsSidewayCompliant", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "InspectedOn", "label": "event_date", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Postcode", "label": "zip", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Borough", "label": "none", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "data.cityofnewyork.us", "name": "IsRoadwayCompliant", "label": "status", "confidence": 0.96}
+{"domain": "data.cityofnewyork.us", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "data.colorado.gov", "name": "typeOfFacility", "label": "property_use", "confidence": 0.87}
+{"domain": "data.colorado.gov", "name": "facilityName", "label": "none", "confidence": 0.98}
+{"domain": "data.colorado.gov", "name": "facilityId", "label": "none", "confidence": 1.0}
+{"domain": "data.colorado.gov", "name": "siteAddress", "label": "address", "confidence": 1.0}
+{"domain": "data.colorado.gov", "name": "inspectionDate", "label": "event_date", "confidence": 0.99}
+{"domain": "data.colorado.gov", "name": "categoryOfFacility", "label": "property_use", "confidence": 0.88}
+{"domain": "data.colorado.gov", "name": "zip", "label": "zip", "confidence": 1.0}
+{"domain": "data.colorado.gov", "name": "city", "label": "none", "confidence": 1.0}
+{"domain": "data.colorado.gov", "name": "streetUnit", "label": "none", "confidence": 0.97}
+{"domain": "data.colorado.gov", "name": "location", "label": "none", "confidence": 0.96}
+{"domain": "data.colorado.gov", "name": "violationStatus", "label": "status", "confidence": 0.99}
+{"domain": "data.colorado.gov", "name": "violationType", "label": "description", "confidence": 0.98}
+{"domain": "data.colorado.gov", "name": "violation", "label": "description", "confidence": 1.0}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Score", "label": "none", "confidence": 1.0}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Address", "label": "address", "confidence": 0.82}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Facility ID", "label": "none", "confidence": 1.0}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Inspection Date", "label": "event_date", "confidence": 1.0}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Zip Code", "label": "zip", "confidence": 1.0}
+{"domain": "austintexas-op-beta.demo.socrata.com", "name": "Restaurant Name", "label": "none", "confidence": 0.99}
+{"domain": "datahub.austintexas.gov", "name": "Occurred Time", "label": "none", "confidence": 1.0}
+{"domain": "datahub.austintexas.gov", "name": "UCR Category", "label": "none", "confidence": 1.0}
+{"domain": "datahub.austintexas.gov", "name": "Council District", "label": "none", "confidence": 1.0}
+{"domain": "datahub.austintexas.gov", "name": "Incident Number", "label": "none", "confidence": 0.94}
+{"domain": "datahub.austintexas.gov", "name": "Report Time", "label": "none", "confidence": 1.0}
+{"domain": "datahub.austintexas.gov", "name": "APD District", "label": "none", "confidence": 1.0}
+{"domain": "data.sccgov.org", "name": "incident_type_primary", "label": "description", "confidence": 0.86}
+{"domain": "data.sccgov.org", "name": "case_number", "label": "case_number", "confidence": 1.0}
+{"domain": "data.sccgov.org", "name": "address", "label": "address", "confidence": 1.0}
+{"domain": "data.sccgov.org", "name": "city", "label": "none", "confidence": 1.0}
+{"domain": "data.sccgov.org", "name": "parent_incident_type", "label": "description", "confidence": 0.79}
+{"domain": "data.cambridgema.gov", "name": "Crime", "label": "description", "confidence": 0.96}
+{"domain": "data.cambridgema.gov", "name": "Reporting Area Lat", "label": "latitude", "confidence": 0.99}
+{"domain": "data.cambridgema.gov", "name": "Location", "label": "address", "confidence": 0.99}
+{"domain": "data.cambridgema.gov", "name": "Neighborhood", "label": "none", "confidence": 0.99}
+{"domain": "data.cambridgema.gov", "name": "File Number", "label": "none", "confidence": 0.84}
+{"domain": "data.cambridgema.gov", "name": "Reporting Area Lon", "label": "longitude", "confidence": 0.99}
+{"domain": "data.cambridgema.gov", "name": "Reporting Area", "label": "none", "confidence": 0.99}
+{"domain": "citydata.mesaaz.gov", "name": "Address", "label": "address", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "RowID", "label": "none", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Zip", "label": "zip", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "City", "label": "none", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Longitude", "label": "longitude", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Crime ID", "label": "none", "confidence": 0.99}
+{"domain": "citydata.mesaaz.gov", "name": "Latitude", "label": "latitude", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Street Type", "label": "none", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Street Number", "label": "none", "confidence": 1.0}
+{"domain": "citydata.mesaaz.gov", "name": "Street Direction", "label": "none", "confidence": 1.0}
+{"domain": "data.kingcounty.gov", "name": "Drainage_Benefit", "label": "none", "confidence": 0.99}
+{"domain": "data.kingcounty.gov", "name": "Levy_Code", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "CLASS 4", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "CLASS 1", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "YEAR", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "CLASS 3", "label": "none", "confidence": 0.99}
+{"domain": "data.cityofnewyork.us", "name": "CLASS 2", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "Parcel Number", "label": "parcel_id", "confidence": 1.0}
+{"domain": "datahub.smcgov.org", "name": "2nd Installment", "label": "amount_due", "confidence": 0.9}
+{"domain": "datahub.smcgov.org", "name": "Exemption", "label": "none", "confidence": 0.98}
+{"domain": "datahub.smcgov.org", "name": "Tax Rate", "label": "none", "confidence": 1.0}
+{"domain": "datahub.smcgov.org", "name": "Fiscal Year", "label": "none", "confidence": 1.0}
+{"domain": "datahub.smcgov.org", "name": "Total Charge", "label": "amount_due", "confidence": 0.94}
+{"domain": "datahub.smcgov.org", "name": "1st Installment", "label": "amount_due", "confidence": 0.9}
+{"domain": "datahub.smcgov.org", "name": "TRA", "label": "none", "confidence": 0.99}
+{"domain": "datahub.smcgov.org", "name": "Situs Address", "label": "address", "confidence": 1.0}
+{"domain": "datahub.smcgov.org", "name": "Assessed Value", "label": "assessed_value", "confidence": 1.0}
+{"domain": "datahub.smcgov.org", "name": "Net Value", "label": "assessed_value", "confidence": 0.95}
+{"domain": "bythenumbers.sco.ca.gov", "name": "Entity Type", "label": "none", "confidence": 1.0}
+{"domain": "bythenumbers.sco.ca.gov", "name": "County", "label": "none", "confidence": 1.0}
+{"domain": "bythenumbers.sco.ca.gov", "name": "Fiscal Year", "label": "none", "confidence": 1.0}
+{"domain": "bythenumbers.sco.ca.gov", "name": "Entity Name", "label": "none", "confidence": 1.0}
+{"domain": "bythenumbers.sco.ca.gov", "name": "Row Number", "label": "none", "confidence": 0.99}
+{"domain": "data.macoupincountyil.gov", "name": "Report", "label": "none", "confidence": 1.0}
+{"domain": "data.macoupincountyil.gov", "name": "Tax Year", "label": "none", "confidence": 1.0}
+{"domain": "data.providenceri.gov", "name": "SHORT_DESC", "label": "property_use", "confidence": 0.97}
+{"domain": "data.providenceri.gov", "name": "ZIP_POSTAL", "label": "zip", "confidence": 0.98}
+{"domain": "data.providenceri.gov", "name": "New Georeferenced Column", "label": "none", "confidence": 1.0}
+{"domain": "data.providenceri.gov", "name": "TAX_MAP", "label": "parcel_id", "confidence": 0.97}
+{"domain": "data.providenceri.gov", "name": "lot", "label": "none", "confidence": 0.98}
+{"domain": "data.providenceri.gov", "name": "unit", "label": "none", "confidence": 0.98}
+{"domain": "data.providenceri.gov", "name": "PROPERTY LOCATION", "label": "address", "confidence": 1.0}
+{"domain": "data.providenceri.gov", "name": "FREE_LINE_4", "label": "none", "confidence": 1.0}
+{"domain": "data.providenceri.gov", "name": "LEVY_CODE_1", "label": "none", "confidence": 1.0}
+{"domain": "data.providenceri.gov", "name": "CITY", "label": "none", "confidence": 1.0}
