@@ -4,6 +4,7 @@
 #include "dd/engine/entity.hpp"
 
 #include <algorithm>
+#include <set>
 
 namespace dd::compile {
 namespace {
@@ -25,19 +26,7 @@ std::string first_address(const std::vector<events::PropertyEvent>& evs) {
     return {};
 }
 
-// An address pins down one building when it starts with a real house number
-// and does not name a block. "0 ADMIRAL TAUSSIG BLVD" is a placeholder shared
-// by many parcels, "3200 BLOCK OF ARGONNE AVE" is a complaint location, and
-// "S S 50TH ST" names a stretch of street.
-bool mergeable_address(const std::string& normalized) {
-    if (str::contains(normalized, "block of") || str::contains(normalized, "blk of")) {
-        return false;
-    }
-    const std::size_t space = normalized.find(' ');
-    if (space == std::string::npos || space == 0) return false;
-    const std::string number = normalized.substr(0, space);
-    return str::is_digits(number) && number != "0";
-}
+
 
 // Whether two raw values mean the same thing for this field: compare through
 // the field's normalizer so "$110,091" equals "110091.00" and case noise is
@@ -132,20 +121,78 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
     const std::string wanted = str::slug(county);
     const std::map<std::string, std::map<std::string, double>> trust = source_trust(store);
 
-    // Group store keys: same normalized address in the same county is the
-    // same property, whatever each office called it.
+    // Group store keys: one building may appear under a treasurer account, an
+    // assessor parcel and a complaint id at once, so keys join on the parts
+    // of the address every office agrees about. A group whose members
+    // contradict each other on a part they both publish is not merged.
     std::map<std::string, std::vector<std::string>> groups;
     std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
+    std::map<std::string, entity::Address> address_by_key;
     for (const std::string& key : store.property_keys()) {
         const std::string slug = key.substr(0, key.find('|'));
         if (slug != wanted && !str::contains(slug, wanted)) continue;
         std::vector<events::PropertyEvent> evs = store.events_for(key);
-        const std::string address = entity::normalize_address(first_address(evs));
-        const std::string group =
-            mergeable_address(address) ? slug + "|a:" + address : key;
-        groups[group].push_back(key);
+        const entity::Address address = entity::parse_address(first_address(evs));
+        const std::string join = entity::address_join_key(address);
+        groups[join.empty() ? key : slug + "|a:" + join].push_back(key);
+        address_by_key[key] = address;
         events_by_key[key] = std::move(evs);
     }
+
+    // An address that resolves to several parcels inside one office is not a
+    // unique identifier for a building: an airport or an apartment complex
+    // files many parcels at one street address. Those groups do not merge.
+    const auto address_is_unique = [&](const std::vector<std::string>& keys) {
+        std::map<std::string, std::set<std::string>> parcels_per_source;
+        for (const std::string& key : keys) {
+            for (const events::PropertyEvent& e : events_by_key[key]) {
+                const auto it = e.details.find("parcel_id");
+                if (it == e.details.end() || it->second.empty()) continue;
+                parcels_per_source[e.source_id].insert(it->second);
+            }
+        }
+        for (const auto& [source, parcels] : parcels_per_source) {
+            if (parcels.size() > 1) return false;
+        }
+        return true;
+    };
+    std::map<std::string, std::vector<std::string>> unique_groups;
+    for (auto& [group, keys] : groups) {
+        if (keys.size() == 1 || address_is_unique(keys)) {
+            unique_groups[group] = std::move(keys);
+            continue;
+        }
+        for (const std::string& key : keys) unique_groups[key] = {key};
+    }
+    groups = std::move(unique_groups);
+
+    // Split any group whose addresses contradict: 100 MAIN ST E and
+    // 100 MAIN ST W share a join key but are different buildings.
+    std::map<std::string, std::vector<std::string>> resolved_groups;
+    for (auto& [group, keys] : groups) {
+        std::vector<std::vector<std::string>> buckets;
+        for (const std::string& key : keys) {
+            const entity::Address& address = address_by_key[key];
+            bool placed = false;
+            for (std::vector<std::string>& bucket : buckets) {
+                const bool fits = std::all_of(
+                    bucket.begin(), bucket.end(), [&](const std::string& member) {
+                        return entity::compatible(address, address_by_key[member]);
+                    });
+                if (fits) {
+                    bucket.push_back(key);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) buckets.push_back({key});
+        }
+        for (std::size_t i = 0; i < buckets.size(); ++i) {
+            resolved_groups[buckets.size() == 1 ? group : group + "#" + std::to_string(i)] =
+                std::move(buckets[i]);
+        }
+    }
+    groups = std::move(resolved_groups);
 
     std::vector<Property> out;
     for (auto& [group, keys] : groups) {
@@ -165,7 +212,7 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
         property.locates_a_building =
             (parcel != property.fields.end() && !parcel->second.value.empty()) ||
             (address != property.fields.end() &&
-             mergeable_address(entity::normalize_address(address->second.value)));
+             entity::parse_address(address->second.value).locatable);
         out.push_back(std::move(property));
     }
 

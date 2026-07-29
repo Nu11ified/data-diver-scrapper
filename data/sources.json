@@ -97,8 +97,8 @@
  },
  {
   "id": "norfolk_street_assessments",
-  "name": "Norfolk VA Assessments (enrichment: tracked streets)",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=upper(property_street_name) in({streets})&$limit=400",
+  "name": "Norfolk VA Assessments (enrichment: tracked addresses)",
+  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=upper(property_street_name) in({streets}) AND property_street_number in({numbers})&$limit=2000",
   "jurisdiction": "City of Norfolk VA"
  }
 ]

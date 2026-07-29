@@ -229,6 +229,28 @@ std::vector<std::string> tracked_streets(const store::Source& source, store::Sto
     return out;
 }
 
+// The house numbers of tracked addresses. Paired with the street names this
+// narrows an enrichment query to the specific buildings in play rather than
+// returning an arbitrary slice of every street.
+std::vector<std::string> tracked_numbers(const store::Source& source, store::Store& store) {
+    const std::string prefix = str::slug(source.jurisdiction) + "|";
+    std::vector<std::string> out;
+    for (const std::string& key : store.property_keys()) {
+        if (out.size() >= 120) break;
+        if (key.rfind(prefix, 0) != 0) continue;
+        for (const events::PropertyEvent& e : store.events_for(key)) {
+            const auto it = e.details.find("address");
+            if (it == e.details.end()) continue;
+            const entity::Address address = entity::parse_address(it->second);
+            if (!address.locatable) break;
+            const std::string quoted = "'" + address.number + "'";
+            if (std::find(out.begin(), out.end(), quoted) == out.end()) out.push_back(quoted);
+            break;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 std::string expand_url_template(const store::Source& source, store::Store& store) {
@@ -245,6 +267,7 @@ std::string expand_url_template(const store::Source& source, store::Store& store
     };
     substitute("{parcels}", tracked_parcels(source, store));
     substitute("{streets}", tracked_streets(source, store));
+    substitute("{numbers}", tracked_numbers(source, store));
     return url;
 }
 
@@ -488,14 +511,18 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
             for (const events::PropertyEvent& e : store_.events_for(key)) {
                 const auto it = e.details.find("address");
                 if (it == e.details.end() || it->second.empty()) continue;
-                known_addresses.insert(entity::normalize_address(it->second));
+                const std::string join =
+                    entity::address_join_key(entity::parse_address(it->second));
+                if (!join.empty()) known_addresses.insert(join);
             }
         }
         std::erase_if(batch, [&](const events::PropertyEvent& e) {
             if (known_keys.count(e.property_key) != 0) return false;
             const auto it = e.details.find("address");
             if (it == e.details.end()) return true;
-            return known_addresses.count(entity::normalize_address(it->second)) == 0;
+            const std::string join =
+                entity::address_join_key(entity::parse_address(it->second));
+            return join.empty() || known_addresses.count(join) == 0;
         });
         if (batch.size() < before) {
             logging::info("pipeline: " + source.id + " kept " + std::to_string(batch.size()) +

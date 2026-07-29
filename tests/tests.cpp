@@ -1983,6 +1983,34 @@ TEST(harvest_weak_labels_mask_near_misses_and_conflicts) {
     CHECK(!none.masked);
 }
 
+TEST(entity_address_parts_join_across_office_dialects) {
+    using dd::entity::parse_address;
+    // The treasurer prints a padded number and a trailing directional, the
+    // assessor prints neither. Same building.
+    const dd::entity::Address treasurer = parse_address("0555 LIBERTY ST E");
+    const dd::entity::Address assessor = parse_address("555 Liberty ST");
+    CHECK_EQ(treasurer.number, "555");
+    CHECK_EQ(treasurer.street, "liberty");
+    CHECK_EQ(treasurer.directional, "e");
+    CHECK_EQ(assessor.directional, "");
+    CHECK_EQ(dd::entity::address_join_key(treasurer), dd::entity::address_join_key(assessor));
+    CHECK(dd::entity::compatible(treasurer, assessor));
+
+    // Contradictions on a part both sides publish are not the same building.
+    CHECK(!dd::entity::compatible(parse_address("100 MAIN ST E"), parse_address("100 MAIN ST W")));
+    CHECK(!dd::entity::compatible(parse_address("100 MAIN ST"), parse_address("100 MAIN AVE")));
+
+    // Units distinguish condos in one building.
+    CHECK(dd::entity::address_join_key(parse_address("3 COMMERCIAL PL A")) !=
+          dd::entity::address_join_key(parse_address("3 COMMERCIAL PL C")));
+
+    // Block references and placeholders locate nothing.
+    CHECK(!parse_address("3200 BLOCK OF ARGONNE AVENUE").locatable);
+    CHECK(!parse_address("0 ADMIRAL TAUSSIG BLVD").locatable);
+    CHECK(!parse_address("S S 50TH ST").locatable);
+    CHECK(parse_address("9628 10TH BAY ST").locatable);
+}
+
 TEST(entity_addresses_merge_across_padding_and_suffix_dialects) {
     using dd::entity::normalize_address;
     CHECK_EQ(normalize_address("436 W 31ST ST"), normalize_address("436 W 31st STREET"));
