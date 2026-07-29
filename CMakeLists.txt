@@ -25,6 +25,7 @@ add_library(dd_engine STATIC
   src/ml/columns.cpp
   src/engine/schema.cpp
   src/engine/bench.cpp
+  src/engine/compile.cpp
   src/engine/entity.cpp
   src/engine/events.cpp
   src/engine/exporter.cpp

@@ -13,7 +13,7 @@ namespace dd::cli {
 
 void counties(store::Store& store);
 void county_properties(store::Store& store, const schema::Registry& registry,
-                       const std::string& county);
+                       const std::string& county, bool include_all);
 void show_mapping(store::Store& store, pipeline::Pipeline& pipeline, const std::string& source_id);
 
 // Interactive review: uncertain accepted matches ask for confirmation,

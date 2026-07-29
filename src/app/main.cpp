@@ -485,10 +485,15 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                 std::printf("  usage: county NAME\n");
                 continue;
             }
-            std::string county = parts[1];
-            for (std::size_t i = 2; i < parts.size(); ++i) county += " " + parts[i];
+            std::vector<std::string> words{parts.begin() + 1, parts.end()};
+            bool include_all = false;
+            if (words.size() > 1 && words.back() == "all") {
+                include_all = true;
+                words.pop_back();
+            }
             state.ensure();
-            dd::cli::county_properties(*state.store, state.pipeline->registry(), county);
+            dd::cli::county_properties(*state.store, state.pipeline->registry(),
+                                       dd::str::join(words, " "), include_all);
             continue;
         }
         if (command == "add") {
@@ -819,7 +824,10 @@ int main(int argc, char** argv) {
             }
             if (args.positional.empty()) return usage();
             const std::string target = dd::str::join(args.positional, " ");
-            if (args.command == "county") dd::cli::county_properties(store, pipeline.registry(), target);
+            if (args.command == "county") {
+                dd::cli::county_properties(store, pipeline.registry(), target,
+                                           args.flags.count("all") != 0);
+            }
             else if (args.command == "map") dd::cli::show_mapping(store, pipeline, target);
             else dd::cli::review(store, pipeline, target, std::cin);
             return 0;

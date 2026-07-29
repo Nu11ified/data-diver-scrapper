@@ -17,6 +17,7 @@ const std::vector<std::pair<std::string_view, std::string_view>>& abbreviations(
         {"drive", "dr"},    {"court", "ct"},     {"place", "pl"},     {"boulevard", "blvd"},
         {"parkway", "pkwy"}, {"highway", "hwy"}, {"circle", "cir"},   {"terrace", "ter"},
         {"trail", "trl"},   {"square", "sq"},    {"north", "n"},      {"south", "s"},
+        {"av", "ave"},      {"crescent", "cres"},
         {"east", "e"},      {"west", "w"},       {"apartment", "apt"}, {"suite", "ste"},
         {"unit", "unit"},   {"number", "no"},
     };
@@ -39,7 +40,14 @@ std::string normalize_parcel(std::string_view parcel) {
 std::string normalize_address(std::string_view address) {
     std::vector<std::string> out;
     for (const std::string& word : str::tokenize_words(address)) {
-        out.push_back(canonical_word(word));
+        std::string canonical = canonical_word(word);
+        // Treasurer exports zero-pad house numbers ("0555 Liberty St"); the
+        // assessor does not. Same number, same key.
+        if (canonical.size() > 1 && str::is_digits(canonical)) {
+            const std::size_t first = canonical.find_first_not_of('0');
+            canonical = first == std::string::npos ? "0" : canonical.substr(first);
+        }
+        out.push_back(std::move(canonical));
     }
     return str::join(out, " ");
 }

@@ -20,6 +20,7 @@
 #include "dd/parse/pdf.hpp"
 #include "dd/engine/pipeline.hpp"
 #include "dd/engine/bench.hpp"
+#include "dd/engine/compile.hpp"
 #include "dd/engine/harvest.hpp"
 #include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
@@ -1974,6 +1975,93 @@ TEST(harvest_weak_labels_mask_near_misses_and_conflicts) {
         dd::harvest::weak_label(registry, "wind_speed_mph", "Wind Speed");
     CHECK(none.field.empty());
     CHECK(!none.masked);
+}
+
+TEST(entity_addresses_merge_across_padding_and_suffix_dialects) {
+    using dd::entity::normalize_address;
+    CHECK_EQ(normalize_address("436 W 31ST ST"), normalize_address("436 W 31st STREET"));
+    CHECK_EQ(normalize_address("0555 LIBERTY ST E"), normalize_address("555 Liberty Street E"));
+    CHECK_EQ(normalize_address("3318 E OCEAN VIEW AV"),
+             normalize_address("3318 East Ocean View AVENUE"));
+    CHECK(normalize_address("100 MAIN ST") != normalize_address("102 MAIN ST"));
+}
+
+TEST(compile_merges_id_spaces_and_resolves_conflicts_by_trust) {
+    const std::string root = fresh_dir("compile_county");
+    dd::store::Store store{root};
+    store.add_source("https://a.example/tax", "Treasurer", "Testville VA");
+    store.add_source("https://b.example/assess", "Assessor", "Testville VA");
+    const std::vector<dd::store::Source> sources = store.sources();
+
+    // The treasurer earned low owner confidence; the assessor high. Trust
+    // must decide the conflict, not insertion order.
+    auto save_state = [&](const std::string& source_id, double owner_confidence) {
+        dd::store::SourceState state = store.source_state(source_id);
+        state.has_mapping = true;
+        state.mapping.fields.push_back(dd::schema::FieldMapping{
+            "owner", "who", 0.9, 0.9, owner_confidence, false});
+        store.save_source_state(state);
+    };
+    save_state(sources[0].id, 0.62);
+    save_state(sources[1].id, 0.97);
+
+    auto make = [&](const std::string& source_id, const std::string& parcel,
+                    const std::string& address, const std::string& owner,
+                    dd::events::Kind kind, double amount, const std::string& date) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", parcel, address);
+        e.kind = kind;
+        e.event_date = date;
+        e.recorded_at = date + "T00:00:00Z";
+        e.source_id = source_id;
+        e.amount = amount;
+        e.confidence = 0.9;
+        e.details["address"] = address;
+        e.details["owner"] = owner;
+        if (kind == dd::events::Kind::AssessmentRecorded) {
+            e.details["assessed_value"] = "500000";
+        }
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    // Same house, two id spaces: treasurer account 111, assessor parcel 999.
+    store.add_events({
+        make(sources[0].id, "111", "0436 W 31ST ST", "PARK PLACE DEV LLC",
+             dd::events::Kind::TaxDelinquency, 110091.0, "2026-07-01"),
+        make(sources[1].id, "999", "436 W 31st STREET", "Parker Plaza Holdings",
+             dd::events::Kind::AssessmentRecorded, 0.0, "2026-06-01"),
+        make(sources[1].id, "555", "", "No Address LLC",
+             dd::events::Kind::AssessmentRecorded, 0.0, "2026-06-01"),
+    });
+
+    const dd::schema::Registry registry = test_registry();
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, registry, "testville");
+    CHECK_EQ(properties.size(), std::size_t{2}); // merged pair + the address-less one
+
+    const dd::compile::Property& merged = properties.front(); // owed sorts first
+    CHECK_EQ(merged.keys.size(), std::size_t{2});
+    CHECK_NEAR(merged.due, 110091.0, 1e-9);
+    CHECK_NEAR(merged.assessed, 500000.0, 1e-9);
+    // The assessor's 0.97 owner mapping beats the treasurer's 0.62.
+    CHECK_EQ(merged.fields.at("owner").value, "Parker Plaza Holdings");
+    CHECK_NEAR(merged.fields.at("owner").confidence, 0.97, 1e-9);
+    CHECK_EQ(merged.conflicts.size(), std::size_t{1});
+    CHECK_EQ(merged.conflicts[0].field, "owner");
+    CHECK_EQ(merged.conflicts[0].kept_source, sources[1].id);
+    CHECK_EQ(merged.conflicts[0].dropped_value, "PARK PLACE DEV LLC");
+
+    // Placeholder addresses must not merge: distinct parcels sharing
+    // "0 NAVY BASE RD" stay distinct properties.
+    store.add_events({
+        make(sources[1].id, "701", "0 NAVY BASE RD", "US Navy",
+             dd::events::Kind::AssessmentRecorded, 0.0, "2026-06-02"),
+        make(sources[1].id, "702", "0 NAVY BASE RD", "US Navy",
+             dd::events::Kind::AssessmentRecorded, 0.0, "2026-06-02"),
+    });
+    const std::vector<dd::compile::Property> again =
+        dd::compile::county(store, registry, "testville");
+    CHECK_EQ(again.size(), std::size_t{4}); // merged pair + no-address + two placeholders
 }
 
 TEST(schema_registry_rejects_bad_files) {

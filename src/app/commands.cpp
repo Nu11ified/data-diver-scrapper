@@ -4,6 +4,7 @@
 
 #include "dd/core/core.hpp"
 #include "dd/engine/bench.hpp"
+#include "dd/engine/compile.hpp"
 #include "dd/engine/exporter.hpp"
 #include "dd/engine/harvest.hpp"
 #include "dd/engine/events.hpp"
@@ -48,26 +49,6 @@ std::vector<std::string> sample_values(const doc::Model& model, const std::strin
         out.push_back(std::move(value));
     }
     return out;
-}
-
-// The most recent value of one detail field across a property's events.
-std::string latest_detail(const std::vector<events::PropertyEvent>& evs,
-                          const std::string& field) {
-    for (auto it = evs.rbegin(); it != evs.rend(); ++it) {
-        const auto found = it->details.find(field);
-        if (found != it->details.end()) return found->second;
-    }
-    return {};
-}
-
-std::string first_role_value(const schema::Registry& registry,
-                             const std::vector<events::PropertyEvent>& evs,
-                             std::string_view role) {
-    for (const schema::FieldDef* field : registry.with_role(role)) {
-        const std::string value = latest_detail(evs, field->name);
-        if (!value.empty()) return value;
-    }
-    return {};
 }
 
 enum class Answer { Yes, No, Abort };
@@ -148,100 +129,72 @@ std::string clip(std::string s, std::size_t n) {
     return s;
 }
 
-// Everything the county table shows for one property, measured from its
-// chronologically ordered events.
-struct PropertyRow {
-    std::string parcel, owner, address, last_event;
-    events::State state = events::State::Normal;
-    double due = 0.0;
-    double assessed = 0.0;
-    std::size_t violations = 0;
-    std::size_t sources = 0;
-    std::size_t events = 0;
-};
-
-PropertyRow build_row(const schema::Registry& registry,
-                      std::vector<events::PropertyEvent> evs) {
-    std::stable_sort(evs.begin(), evs.end(),
-                     [](const events::PropertyEvent& a, const events::PropertyEvent& b) {
-                         return a.event_date < b.event_date;
-                     });
-    PropertyRow row;
-    row.state = events::reduce(evs).state;
-    row.parcel = first_role_value(registry, evs, "parcel");
-    row.owner = first_role_value(registry, evs, "owner");
-    row.address = first_role_value(registry, evs, "address");
-    std::set<std::string> sources;
-    for (const events::PropertyEvent& e : evs) {
-        sources.insert(e.source_id);
-        switch (e.kind) {
-        case events::Kind::TaxDelinquency: row.due = e.amount; break;
-        case events::Kind::CodeViolation: ++row.violations; break;
-        default: break;
-        }
-        const auto assessed = e.details.find("assessed_value");
-        if (assessed != e.details.end()) {
-            const std::optional<double> parsed = schema::parse_money(assessed->second);
-            if (parsed.has_value() && *parsed > 0.0) row.assessed = *parsed;
-        }
-    }
-    row.sources = sources.size();
-    row.events = evs.size();
-    const events::PropertyEvent& last = evs.back();
-    row.last_event = std::string{events::kind_name(last.kind)};
-    if (!last.event_date.empty()) row.last_event += " " + last.event_date;
-    return row;
+std::string field_or(const compile::Property& p, const char* field) {
+    const auto it = p.fields.find(field);
+    return it == p.fields.end() ? "" : it->second.value;
 }
 
 } // namespace
 
 void county_properties(store::Store& store, const schema::Registry& registry,
-                       const std::string& county) {
-    const std::string wanted = str::slug(county);
-    std::vector<std::string> keys;
-    for (const std::string& key : store.property_keys()) {
-        const std::string slug = key.substr(0, key.find('|'));
-        if (slug == wanted || str::contains(slug, wanted)) keys.push_back(key);
-    }
-    if (keys.empty()) {
+                       const std::string& county, bool include_all) {
+    const std::vector<compile::Property> properties =
+        compile::county(store, registry, county);
+    if (properties.empty()) {
         std::printf("  no properties for '%s'; run its sources first (run all)\n",
                     county.c_str());
         return;
     }
 
-    std::vector<PropertyRow> rows;
-    for (const std::string& key : keys) {
-        rows.push_back(build_row(registry, store.events_for(key)));
-    }
-    // Lead order: money owed first, then violation pressure, then value.
-    std::stable_sort(rows.begin(), rows.end(), [](const PropertyRow& a, const PropertyRow& b) {
-        if (a.due != b.due) return a.due > b.due;
-        if (a.violations != b.violations) return a.violations > b.violations;
-        return a.assessed > b.assessed;
-    });
-
     section("Properties");
     std::vector<std::vector<std::string>> table;
-    for (const PropertyRow& r : rows) {
+    std::size_t hidden = 0;
+    std::size_t merged = 0;
+    std::size_t conflicts = 0;
+    for (const compile::Property& p : properties) {
+        conflicts += p.conflicts.size();
+        if (p.keys.size() > 1) ++merged;
+        const std::string address = field_or(p, "address");
+        if (address.empty() && !include_all) {
+            ++hidden;
+            continue;
+        }
         std::string ratio;
-        if (r.due > 0.0 && r.assessed > 0.0) {
+        if (p.due > 0.0 && p.assessed > 0.0) {
             char buffer[16];
-            std::snprintf(buffer, sizeof(buffer), "%.1fx", r.due / r.assessed);
+            std::snprintf(buffer, sizeof(buffer), "%.1fx", p.due / p.assessed);
             ratio = buffer;
         }
-        table.push_back({r.parcel, clip(r.owner, 26), clip(r.address, 26),
-                         stamp(std::string{events::state_name(r.state)}),
-                         r.due > 0.0 ? fmt_money(r.due) : "",
-                         r.assessed > 0.0 ? fmt_money(r.assessed) : "", ratio,
-                         r.violations > 0 ? std::to_string(r.violations) : "",
-                         std::to_string(r.sources), r.last_event});
+        std::set<std::string> sources;
+        for (const events::PropertyEvent& e : p.events) sources.insert(e.source_id);
+        std::string parcel = field_or(p, "parcel_id");
+        if (p.keys.size() > 1) parcel += "*";
+        const events::PropertyEvent& last = p.events.back();
+        std::string last_event{events::kind_name(last.kind)};
+        if (!last.event_date.empty()) last_event += " " + last.event_date;
+        table.push_back({parcel, clip(field_or(p, "owner"), 26), clip(address, 26),
+                         stamp(std::string{events::state_name(p.state)}),
+                         p.due > 0.0 ? fmt_money(p.due) : "",
+                         p.assessed > 0.0 ? fmt_money(p.assessed) : "", ratio,
+                         p.violations > 0 ? std::to_string(p.violations) : "",
+                         std::to_string(sources.size()), last_event});
     }
     render::table({"parcel", "owner", "address", "lifecycle", "owed", "assessed", "debt/val",
                    "viol", "src", "last event"},
                   table);
-    std::printf("  %s\n",
-                paint("dim", std::to_string(keys.size()) + " properties, most distressed "
-                             "first; every cell traces to an ingested event").c_str());
+    std::string note = std::to_string(table.size()) + " properties, most distressed first";
+    if (merged > 0) {
+        note += "; " + std::to_string(merged) + " merged across id spaces (*)";
+    }
+    if (conflicts > 0) {
+        note += "; " + std::to_string(conflicts) +
+                " conflicts resolved by measured source trust (see export)";
+    }
+    if (hidden > 0) {
+        note += "; " + std::to_string(hidden) + " without an address hidden ('county " +
+                county + " all')";
+    }
+    std::printf("  %s\n", paint("dim", note).c_str());
 }
 
 void show_mapping(store::Store& store, pipeline::Pipeline& pipeline,
