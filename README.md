@@ -103,14 +103,3 @@ repair, auto-accepted only above 75% confidence with the baseline recovered.
 An LLM API could attempt the same mapping; this engine does it
 deterministically, explainably, offline, in milliseconds, at zero marginal
 cost - and the benchmark keeps that claim measured instead of asserted.
-
-## Layout
-
-| Layer | Job |
-| --- | --- |
-| `core` | strings, time, files, hashing, JSON, OS metrics |
-| `parse` | tolerant HTML/CSV/PDF parsers to (label, value) records |
-| `net` | libcurl fetch, measured |
-| `ml` | features, naive Bayes, column transformer, harvest corpus |
-| `engine` | schema matching, entity resolution, events, store, healing, bench, export |
-| `app` | the CLI shell and terminal rendering |
