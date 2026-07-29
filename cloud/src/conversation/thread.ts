@@ -5,15 +5,18 @@ import * as Effect from "effect/Effect";
 
 import {
   DEFAULT_SPEC,
+  SIGNAL_CATALOG,
   compileSpec,
   describe,
   evaluate,
   explainTrace,
+  validateGraph,
   type CriteriaSpec,
   type Graph,
   type Subject,
   type TraceStep,
   type TreeDoc,
+  type Verdict,
 } from "../decision/graph.ts";
 import { calibratedStates, estimate, holdoutError, isCalibrated } from "../valuation.ts";
 import { linkBlock } from "../links.ts";
@@ -135,14 +138,34 @@ interface EvaluatedMatch {
   readonly trace: readonly TraceStep[];
 }
 
-type Pending =
+export type Pending =
   | { readonly kind: "idle" }
   | { readonly kind: "review"; readonly matches: readonly EvaluatedMatch[] }
+  | {
+      readonly kind: "remember_filter";
+      readonly graph: Graph;
+      readonly matches: readonly EvaluatedMatch[];
+    }
   | {
       readonly kind: "approve_outreach";
       readonly match: PropertyMatch;
       readonly draft: string;
     };
+
+const AFFIRMATIONS = [
+  "yes",
+  "y",
+  "yeah",
+  "yep",
+  "save",
+  "save it",
+  "keep",
+  "keep it",
+  "remember",
+  "remember it",
+];
+
+const DECLINES = ["no", "n", "nope", "no thanks", "drop it", "forget it", "dont", "don't"];
 
 export interface PropertyEvaluation {
   readonly propertyKey: string;
@@ -199,6 +222,31 @@ export const subjectOf = (match: PropertyMatch): Subject => ({
   sources: match.sources,
 });
 
+interface EvaluatedPair {
+  readonly match: PropertyMatch;
+  readonly verdict: Verdict;
+}
+
+const evaluateAgainst = (
+  graph: Graph,
+  candidates: readonly PropertyMatch[],
+): readonly EvaluatedPair[] =>
+  candidates.map((match) => ({ match, verdict: evaluate(graph, subjectOf(match)) }));
+
+const qualifiedOf = (pairs: readonly EvaluatedPair[]): readonly EvaluatedMatch[] =>
+  pairs.flatMap(({ match, verdict }) =>
+    verdict.outcome === "match"
+      ? [{ match, requiresApproval: verdict.requiresApproval, trace: verdict.trace }]
+      : [],
+  );
+
+const knownSignalsOf = (candidates: readonly PropertyMatch[]): readonly string[] => [
+  ...new Set([
+    ...Object.keys(SIGNAL_CATALOG),
+    ...candidates.flatMap((candidate) => Object.keys(candidate.signals)),
+  ]),
+];
+
 const describeMatch = (evaluated: EvaluatedMatch, index: number): string => {
   const match = evaluated.match;
   const lines = [
@@ -227,6 +275,20 @@ export interface ApplyScoutInput {
   readonly county?: string;
 }
 
+export interface PreviewFilterInput {
+  readonly userText: string;
+  readonly lead: string;
+  readonly graph: Graph;
+  readonly candidates: readonly PropertyMatch[];
+  readonly limit?: number;
+}
+
+export interface RememberFilterInput {
+  readonly userText: string;
+  readonly lead: string;
+  readonly remember: boolean;
+}
+
 export interface AttachDraftInput {
   readonly userText: string;
   readonly match: PropertyMatch;
@@ -244,9 +306,21 @@ export interface ThreadShape {
   readonly applyScout: (
     input: ApplyScoutInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly previewFilter: (
+    input: PreviewFilterInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly rememberFilter: (
+    input: RememberFilterInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
   readonly attachDraft: (
     input: AttachDraftInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+}
+
+export interface ThreadStorage {
+  readonly get: <T>(key: string) => Effect.Effect<T | undefined, never, RuntimeContextInterface>;
+  readonly put: (key: string, value: unknown) => Effect.Effect<void, never, RuntimeContextInterface>;
+  readonly delete: (key: string) => Effect.Effect<void, never, RuntimeContextInterface>;
 }
 
 export class ConversationThread extends Cloudflare.DurableObject<
@@ -254,441 +328,525 @@ export class ConversationThread extends Cloudflare.DurableObject<
   ThreadShape
 >()("ConversationThread") {}
 
-export const ConversationThreadLive = ConversationThread.make<never>(
-  Effect.gen(function* () {
-    const state = yield* Cloudflare.DurableObjectState;
+export const makeThread = (storage: ThreadStorage): ThreadShape => {
+  const record = (
+    userText: string,
+    reply: string,
+    tree: TreeDoc,
+    turns: readonly Turn[],
+    summary: string,
+  ) =>
+    Effect.gen(function* () {
+      const now = new Date().toISOString();
+      let nextTurns: readonly Turn[] = [
+        ...turns,
+        { role: "user", text: userText, at: now },
+        { role: "scout", text: reply, at: now },
+      ];
+      let nextSummary = summary;
+      if (nextTurns.length > TURN_WINDOW) {
+        const folded = nextTurns.slice(0, -TURNS_KEPT_AFTER_COMPACTION);
+        const userAsks = folded.filter((t) => t.role === "user").length;
+        const spec = tree.spec;
+        const criteriaText =
+          spec === undefined
+            ? `criteria v${tree.version} (custom decision tree)`
+            : `criteria now: owed >= ${money(spec.minOwed)}` +
+              `${spec.requireMultiSource ? ", multi-source only" : ""}` +
+              `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}`;
+        const paragraph =
+          `[${folded[0]?.at.slice(0, 10) ?? ""}..${folded.at(-1)?.at.slice(0, 10) ?? ""}] ` +
+          `${userAsks} user messages handled; ${criteriaText}.`;
+        nextSummary = `${nextSummary}\n${paragraph}`.trim().slice(-SUMMARY_LIMIT);
+        nextTurns = nextTurns.slice(-TURNS_KEPT_AFTER_COMPACTION);
+      }
+      yield* storage.put("turns", nextTurns);
+      yield* storage.put("summary", nextSummary);
+    });
 
-    return Effect.gen(function* () {
-      const record = (
-        userText: string,
-        reply: string,
-        tree: TreeDoc,
-        turns: readonly Turn[],
-        summary: string,
-      ) =>
-        Effect.gen(function* () {
-          const now = new Date().toISOString();
-          let nextTurns: readonly Turn[] = [
-            ...turns,
-            { role: "user", text: userText, at: now },
-            { role: "scout", text: reply, at: now },
-          ];
-          let nextSummary = summary;
-          if (nextTurns.length > TURN_WINDOW) {
-            const folded = nextTurns.slice(0, -TURNS_KEPT_AFTER_COMPACTION);
-            const userAsks = folded.filter((t) => t.role === "user").length;
-            const spec = tree.spec;
-            const criteriaText =
-              spec === undefined
-                ? `criteria v${tree.version} (custom decision tree)`
-                : `criteria now: owed >= ${money(spec.minOwed)}` +
-                  `${spec.requireMultiSource ? ", multi-source only" : ""}` +
-                  `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}`;
-            const paragraph =
-              `[${folded[0]?.at.slice(0, 10) ?? ""}..${folded.at(-1)?.at.slice(0, 10) ?? ""}] ` +
-              `${userAsks} user messages handled; ${criteriaText}.`;
-            nextSummary = `${nextSummary}\n${paragraph}`.trim().slice(-SUMMARY_LIMIT);
-            nextTurns = nextTurns.slice(-TURNS_KEPT_AFTER_COMPACTION);
-          }
-          yield* state.storage.put("turns", nextTurns);
-          yield* state.storage.put("summary", nextSummary);
+  const loadTree = Effect.gen(function* () {
+    const stored = yield* storage.get<TreeDoc>("tree");
+    if (stored !== undefined) return { tree: stored, created: false };
+    const legacy = yield* storage.get<CriteriaSpec>("criteria");
+    const tree = compileSpec(legacy ?? DEFAULT_SPEC, TREE_NAME, 1);
+    yield* storage.put("tree", tree);
+    return { tree, created: true };
+  });
+
+  const applyScout = (input: ApplyScoutInput) =>
+    Effect.gen(function* () {
+      const loaded = yield* loadTree;
+      let tree: TreeDoc = loaded.tree;
+      let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
+      if (input.graph !== undefined) {
+        tree = { name: tree.name, version: tree.version + 1, graph: input.graph };
+        yield* storage.put("tree", tree);
+        changedTree = tree;
+      }
+      if (input.county !== undefined && input.county !== "") {
+        yield* storage.put("county", input.county);
+      }
+      const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+      const summary = (yield* storage.get<string>("summary")) ?? "";
+      yield* record(input.userText, input.reply, tree, turns, summary);
+      const outcome: HandleOutcome =
+        changedTree === undefined
+          ? { reply: input.reply, evaluations: [] }
+          : { reply: input.reply, evaluations: [], tree: changedTree };
+      return outcome;
+    });
+
+  const previewFilter = (input: PreviewFilterInput) =>
+    Effect.gen(function* () {
+      const problems = validateGraph(input.graph, knownSignalsOf(input.candidates));
+      if (problems.length > 0) {
+        return yield* applyScout({
+          userText: input.userText,
+          reply:
+            `I drafted a one-off filter but it failed validation:\n` +
+            problems.map((problem) => `- ${problem}`).join("\n") +
+            `\nNothing was changed; try rephrasing.`,
         });
-
-      const loadTree = Effect.gen(function* () {
-        const stored = yield* state.storage.get<TreeDoc>("tree");
-        if (stored !== undefined) return { tree: stored, created: false };
-        const legacy = yield* state.storage.get<CriteriaSpec>("criteria");
-        const tree = compileSpec(legacy ?? DEFAULT_SPEC, TREE_NAME, 1);
-        yield* state.storage.put("tree", tree);
-        return { tree, created: true };
-      });
-
+      }
+      const loaded = yield* loadTree;
+      const tree = loaded.tree;
+      const qualified = qualifiedOf(evaluateAgainst(input.graph, input.candidates));
+      const top = qualified.slice(0, Math.max(1, input.limit ?? 3));
+      const lead = input.lead.trim();
+      const body =
+        qualified.length === 0
+          ? `Nothing matches that filter.`
+          : `${qualified.length} propert${qualified.length === 1 ? "y matches" : "ies match"} ` +
+            `it. Top ${top.length}:\n\n${top.map(describeMatch).join("\n\n")}`;
+      const reply =
+        `${lead === "" ? "" : `${lead}\n\n`}${body}\n\n` +
+        `Just for this look: your saved criteria (v${tree.version}) are untouched.\n` +
+        `Reply YES to make this your criteria, or NO to drop it.`;
+      yield* storage.put("pending", {
+        kind: "remember_filter",
+        graph: input.graph,
+        matches: top,
+      } satisfies Pending);
+      const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+      const summary = (yield* storage.get<string>("summary")) ?? "";
+      yield* record(input.userText, reply, tree, turns, summary);
+      /// An evaluation names the stored tree version that produced it; an overlay has none.
       return {
-        /// Everything this thread remembers: the tree, the turns, the folded
-        /// summary, the pending step and the county. Clearing the rows in
-        /// Postgres without this leaves the object still holding a compacted
-        /// history, so the next message would not look like a first one.
-        forget: () =>
+        reply,
+        evaluations: [],
+        ...(loaded.created ? { tree } : {}),
+      } satisfies HandleOutcome;
+    });
+
+  const rememberFilter = (input: RememberFilterInput) =>
+    Effect.gen(function* () {
+      const loaded = yield* loadTree;
+      const pending = (yield* storage.get<Pending>("pending")) ?? { kind: "idle" as const };
+      const lead = input.lead.trim();
+      const prefix = lead === "" ? "" : `${lead}\n\n`;
+      if (pending.kind !== "remember_filter") {
+        return yield* applyScout({
+          userText: input.userText,
+          reply:
+            `${prefix}There is no one-off filter waiting to be saved. Your criteria ` +
+            `(v${loaded.tree.version}) are:\n${describe(loaded.tree.graph)}`,
+        });
+      }
+      yield* storage.put("pending", { kind: "idle" } satisfies Pending);
+      if (!input.remember) {
+        return yield* applyScout({
+          userText: input.userText,
+          reply:
+            `${prefix}Dropped it. Your saved criteria (v${loaded.tree.version}) still ` +
+            `stand:\n${describe(loaded.tree.graph)}`,
+        });
+      }
+      return yield* applyScout({
+        userText: input.userText,
+        reply: `${prefix}Saved. These are your criteria from now on:\n${describe(pending.graph)}`,
+        graph: pending.graph,
+      });
+    });
+
+  return {
+    /// Everything this thread remembers: the tree, the turns, the folded
+    /// summary, the pending step and the county. Clearing the rows in
+    /// Postgres without this leaves the object still holding a compacted
+    /// history, so the next message would not look like a first one.
+    forget: () =>
+      Effect.gen(function* () {
+        for (const key of ["tree", "criteria", "turns", "summary", "pending", "county"]) {
+          yield* storage.delete(key);
+        }
+      }),
+
+    handleMessage: (input: HandleMessageInput) =>
+      Effect.gen(function* () {
+        const loaded = yield* loadTree;
+        let tree: TreeDoc = loaded.tree;
+        let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
+
+        const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+        const summary = (yield* storage.get<string>("summary")) ?? "";
+        const rawPending =
+          (yield* storage.get<Pending>("pending")) ?? { kind: "idle" as const };
+        // Pre-graph deploys stored review matches without traces; drop them.
+        const pending: Pending =
+          rawPending.kind === "review" && rawPending.matches.some((m) => !("match" in m))
+            ? { kind: "idle" }
+            : rawPending;
+
+        const adopt = (spec: CriteriaSpec) =>
           Effect.gen(function* () {
-            for (const key of ["tree", "criteria", "turns", "summary", "pending", "county"]) {
-              yield* state.storage.delete(key);
-            }
-          }),
+            tree = compileSpec(spec, TREE_NAME, tree.version + 1);
+            yield* storage.put("tree", tree);
+            changedTree = tree;
+          });
 
-        handleMessage: (input: HandleMessageInput) =>
+        const respond = (
+          userText: string,
+          reply: string,
+          nextPending: Pending,
+          evaluations: readonly PropertyEvaluation[] = [],
+          outreach?: OutreachOrder,
+        ) =>
           Effect.gen(function* () {
-            const loaded = yield* loadTree;
-            let tree: TreeDoc = loaded.tree;
-            let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
+            yield* storage.put("pending", nextPending);
+            yield* record(userText, reply, tree, turns, summary);
+            const toPersist = changedTree ?? (evaluations.length > 0 ? tree : undefined);
+            return {
+              reply,
+              evaluations,
+              ...(toPersist === undefined ? {} : { tree: toPersist }),
+              ...(outreach === undefined ? {} : { outreach }),
+            } satisfies HandleOutcome;
+          });
 
-            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
-            const summary = (yield* state.storage.get<string>("summary")) ?? "";
-            const rawPending =
-              (yield* state.storage.get<Pending>("pending")) ?? { kind: "idle" as const };
-            // Pre-graph deploys stored review matches without traces; drop them.
-            const pending: Pending =
-              rawPending.kind === "review" && rawPending.matches.some((m) => !("match" in m))
-                ? { kind: "idle" }
-                : rawPending;
+        const evaluateAll = () => evaluateAgainst(tree.graph, input.candidates);
 
-            const adopt = (spec: CriteriaSpec) =>
-              Effect.gen(function* () {
-                tree = compileSpec(spec, TREE_NAME, tree.version + 1);
-                yield* state.storage.put("tree", tree);
-                changedTree = tree;
-              });
+        const asEvaluations = (
+          pairs: readonly EvaluatedPair[],
+        ): readonly PropertyEvaluation[] =>
+          pairs.map(({ match, verdict }) => ({
+            propertyKey: match.propertyKey,
+            outcome: verdict.outcome,
+            requiresApproval: verdict.outcome === "match" && verdict.requiresApproval,
+            treeName: tree.name,
+            treeVersion: tree.version,
+            trace: verdict.trace,
+          }));
 
-            const respond = (
-              userText: string,
-              reply: string,
-              nextPending: Pending,
-              evaluations: readonly PropertyEvaluation[] = [],
-              outreach?: OutreachOrder,
-            ) =>
-              Effect.gen(function* () {
-                yield* state.storage.put("pending", nextPending);
-                yield* record(userText, reply, tree, turns, summary);
-                const toPersist = changedTree ?? (evaluations.length > 0 ? tree : undefined);
-                return {
-                  reply,
-                  evaluations,
-                  ...(toPersist === undefined ? {} : { tree: toPersist }),
-                  ...(outreach === undefined ? {} : { outreach }),
-                } satisfies HandleOutcome;
-              });
+        const text = input.text.trim();
+        const lower = text.toLowerCase();
 
-            const evaluateAll = () =>
-              input.candidates.map((match) => ({
-                match,
-                verdict: evaluate(tree.graph, subjectOf(match)),
-              }));
+        if (pending.kind === "remember_filter") {
+          if (AFFIRMATIONS.includes(lower)) {
+            return yield* rememberFilter({ userText: text, lead: "", remember: true });
+          }
+          if (DECLINES.includes(lower)) {
+            return yield* rememberFilter({ userText: text, lead: "", remember: false });
+          }
+        }
 
-            const asEvaluations = (
-              pairs: ReturnType<typeof evaluateAll>,
-            ): readonly PropertyEvaluation[] =>
-              pairs.map(({ match, verdict }) => ({
-                propertyKey: match.propertyKey,
-                outcome: verdict.outcome,
-                requiresApproval: verdict.outcome === "match" && verdict.requiresApproval,
-                treeName: tree.name,
-                treeVersion: tree.version,
-                trace: verdict.trace,
-              }));
-
-            const qualifiedOf = (pairs: ReturnType<typeof evaluateAll>): EvaluatedMatch[] =>
-              pairs.flatMap(({ match, verdict }) =>
-                verdict.outcome === "match"
-                  ? [{ match, requiresApproval: verdict.requiresApproval, trace: verdict.trace }]
-                  : [],
-              );
-
-            const text = input.text.trim();
-            const lower = text.toLowerCase();
-
-            if (pending.kind === "approve_outreach") {
-              if (lower === "approve" || lower === "yes") {
-                const match = pending.match;
-                const audience = classifyOwner(match.owner);
-                const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
-                const window = nextSendWindow(audience, new Date(), timeZone);
-                const sent =
-                  `Approved. Outreach to ${match.owner || "the recorded owner"} is ` +
-                  `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
-                  `(Demo mode: this message will NOT actually be sent. No real ` +
-                  `outreach leaves this system.)\n\n` +
-                  `Reply REVIEW to see remaining matches.`;
-                return yield* respond(text, sent, { kind: "idle" }, [], {
-                  propertyKey: match.propertyKey,
-                  draft: pending.draft,
-                  audience,
-                  scheduledForIso: window.at.toISOString(),
-                  approved: true,
-                });
-              }
-              if (lower === "reject" || lower === "no") {
-                return yield* respond(
-                  text,
-                  "Draft discarded. Reply REVIEW to see other matches.",
-                  { kind: "idle" },
-                );
-              }
-            }
-
-            if (pending.kind === "review" && /^\d+$/.test(lower)) {
-              const index = Number.parseInt(lower, 10) - 1;
-              const evaluated = pending.matches[index];
-              if (evaluated === undefined) {
-                return yield* respond(
-                  text,
-                  `Reply with a number between 1 and ${pending.matches.length}.`,
-                  pending,
-                );
-              }
-              const match = evaluated.match;
-              const explanation =
-                `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
-                `${contactSummary(match)}\n\n` +
-                `${worthSummary(match)}\n\n` +
-                `${linkBlock(match.address, match.propertyKey.split("|")[0] ?? "")}\n\n` +
-                `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
-              const codexConnected =
-                input.codexAccount !== undefined && input.codexAccount !== "";
-              if (codexConnected) {
-                // The worker drafts through Codex, then finalizes via attachDraft.
-                return {
-                  reply: "",
-                  evaluations: [],
-                  draftRequest: {
-                    match,
-                    explanation,
-                    requiresApproval: evaluated.requiresApproval,
-                  },
-                  ...(changedTree === undefined ? {} : { tree: changedTree }),
-                } satisfies HandleOutcome;
-              }
-              const draft = templateDraft(match);
-              const body = `${explanation}\n\nDraft (simulated outreach):\n"${draft}"`;
-              if (!evaluated.requiresApproval) {
-                const audience = classifyOwner(match.owner);
-                const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
-                const window = nextSendWindow(audience, new Date(), timeZone);
-                return yield* respond(
-                  text,
-                  `${body}\n\nYour decision tree has no approval gate: outreach ` +
-                    `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
-                    `(Demo mode: this message will NOT actually be sent.)`,
-                  { kind: "idle" },
-                  [],
-                  {
-                    propertyKey: match.propertyKey,
-                    draft,
-                    audience,
-                    scheduledForIso: window.at.toISOString(),
-                    approved: false,
-                  },
-                );
-              }
-              return yield* respond(
-                text,
-                `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`,
-                { kind: "approve_outreach", match, draft },
-              );
-            }
-
-            if (lower === "review" || lower === "yes" || lower === "scan") {
-              const pairs = evaluateAll();
-              const qualified = qualifiedOf(pairs);
-              const evaluations = asEvaluations(pairs);
-              if (qualified.length === 0) {
-                return yield* respond(
-                  text,
-                  `No properties currently match your criteria (v${tree.version}):\n` +
-                    `${describe(tree.graph)}\n` +
-                    `Reply CRITERIA to see or change them.`,
-                  { kind: "idle" },
-                  evaluations,
-                );
-              }
-              const top = qualified.slice(0, 3);
-              const reply =
-                `${qualified.length} properties match your criteria. Top ${top.length}:\n\n` +
-                top.map(describeMatch).join("\n\n") +
-                `\n\nReply with a property number for owner and outreach.`;
-              return yield* respond(text, reply, { kind: "review", matches: top }, evaluations);
-            }
-
-            if (lower === "criteria") {
-              return yield* respond(
-                text,
-                `Your acquisition criteria (v${tree.version}):\n${describe(tree.graph)}\n` +
-                  `Codex: ${input.codexAccount !== undefined && input.codexAccount !== "" ? `connected as ${input.codexAccount}` : "not connected (reply CONNECT)"}\n\n` +
-                  `Change them like: "min owed 25000", "require multi source", ` +
-                  `"any source", "min debt ratio 0.5".`,
-                pending,
-              );
-            }
-
-            const minOwedMatch = /^min owed (\d+)$/.exec(lower);
-            const wantsSpecEdit =
-              minOwedMatch !== null ||
-              lower === "require multi source" ||
-              lower === "any source" ||
-              /^min debt ratio ([0-9.]+)$/.test(lower);
-            const baseSpec = tree.spec;
-            if (wantsSpecEdit && baseSpec === undefined) {
-              return yield* respond(
-                text,
-                `Your criteria are a custom decision tree (v${tree.version}), so the ` +
-                  `shorthand commands do not apply. Describe the change in plain ` +
-                  `language instead.`,
-                pending,
-              );
-            }
-            if (minOwedMatch !== null && baseSpec !== undefined) {
-              const value = Number.parseInt(minOwedMatch[1] ?? "0", 10);
-              yield* adopt({ ...baseSpec, minOwed: value });
-              const remaining = qualifiedOf(evaluateAll()).length;
-              return yield* respond(
-                text,
-                `Done: minimum owed is now ${money(value)} (criteria v${tree.version}). ` +
-                  `${remaining} properties currently qualify. Reply REVIEW to see them.`,
-                { kind: "idle" },
-              );
-            }
-            if (lower === "require multi source" && baseSpec !== undefined) {
-              yield* adopt({ ...baseSpec, requireMultiSource: true });
-              return yield* respond(
-                text,
-                `Done: only properties corroborated by more than one county source ` +
-                  `will match (criteria v${tree.version}).`,
-                { kind: "idle" },
-              );
-            }
-            if (lower === "any source" && baseSpec !== undefined) {
-              yield* adopt({ ...baseSpec, requireMultiSource: false });
-              return yield* respond(
-                text,
-                `Done: single-source properties can match again (criteria v${tree.version}).`,
-                { kind: "idle" },
-              );
-            }
-            const ratioMatch = /^min debt ratio ([0-9.]+)$/.exec(lower);
-            if (ratioMatch !== null && baseSpec !== undefined) {
-              const value = Number.parseFloat(ratioMatch[1] ?? "0");
-              yield* adopt({ ...baseSpec, minDebtToValue: value });
-              return yield* respond(
-                text,
-                `Done: minimum debt/value is now ${value}x (criteria v${tree.version}).`,
-                { kind: "idle" },
-              );
-            }
-
-            if (lower === "connect" || lower === "connect codex") {
-              if (input.connectUrl !== undefined && input.connectUrl !== "") {
-                return yield* respond(
-                  text,
-                  `Open this link to connect your ChatGPT account to Goliath Scout:\n` +
-                    `${input.connectUrl}\n\n` +
-                    `It is single-use and expires in 15 minutes. Your tokens are ` +
-                    `stored encrypted; reply CRITERIA any time to check the connection.`,
-                  pending,
-                );
-              }
-              return yield* respond(
-                text,
-                "Codex connect is not available right now: the credential store " +
-                  "is not configured on this deployment.",
-                pending,
-              );
-            }
-
-            if (lower === "memory") {
-              const window = turns
-                .slice(-6)
-                .map((t) => `${t.role}: ${t.text.split("\n")[0] ?? ""}`)
-                .join("\n");
-              return yield* respond(
-                text,
-                `Thread summary (compacted):\n${summary || "(nothing compacted yet)"}\n\n` +
-                  `Recent turns:\n${window || "(none)"}`,
-                pending,
-              );
-            }
-
-            const qualified = qualifiedOf(evaluateAll());
+        if (pending.kind === "approve_outreach") {
+          if (lower === "approve" || lower === "yes") {
+            const match = pending.match;
+            const audience = classifyOwner(match.owner);
+            const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
+            const window = nextSendWindow(audience, new Date(), timeZone);
+            const sent =
+              `Approved. Outreach to ${match.owner || "the recorded owner"} is ` +
+              `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
+              `(Demo mode: this message will NOT actually be sent. No real ` +
+              `outreach leaves this system.)\n\n` +
+              `Reply REVIEW to see remaining matches.`;
+            return yield* respond(text, sent, { kind: "idle" }, [], {
+              propertyKey: match.propertyKey,
+              draft: pending.draft,
+              audience,
+              scheduledForIso: window.at.toISOString(),
+              approved: true,
+            });
+          }
+          if (lower === "reject" || lower === "no") {
             return yield* respond(
               text,
-              `Goliath Scout here. The county scan found ${qualified.length} properties ` +
-                `matching your criteria.\n\n` +
-                `Commands: REVIEW, CRITERIA, CONNECT, MEMORY, a property number, APPROVE, REJECT.`,
+              "Draft discarded. Reply REVIEW to see other matches.",
+              { kind: "idle" },
+            );
+          }
+        }
+
+        if (
+          (pending.kind === "review" || pending.kind === "remember_filter") &&
+          /^\d+$/.test(lower)
+        ) {
+          const index = Number.parseInt(lower, 10) - 1;
+          const evaluated = pending.matches[index];
+          if (evaluated === undefined) {
+            return yield* respond(
+              text,
+              `Reply with a number between 1 and ${pending.matches.length}.`,
               pending,
             );
-          }),
-
-        snapshot: () =>
-          Effect.gen(function* () {
-            const loaded = yield* loadTree;
-            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
-            const summary = (yield* state.storage.get<string>("summary")) ?? "";
-            const county = (yield* state.storage.get<string>("county")) ?? "norfolk";
+          }
+          const match = evaluated.match;
+          const explanation =
+            `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
+            `${contactSummary(match)}\n\n` +
+            `${worthSummary(match)}\n\n` +
+            `${linkBlock(match.address, match.propertyKey.split("|")[0] ?? "")}\n\n` +
+            `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
+          const codexConnected =
+            input.codexAccount !== undefined && input.codexAccount !== "";
+          if (codexConnected) {
+            // The worker drafts through Codex, then finalizes via attachDraft.
             return {
-              tree: loaded.tree,
-              summary,
-              recentTurns: turns.slice(-8),
-              configured: loaded.tree.version > 1,
-              county,
-            };
-          }),
-
-        attachDraft: (input: AttachDraftInput) =>
-          Effect.gen(function* () {
-            const loaded = yield* loadTree;
-            const tree = loaded.tree;
-            const changedTree = loaded.created ? loaded.tree : undefined;
-            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
-            const summary = (yield* state.storage.get<string>("summary")) ?? "";
-            const body =
-              `${input.explanation}\n\nDraft (simulated outreach):\n"${input.draft}"`;
-            let reply: string;
-            let nextPending: Pending;
-            let outreach: OutreachOrder | undefined;
-            if (input.requiresApproval) {
-              reply = `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`;
-              nextPending = {
-                kind: "approve_outreach",
-                match: input.match,
-                draft: input.draft,
-              };
-            } else {
-              const audience = classifyOwner(input.match.owner);
-              const timeZone = zoneFor(input.match.propertyKey.split("|")[0] ?? "");
-              const window = nextSendWindow(audience, new Date(), timeZone);
-              reply =
-                `${body}\n\nYour decision tree has no approval gate: outreach ` +
+              reply: "",
+              evaluations: [],
+              draftRequest: {
+                match,
+                explanation,
+                requiresApproval: evaluated.requiresApproval,
+              },
+              ...(changedTree === undefined ? {} : { tree: changedTree }),
+            } satisfies HandleOutcome;
+          }
+          const draft = templateDraft(match);
+          const body = `${explanation}\n\nDraft (simulated outreach):\n"${draft}"`;
+          if (!evaluated.requiresApproval) {
+            const audience = classifyOwner(match.owner);
+            const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
+            const window = nextSendWindow(audience, new Date(), timeZone);
+            return yield* respond(
+              text,
+              `${body}\n\nYour decision tree has no approval gate: outreach ` +
                 `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
-                `(Demo mode: this message will NOT actually be sent.)`;
-              nextPending = { kind: "idle" };
-              outreach = {
-                propertyKey: input.match.propertyKey,
-                draft: input.draft,
+                `(Demo mode: this message will NOT actually be sent.)`,
+              { kind: "idle" },
+              [],
+              {
+                propertyKey: match.propertyKey,
+                draft,
                 audience,
                 scheduledForIso: window.at.toISOString(),
                 approved: false,
-              };
-            }
-            yield* state.storage.put("pending", nextPending);
-            yield* record(input.userText, reply, tree, turns, summary);
-            return {
-              reply,
-              evaluations: [],
-              ...(changedTree === undefined ? {} : { tree: changedTree }),
-              ...(outreach === undefined ? {} : { outreach }),
-            } satisfies HandleOutcome;
-          }),
+              },
+            );
+          }
+          return yield* respond(
+            text,
+            `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`,
+            { kind: "approve_outreach", match, draft },
+          );
+        }
 
-        applyScout: (input: ApplyScoutInput) =>
-          Effect.gen(function* () {
-            const loaded = yield* loadTree;
-            let tree: TreeDoc = loaded.tree;
-            let changedTree: TreeDoc | undefined = loaded.created ? loaded.tree : undefined;
-            if (input.graph !== undefined) {
-              tree = { name: tree.name, version: tree.version + 1, graph: input.graph };
-              yield* state.storage.put("tree", tree);
-              changedTree = tree;
-            }
-            if (input.county !== undefined && input.county !== "") {
-              yield* state.storage.put("county", input.county);
-            }
-            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
-            const summary = (yield* state.storage.get<string>("summary")) ?? "";
-            yield* record(input.userText, input.reply, tree, turns, summary);
-            const outcome: HandleOutcome =
-              changedTree === undefined
-                ? { reply: input.reply, evaluations: [] }
-                : { reply: input.reply, evaluations: [], tree: changedTree };
-            return outcome;
-          }),
-      };
-    });
+        if (lower === "review" || lower === "yes" || lower === "scan") {
+          const pairs = evaluateAll();
+          const qualified = qualifiedOf(pairs);
+          const evaluations = asEvaluations(pairs);
+          if (qualified.length === 0) {
+            return yield* respond(
+              text,
+              `No properties currently match your criteria (v${tree.version}):\n` +
+                `${describe(tree.graph)}\n` +
+                `Reply CRITERIA to see or change them.`,
+              { kind: "idle" },
+              evaluations,
+            );
+          }
+          const top = qualified.slice(0, 3);
+          const reply =
+            `${qualified.length} properties match your criteria. Top ${top.length}:\n\n` +
+            top.map(describeMatch).join("\n\n") +
+            `\n\nReply with a property number for owner and outreach.`;
+          return yield* respond(text, reply, { kind: "review", matches: top }, evaluations);
+        }
+
+        if (lower === "criteria") {
+          return yield* respond(
+            text,
+            `Your acquisition criteria (v${tree.version}):\n${describe(tree.graph)}\n` +
+              `Codex: ${input.codexAccount !== undefined && input.codexAccount !== "" ? `connected as ${input.codexAccount}` : "not connected (reply CONNECT)"}\n\n` +
+              `Change them like: "min owed 25000", "require multi source", ` +
+              `"any source", "min debt ratio 0.5".`,
+            pending,
+          );
+        }
+
+        const minOwedMatch = /^min owed (\d+)$/.exec(lower);
+        const wantsSpecEdit =
+          minOwedMatch !== null ||
+          lower === "require multi source" ||
+          lower === "any source" ||
+          /^min debt ratio ([0-9.]+)$/.test(lower);
+        const baseSpec = tree.spec;
+        if (wantsSpecEdit && baseSpec === undefined) {
+          return yield* respond(
+            text,
+            `Your criteria are a custom decision tree (v${tree.version}), so the ` +
+              `shorthand commands do not apply. Describe the change in plain ` +
+              `language instead.`,
+            pending,
+          );
+        }
+        if (minOwedMatch !== null && baseSpec !== undefined) {
+          const value = Number.parseInt(minOwedMatch[1] ?? "0", 10);
+          yield* adopt({ ...baseSpec, minOwed: value });
+          const remaining = qualifiedOf(evaluateAll()).length;
+          return yield* respond(
+            text,
+            `Done: minimum owed is now ${money(value)} (criteria v${tree.version}). ` +
+              `${remaining} properties currently qualify. Reply REVIEW to see them.`,
+            { kind: "idle" },
+          );
+        }
+        if (lower === "require multi source" && baseSpec !== undefined) {
+          yield* adopt({ ...baseSpec, requireMultiSource: true });
+          return yield* respond(
+            text,
+            `Done: only properties corroborated by more than one county source ` +
+              `will match (criteria v${tree.version}).`,
+            { kind: "idle" },
+          );
+        }
+        if (lower === "any source" && baseSpec !== undefined) {
+          yield* adopt({ ...baseSpec, requireMultiSource: false });
+          return yield* respond(
+            text,
+            `Done: single-source properties can match again (criteria v${tree.version}).`,
+            { kind: "idle" },
+          );
+        }
+        const ratioMatch = /^min debt ratio ([0-9.]+)$/.exec(lower);
+        if (ratioMatch !== null && baseSpec !== undefined) {
+          const value = Number.parseFloat(ratioMatch[1] ?? "0");
+          yield* adopt({ ...baseSpec, minDebtToValue: value });
+          return yield* respond(
+            text,
+            `Done: minimum debt/value is now ${value}x (criteria v${tree.version}).`,
+            { kind: "idle" },
+          );
+        }
+
+        if (lower === "connect" || lower === "connect codex") {
+          if (input.connectUrl !== undefined && input.connectUrl !== "") {
+            return yield* respond(
+              text,
+              `Open this link to connect your ChatGPT account to Goliath Scout:\n` +
+                `${input.connectUrl}\n\n` +
+                `It is single-use and expires in 15 minutes. Your tokens are ` +
+                `stored encrypted; reply CRITERIA any time to check the connection.`,
+              pending,
+            );
+          }
+          return yield* respond(
+            text,
+            "Codex connect is not available right now: the credential store " +
+              "is not configured on this deployment.",
+            pending,
+          );
+        }
+
+        if (lower === "memory") {
+          const window = turns
+            .slice(-6)
+            .map((t) => `${t.role}: ${t.text.split("\n")[0] ?? ""}`)
+            .join("\n");
+          return yield* respond(
+            text,
+            `Thread summary (compacted):\n${summary || "(nothing compacted yet)"}\n\n` +
+              `Recent turns:\n${window || "(none)"}`,
+            pending,
+          );
+        }
+
+        const qualified = qualifiedOf(evaluateAll());
+        return yield* respond(
+          text,
+          `Goliath Scout here. The county scan found ${qualified.length} properties ` +
+            `matching your criteria.\n\n` +
+            `Commands: REVIEW, CRITERIA, CONNECT, MEMORY, a property number, APPROVE, REJECT.`,
+          pending,
+        );
+      }),
+
+    snapshot: () =>
+      Effect.gen(function* () {
+        const loaded = yield* loadTree;
+        const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+        const summary = (yield* storage.get<string>("summary")) ?? "";
+        const county = (yield* storage.get<string>("county")) ?? "norfolk";
+        return {
+          tree: loaded.tree,
+          summary,
+          recentTurns: turns.slice(-8),
+          configured: loaded.tree.version > 1,
+          county,
+        };
+      }),
+
+    attachDraft: (input: AttachDraftInput) =>
+      Effect.gen(function* () {
+        const loaded = yield* loadTree;
+        const tree = loaded.tree;
+        const changedTree = loaded.created ? loaded.tree : undefined;
+        const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+        const summary = (yield* storage.get<string>("summary")) ?? "";
+        const body =
+          `${input.explanation}\n\nDraft (simulated outreach):\n"${input.draft}"`;
+        let reply: string;
+        let nextPending: Pending;
+        let outreach: OutreachOrder | undefined;
+        if (input.requiresApproval) {
+          reply = `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`;
+          nextPending = {
+            kind: "approve_outreach",
+            match: input.match,
+            draft: input.draft,
+          };
+        } else {
+          const audience = classifyOwner(input.match.owner);
+          const timeZone = zoneFor(input.match.propertyKey.split("|")[0] ?? "");
+          const window = nextSendWindow(audience, new Date(), timeZone);
+          reply =
+            `${body}\n\nYour decision tree has no approval gate: outreach ` +
+            `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
+            `(Demo mode: this message will NOT actually be sent.)`;
+          nextPending = { kind: "idle" };
+          outreach = {
+            propertyKey: input.match.propertyKey,
+            draft: input.draft,
+            audience,
+            scheduledForIso: window.at.toISOString(),
+            approved: false,
+          };
+        }
+        yield* storage.put("pending", nextPending);
+        yield* record(input.userText, reply, tree, turns, summary);
+        return {
+          reply,
+          evaluations: [],
+          ...(changedTree === undefined ? {} : { tree: changedTree }),
+          ...(outreach === undefined ? {} : { outreach }),
+        } satisfies HandleOutcome;
+      }),
+
+    applyScout,
+    previewFilter,
+    rememberFilter,
+  };
+};
+
+export const ConversationThreadLive = ConversationThread.make<never>(
+  Effect.gen(function* () {
+    const state = yield* Cloudflare.DurableObjectState;
+    return Effect.succeed(
+      makeThread({
+        get: <T>(key: string) => state.storage.get<T>(key),
+        put: (key: string, value: unknown) => state.storage.put(key, value),
+        delete: (key: string) => state.storage.delete(key).pipe(Effect.asVoid),
+      }),
+    );
   }),
 );

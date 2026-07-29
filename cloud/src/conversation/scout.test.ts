@@ -70,6 +70,28 @@ describe("parseScoutDecision", () => {
     expect(decision.candidates).toHaveLength(1);
   });
 
+  test("reads a temp_filter decision carrying a replacement graph", () => {
+    const graph = compileSpec({ ...DEFAULT_SPEC, minOwed: 5_000 }, "acquisition", 1).graph;
+    const decision = parseScoutDecision(
+      JSON.stringify({ kind: "temp_filter", text: "Just for now:", graph, limit: 2 }),
+    );
+    expect(decision.kind).toBe("temp_filter");
+    if (decision.kind !== "temp_filter") throw new Error("unreachable");
+    expect(decision.graph.entry).toBe("owed_floor");
+    expect(decision.limit).toBe(2);
+  });
+
+  test("reads both answers to the remember offer", () => {
+    const kept = parseScoutDecision(
+      `{"kind":"remember_filter","text":"Saved.","remember":true}`,
+    );
+    expect(kept).toEqual({ kind: "remember_filter", text: "Saved.", remember: true });
+    const dropped = parseScoutDecision(
+      `{"kind":"remember_filter","text":"Dropped.","remember":false}`,
+    );
+    expect(dropped).toEqual({ kind: "remember_filter", text: "Dropped.", remember: false });
+  });
+
   test("non-contract output becomes a plain reply", () => {
     const decision = parseScoutDecision("I think you should raise the floor.");
     expect(decision).toEqual({ kind: "reply", text: "I think you should raise the floor." });
@@ -101,6 +123,23 @@ describe("buildInstructions", () => {
     expect(text).toContain(`county "norfolk"; 12 properties`);
     expect(text).toContain("3 currently match");
     expect(text).not.toContain("FIRST-TIME USER");
+  });
+
+  test("tells the model to keep provisional requests out of the saved tree", () => {
+    const text = buildInstructions({
+      tree,
+      configured: true,
+      summary: "",
+      recentTurns: [],
+      county: "norfolk",
+      candidateCount: 4,
+      qualifiedCount: 1,
+      extraSignals: [],
+    });
+    expect(text).toContain(`"kind":"temp_filter"`);
+    expect(text).toContain(`"kind":"remember_filter"`);
+    expect(text).toContain("Use set_tree only when the user clearly wants the change kept.");
+    expect(text).toContain("for now");
   });
 
   test("runs the onboarding interview for unconfigured users", () => {

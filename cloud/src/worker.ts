@@ -336,6 +336,22 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             ...(admitted.length > 0 ? { county: jurisdiction } : {}),
           });
         }
+        if (decision.kind === "temp_filter") {
+          return yield* thread.previewFilter({
+            userText: text,
+            lead: decision.text,
+            graph: decision.graph,
+            candidates,
+            ...(decision.limit === undefined ? {} : { limit: decision.limit }),
+          });
+        }
+        if (decision.kind === "remember_filter") {
+          return yield* thread.rememberFilter({
+            userText: text,
+            lead: decision.text,
+            remember: decision.remember,
+          });
+        }
         if (decision.kind === "set_tree") {
           const problems = validateGraph(decision.graph, [
             ...Object.keys(SIGNAL_CATALOG),
