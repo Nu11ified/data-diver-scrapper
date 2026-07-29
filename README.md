@@ -1,6 +1,12 @@
 # Data Diver
 
-County records in, one schema out, in your terminal.
+County records in, one canonical property schema out.
+
+Two halves of one system. A C++ engine that turns inconsistent county
+records into resolved, provenance-tracked property signals, and a Cloudflare
+service that runs that same engine as WebAssembly on a schedule and answers
+questions about it over SMS. The engine is the product; the CLI and the
+worker are two hosts for it.
 
 Every county publishes the same facts in a different dialect: different
 markup, different APIs, different field names. Data Diver fetches a source,
@@ -11,6 +17,20 @@ shape. All C++20; the only dependencies are libcurl and zlib. Nothing is
 mocked: every number printed is a measurement from a real run against real
 bytes.
 
+## The two halves
+
+| Path | What it is |
+| --- | --- |
+| `include/dd`, `src` | the engine: parse, ml, schema matching, entity resolution, events, compile |
+| `src/app` | the CLI host, for development and demos |
+| `wasm/api.cpp` | the WASM seam: JSON in, JSON out, no store or sockets |
+| `cloud` | the Cloudflare host: fetching, storage, cron, SMS conversation |
+
+The engine never opens a socket or touches a database in the cloud build.
+The host fetches bytes and owns storage; the engine classifies, matches,
+extracts, resolves and compiles. Everything crosses one boundary as JSON,
+so the WASM build links no filesystem and no libcurl.
+
 ## Build and run
 
 ```
@@ -18,6 +38,16 @@ make            # configure, build, run the tests
 make run        # build and open the shell
 make renderer   # install the headless browser used for JS-only portals
 make run-with-renderer   # shell with rendering enabled
+make wasm       # build the WebAssembly engine for the worker
+```
+
+For the cloud service:
+
+```
+cd cloud
+bun install
+bun alchemy dev      # local workerd on http://localhost:1337
+bun alchemy deploy   # provision R2, the worker and its cron
 ```
 
 ## The demo, in order
@@ -119,6 +149,22 @@ year's. Sources therefore carry an `as_of` edition, the compile layer prefers
 the newest edition of a field while keeping the earlier one, and the
 difference becomes a signal: `assessed_value_change` in the export and a
 year over year column in the county view.
+
+## The cloud service
+
+The worker fetches every configured source on an hourly cron, hands each
+body to the WASM engine, and writes the raw bytes, the extracted events and
+the run record to R2. `GET /county/:name` compiles the stored events into
+the canonical payload: per-field values with their source, confidence and
+as-of edition, the conflicts that were resolved and what lost, the distress
+signals, and the full event history.
+
+`POST /sms` is the conversational surface. Each phone number addresses its
+own Durable Object, which is the tenancy boundary: one object, one thread,
+its own storage, so isolation is structural rather than a filter on a
+query. The thread keeps a rolling window of turns and folds older ones into
+a summary, and because every decision is extracted into structured state
+before compaction, the user never needs to start a new conversation.
 
 ## How matching works
 
