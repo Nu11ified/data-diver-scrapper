@@ -9,7 +9,7 @@
 #include <string>
 
 namespace dd::pipeline {
-std::string expand_url_template(const store::Source& source, const store::Store& store);
+std::string expand_url_template(const store::Source& source, store::Store& store);
 
 class Pipeline {
 public:

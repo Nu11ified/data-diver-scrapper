@@ -2,7 +2,6 @@
 
 #include "dd/core/core.hpp"
 #include "dd/parse/html.hpp"
-#include "dd/parse/query.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -203,10 +202,8 @@ std::vector<std::string> links_from(const std::string& url, const std::string& h
     std::set<std::string> seen;
     const html::Document document = html::parse(html_text);
     std::vector<const html::Node*> anchors;
-    try {
-        anchors = html::query_all(document, "a[href]");
-    } catch (const Error&) {
-        return out;
+    for (const html::Node* a : document.find_all("a")) {
+        if (a->attr("href") != nullptr) anchors.push_back(a);
     }
 
     // Pagination first: a county results table is usually spread over pages,

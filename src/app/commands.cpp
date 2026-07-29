@@ -5,7 +5,6 @@
 #include "dd/core/core.hpp"
 #include "dd/engine/bench.hpp"
 #include "dd/engine/compile.hpp"
-#include "dd/engine/exporter.hpp"
 #include "dd/engine/harvest.hpp"
 #include "dd/engine/events.hpp"
 #include "dd/net/crawl.hpp"
@@ -599,7 +598,8 @@ int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
 
 int export_county(store::Store& store, const schema::Registry& registry,
                   const std::string& county, const std::string& out_path) {
-    const std::string payload = exporter::county_json(store, registry, county);
+    const std::string payload =
+        compile::render_county_json(county, compile::county(store, registry, county));
     if (out_path.empty()) {
         std::printf("%s\n", payload.c_str());
         return 0;

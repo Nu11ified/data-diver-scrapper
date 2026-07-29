@@ -193,8 +193,8 @@ std::vector<std::string> tracked_numbers(const store::Source& source, store::Sto
 }
 } // namespace
 
-std::string order_by_learned_date(std::string url, const schema::Registry& registry,
-                                  const store::SourceState& state) {
+static std::string order_by_learned_date(std::string url, const schema::Registry& registry,
+                                         const store::SourceState& state) {
     if (!state.has_mapping || !str::contains(url, "/resource/")) return url;
     if (str::contains(url, "$order")) return url;
     const std::vector<const schema::FieldDef*> dated = registry.with_role("event_date");

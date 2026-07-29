@@ -15,7 +15,6 @@ add_library(dd_engine STATIC
   src/core/json.cpp
   src/core/metrics.cpp
   src/parse/html.cpp
-  src/parse/query.cpp
   src/parse/csv.cpp
   src/parse/pdf.cpp
   src/parse/document.cpp
@@ -30,7 +29,6 @@ add_library(dd_engine STATIC
   src/engine/compile.cpp
   src/engine/entity.cpp
   src/engine/events.cpp
-  src/engine/exporter.cpp
   src/engine/store.cpp
   src/engine/harvest.cpp
   src/engine/heal.cpp
@@ -75,7 +73,6 @@ if(EMSCRIPTEN)
     src/core/core.cpp
     src/core/json.cpp
     src/parse/html.cpp
-    src/parse/query.cpp
     src/parse/csv.cpp
     src/parse/pdf.cpp
     src/parse/document.cpp
