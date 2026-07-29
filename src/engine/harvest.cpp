@@ -9,6 +9,14 @@
 namespace dd::harvest {
 namespace {
 constexpr const char* kCatalog = "https://api.us.socrata.com/api/catalog/v1";
+constexpr const char* kArcgisHub = "https://hub.arcgis.com/api/v3/datasets";
+
+// CKAN is per-portal: data.gov's federated search stopped answering, so the
+// portals that do are listed rather than discovered.
+const std::vector<std::string>& ckan_portals() {
+    static const std::vector<std::string> portals = {"data.ca.gov", "data.boston.gov"};
+    return portals;
+}
 
 std::string url_encode(const std::string& s) {
     std::string out;
@@ -313,6 +321,139 @@ std::map<std::string, std::size_t> grow_corpus(
     return written;
 }
 
+namespace {
+// An ArcGIS layer answers rows only through a query call; the catalog hands
+// back the service root, so the layer index and query string are appended.
+std::string arcgis_rows_url(const std::string& service_url) {
+    std::string base = service_url;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    if (base.size() < 8) return {};
+    const std::size_t slash = base.rfind('/');
+    const bool ends_with_layer =
+        slash != std::string::npos && slash + 1 < base.size() &&
+        base.find_first_not_of("0123456789", slash + 1) == std::string::npos;
+    if (!ends_with_layer) {
+        if (!str::contains(str::to_lower(base), "featureserver")) return {};
+        base += "/0";
+    }
+    return base + "/query?where=1%3D1&outFields=*&f=json&resultRecordCount=50";
+}
+
+void discover_arcgis(const std::vector<std::string>& queries, std::size_t per_query,
+                     const fetch::Options& net, std::set<std::string>& seen,
+                     std::vector<Discovered>& out,
+                     const std::function<void(const std::string&)>& log) {
+    for (const std::string& query : queries) {
+        const std::string url = std::string{kArcgisHub} + "?q=" + url_encode(query) +
+                                "&filter%5Btype%5D=" + url_encode("Feature Service") +
+                                "&page%5Bsize%5D=" + std::to_string(per_query);
+        const fetch::Result response = fetch::get(url, net);
+        if (!response.ok) {
+            if (log) log("arcgis '" + query + "' failed: " + response.error);
+            continue;
+        }
+        json::Value root;
+        try {
+            root = json::parse(response.body);
+        } catch (const Error&) {
+            continue;
+        }
+        const json::Value* data = root.find("data");
+        if (data == nullptr) continue;
+        std::size_t taken = 0;
+        for (const json::Value& entry : data->items()) {
+            if (taken >= per_query) break;
+            const json::Value* id = entry.find("id");
+            const json::Value* attributes = entry.find("attributes");
+            if (id == nullptr || attributes == nullptr) continue;
+            const json::Value* name = attributes->find("name");
+            const json::Value* service = attributes->find("url");
+            if (name == nullptr || service == nullptr) continue;
+            const std::string rows = arcgis_rows_url(service->as_string());
+            if (rows.empty()) continue;
+            const std::string dataset_id = id->as_string();
+            if (dataset_id.empty() || !seen.insert("arcgis:" + dataset_id).second) continue;
+
+            const json::Value* source = attributes->find("source");
+            const json::Value* owner = attributes->find("owner");
+            std::string jurisdiction = source == nullptr ? std::string{} : source->as_string();
+            if (jurisdiction.empty() && owner != nullptr) jurisdiction = owner->as_string();
+            if (jurisdiction.empty()) jurisdiction = "ArcGIS Hub";
+
+            Discovered d;
+            d.id = "arcgis_" + str::replace_all(dataset_id, "-", "_");
+            d.name = name->as_string();
+            d.url = rows;
+            d.jurisdiction = jurisdiction;
+            d.query = query;
+            out.push_back(std::move(d));
+            ++taken;
+        }
+        if (log) log("arcgis '" + query + "': " + std::to_string(taken) + " sources");
+    }
+}
+
+void discover_ckan(const std::vector<std::string>& queries, std::size_t per_query,
+                   const fetch::Options& net, std::set<std::string>& seen,
+                   std::vector<Discovered>& out,
+                   const std::function<void(const std::string&)>& log) {
+    for (const std::string& portal : ckan_portals()) {
+        if (!plausible_domain(portal)) continue;
+        std::size_t taken = 0;
+        for (const std::string& query : queries) {
+            const std::string url = "https://" + portal +
+                                    "/api/3/action/package_search?rows=" +
+                                    std::to_string(per_query) + "&q=" + url_encode(query);
+            const fetch::Result response = fetch::get(url, net);
+            if (!response.ok) continue;
+            json::Value root;
+            try {
+                root = json::parse(response.body);
+            } catch (const Error&) {
+                continue;
+            }
+            const json::Value* result = root.find("result");
+            if (result == nullptr) continue;
+            const json::Value* packages = result->find("results");
+            if (packages == nullptr) continue;
+            for (const json::Value& package : packages->items()) {
+                const json::Value* title = package.find("title");
+                const json::Value* resources = package.find("resources");
+                if (title == nullptr || resources == nullptr) continue;
+                for (const json::Value& resource : resources->items()) {
+                    const json::Value* format = resource.find("format");
+                    const json::Value* link = resource.find("url");
+                    const json::Value* resource_id = resource.find("id");
+                    if (format == nullptr || link == nullptr || resource_id == nullptr) continue;
+                    const std::string kind = str::to_lower(format->as_string());
+                    if (kind != "csv" && kind != "json" && kind != "geojson") continue;
+                    const std::string href = link->as_string();
+                    if (href.rfind("https://", 0) != 0) continue;
+                    if (!seen.insert("ckan:" + resource_id->as_string()).second) continue;
+
+                    const json::Value* organization = package.find("organization");
+                    const json::Value* org_title =
+                        organization == nullptr ? nullptr : organization->find("title");
+
+                    Discovered d;
+                    d.id = "ckan_" + str::slug(portal) + "_" +
+                           str::replace_all(resource_id->as_string(), "-", "_");
+                    d.name = title->as_string();
+                    d.url = href;
+                    d.jurisdiction =
+                        org_title == nullptr ? portal : org_title->as_string();
+                    d.query = query;
+                    out.push_back(std::move(d));
+                    ++taken;
+                    break; // one resource per package is enough to try
+                }
+            }
+        }
+        if (log) log("ckan " + portal + ": " + std::to_string(taken) + " sources");
+    }
+}
+} // namespace
+
 std::vector<Discovered> discover(std::size_t datasets_per_query,
                                  const std::function<void(const std::string&)>& log) {
     fetch::Options net;
@@ -374,8 +515,10 @@ std::vector<Discovered> discover(std::size_t datasets_per_query,
             out.push_back(std::move(d));
             ++taken;
         }
-        if (log) log("'" + query + "': " + std::to_string(taken) + " sources");
+        if (log) log("socrata '" + query + "': " + std::to_string(taken) + " sources");
     }
+    discover_arcgis(kQueries, datasets_per_query, net, seen, out, log);
+    discover_ckan(kQueries, datasets_per_query, net, seen, out, log);
     return out;
 }
 } // namespace dd::harvest
