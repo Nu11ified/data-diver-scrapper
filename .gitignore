@@ -9,3 +9,5 @@ compile_commands.json
 cloud/node_modules/
 tools/node_modules/
 build-wasm/
+cloud/.alchemy/
+cloud/.env
