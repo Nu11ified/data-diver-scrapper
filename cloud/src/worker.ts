@@ -48,15 +48,14 @@ import {
 import schema from "./engine/config/schema.json";
 import classifier from "./engine/config/source_classifier.json";
 import columnModel from "./engine/config/column_model.json";
-import sourcesConfig from "./engine/config/sources.json";
-
-interface SourceConfig {
-  readonly id: string;
-  readonly name: string;
-  readonly url: string;
-  readonly jurisdiction: string;
-  readonly as_of?: string;
-}
+import { bundledSeed } from "./seed.ts";
+import {
+  configFromRow,
+  parseSeed,
+  planSeed,
+  slugId,
+  type SourceConfig,
+} from "./sources.ts";
 
 interface RunOutcome {
   readonly sourceId: string;
@@ -68,6 +67,12 @@ interface RunOutcome {
   readonly extractionRate?: number;
   readonly events?: number;
   readonly fetchMs?: number;
+}
+
+interface Probe {
+  readonly outcome: RunOutcome;
+  readonly attempted: readonly RunOutcome[];
+  readonly crawledFrom?: string;
 }
 
 interface CountyRecord {
@@ -90,7 +95,6 @@ const ConnectState = Schema.Struct({
 const CONNECT_TTL_MS = 15 * 60_000;
 const USER_AGENT = "DataDiver/0.1 (public-record research; contact site operator)";
 
-const sources: readonly SourceConfig[] = sourcesConfig;
 const schemaJson = JSON.stringify(schema);
 const classifierJson = JSON.stringify(classifier);
 const columnModelJson = JSON.stringify(columnModel);
@@ -258,81 +262,130 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           };
         }
         if (decision.kind === "discover") {
-          const jurisdiction = decision.jurisdiction
-            .toLowerCase()
-            .replace(/[^a-z0-9_]/g, "_");
+          const jurisdiction = slugId(decision.jurisdiction);
           const runId = `run_${Date.now().toString(36)}`;
           const vetted = decision.candidates.slice(0, 4);
-          const results = yield* Effect.all(
+          const known = yield* Effect.promise(() =>
+            db().source.findMany({
+              where: { id: { in: vetted.map((c) => slugId(c.id)) } },
+              select: { id: true },
+            }),
+          );
+          const preexisting = new Set(known.map((row) => row.id));
+          const probes: readonly Probe[] = yield* Effect.all(
             vetted.map((candidate) =>
               candidate.url.startsWith("https://")
                 ? Effect.gen(function* () {
-                    const id = candidate.id.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+                    const id = slugId(candidate.id);
+                    const attempted: RunOutcome[] = [];
                     const direct = yield* runSource(
                       { id, name: candidate.name, url: candidate.url, jurisdiction },
                       runId,
                     );
-                    if (direct.ok && (direct.records ?? 0) > 0) return direct;
+                    attempted.push(direct);
+                    if (direct.ok && (direct.records ?? 0) > 0) {
+                      return { outcome: direct, attempted } satisfies Probe;
+                    }
                     // The model often names the page a human would land on
                     // rather than the export behind it, so the site is walked
                     // and every page is put to the engine. The best page wins,
                     // and the engine still decides what counts as records.
                     let best: RunOutcome = direct;
                     let bestUrl = "";
+                    let page = 0;
                     yield* crawl(
                       candidate.url,
                       { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT, limiter },
-                      (page) =>
+                      (visited) =>
                         Effect.gen(function* () {
+                          page += 1;
                           const outcome = yield* runSource(
                             {
-                              id: `${id}_p${(best.records ?? 0) + 1}`,
+                              id: `${id}_p${page}`,
                               name: candidate.name,
-                              url: page.url,
+                              url: visited.url,
                               jurisdiction,
                             },
                             runId,
                           );
+                          attempted.push(outcome);
                           if (outcome.ok && (outcome.records ?? 0) > (best.records ?? 0)) {
                             best = outcome;
-                            bestUrl = page.url;
+                            bestUrl = visited.url;
                           }
                           return true;
                         }),
                     );
                     return bestUrl === ""
-                      ? direct
-                      : ({ ...best, sourceId: id, crawledFrom: bestUrl } as RunOutcome & {
-                          readonly crawledFrom?: string;
-                        });
+                      ? ({ outcome: direct, attempted } satisfies Probe)
+                      : ({ outcome: best, attempted, crawledFrom: bestUrl } satisfies Probe);
                   })
                 : Effect.succeed({
-                    sourceId: candidate.id,
-                    ok: false,
-                    stage: "fetch",
-                    error: "only https urls are validated",
-                  } satisfies RunOutcome),
+                    outcome: {
+                      sourceId: slugId(candidate.id),
+                      ok: false,
+                      stage: "fetch",
+                      error: "only https urls are validated",
+                    },
+                    attempted: [],
+                  } satisfies Probe),
             ),
             { concurrency: 2 },
           );
-          const admitted = results.filter((r) => r.ok && (r.records ?? 0) > 0);
-          const lines = results.map((r) =>
-            r.ok
-              ? `✓ ${r.sourceId}: ${r.records ?? 0} records, ` +
-                `${Math.round((r.extractionRate ?? 0) * 100)}% extraction ` +
-                `(classified ${r.classification ?? "unknown"})`
-              : `✗ ${r.sourceId}: failed at ${r.stage}${r.error !== undefined ? ` - ${r.error}` : ""}`,
+          const admitted = probes.filter(
+            (p) => p.outcome.ok && (p.outcome.records ?? 0) > 0,
+          );
+          // Every page the crawl put to the engine left a Source row behind so
+          // its events had somewhere to hang; the ones that yielded nothing
+          // must not join the hourly sweep.
+          const dead = probes
+            .flatMap((p) => p.attempted)
+            .filter((o) => !(o.ok && (o.records ?? 0) > 0))
+            .map((o) => o.sourceId)
+            .filter((id) => !preexisting.has(id));
+          const admission = yield* Effect.tryPromise({
+            try: async () => {
+              const prisma = db();
+              if (admitted.length > 0) {
+                await prisma.source.updateMany({
+                  where: { id: { in: admitted.map((p) => p.outcome.sourceId) } },
+                  data: { enabled: true },
+                });
+              }
+              if (dead.length > 0) {
+                await prisma.source.updateMany({
+                  where: { id: { in: dead } },
+                  data: { enabled: false },
+                });
+              }
+            },
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          const lines = probes.map(({ outcome, crawledFrom }) =>
+            outcome.ok
+              ? `✓ ${outcome.sourceId}: ${outcome.records ?? 0} records, ` +
+                `${Math.round((outcome.extractionRate ?? 0) * 100)}% extraction ` +
+                `(classified ${outcome.classification ?? "unknown"})` +
+                (crawledFrom === undefined ? "" : ` at ${crawledFrom}`)
+              : `✗ ${outcome.sourceId}: failed at ${outcome.stage}` +
+                `${outcome.error !== undefined ? ` - ${outcome.error}` : ""}`,
           );
           const verdictText =
             admitted.length > 0
               ? `\n\nNow scanning ${jurisdiction}. Reply REVIEW to see matches.`
               : `\n\nNo candidate survived engine validation; nothing was added.`;
+          const bookkeeping =
+            admission instanceof Error
+              ? `\n\nThe sources ran but could not be enrolled in the hourly sweep: ${admission.message}`
+              : "";
           return yield* thread.applyScout({
             userText: text,
             reply:
               `${decision.text}\n\n` +
-              `Validated ${results.length} candidate source(s):\n${lines.join("\n")}` +
-              verdictText,
+              `Validated ${probes.length} candidate source(s):\n${lines.join("\n")}` +
+              verdictText +
+              bookkeeping,
             ...(admitted.length > 0 ? { county: jurisdiction } : {}),
           });
         }
@@ -583,21 +636,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const allSources = Effect.gen(function* () {
       const rows = yield* Effect.promise(() =>
-        db().source.findMany({ where: { enabled: true } }),
+        db().source.findMany({ where: { enabled: true }, orderBy: { id: "asc" } }),
       );
-      const byId = new Map<string, SourceConfig>(sources.map((s) => [s.id, s]));
-      for (const row of rows) {
-        if (!byId.has(row.id)) {
-          byId.set(row.id, {
-            id: row.id,
-            name: row.name,
-            url: row.url,
-            jurisdiction: row.jurisdiction,
-            ...(row.asOf === null ? {} : { as_of: row.asOf }),
-          });
-        }
-      }
-      return [...byId.values()];
+      return rows.map(configFromRow);
     });
 
     const runAll = Effect.gen(function* () {
@@ -902,7 +943,68 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (version instanceof Error) {
             return json({ ok: false, error: version.message }, 500);
           }
-          return json({ ok: true, ...version, sources: sources.length });
+          const counted = yield* Effect.tryPromise({
+            try: () => db().source.count({ where: { enabled: true } }),
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (counted instanceof Error) {
+            return json({ ok: false, ...version, error: counted.message }, 500);
+          }
+          return json({ ok: true, ...version, sources: counted });
+        }
+
+        if (url.pathname === "/seed" && request.method === "POST") {
+          const bodyText = yield* request.text;
+          const supplied =
+            bodyText.trim() === ""
+              ? undefined
+              : yield* Effect.try({
+                  try: (): unknown => JSON.parse(bodyText),
+                  catch: (cause): Error =>
+                    cause instanceof Error ? cause : new Error(String(cause)),
+                }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (supplied instanceof Error) {
+            return json({ ok: false, error: `body is not json: ${supplied.message}` }, 400);
+          }
+          const seed = supplied === undefined ? bundledSeed : parseSeed(supplied);
+          if (seed.sources.length === 0) {
+            return json({ ok: false, error: "no usable seed sources", rejected: seed.rejected }, 400);
+          }
+          const planned = yield* Effect.tryPromise({
+            try: async () => {
+              const prisma = db();
+              const existing = await prisma.source.findMany({ select: { id: true } });
+              const plan = planSeed(
+                seed.sources,
+                existing.map((row) => row.id),
+              );
+              if (plan.create.length > 0) {
+                await prisma.source.createMany({
+                  data: plan.create.map((source) => ({
+                    id: source.id,
+                    name: source.name,
+                    url: source.url,
+                    jurisdiction: source.jurisdiction,
+                    asOf: source.as_of ?? null,
+                  })),
+                  skipDuplicates: true,
+                });
+              }
+              return plan;
+            },
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (planned instanceof Error) {
+            return json({ ok: false, error: planned.message }, 500);
+          }
+          return json({
+            ok: true,
+            imported: planned.create.map((source) => source.id),
+            skipped: planned.skipped,
+            rejected: seed.rejected,
+          });
         }
 
         // One county per request. Compiling several in one invocation runs
