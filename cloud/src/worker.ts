@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -58,6 +59,12 @@ import schema from "./engine/config/schema.json";
 import classifier from "./engine/config/source_classifier.json";
 import columnModel from "./engine/config/column_model.json";
 import { bundledSeed } from "./seed.ts";
+import { requestOrigin } from "./origin.ts";
+import {
+  CountyWarmStatus,
+  shouldReuseWarm,
+  type CountyWarmStatus as CountyWarmStatusValue,
+} from "./warming.ts";
 import {
   configFromRow,
   parseSeed,
@@ -891,6 +898,162 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         return Option.some({ payload, records: parsed.records });
       });
 
+    const warmStatusKey = (canonical: string): string =>
+      `warming/${canonical}.json`;
+
+    const readWarmStatus = (canonical: string) =>
+      Effect.gen(function* () {
+        const object = yield* bucket.get(warmStatusKey(canonical));
+        if (object === null) return undefined;
+        return yield* Schema.decodeUnknownEffect(CountyWarmStatus)(
+          JSON.parse(yield* object.text()),
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      }).pipe(Effect.orDie);
+
+    const writeWarmStatus = (status: CountyWarmStatusValue) =>
+      bucket.put(warmStatusKey(status.canonical), JSON.stringify(status)).pipe(
+        Effect.orDie,
+      );
+
+    const CountyWarmWorkflow = Cloudflare.Workflow(
+      "CountyWarmWorkflow",
+      Effect.succeed(
+        Effect.fn(function* (input: { readonly county: string }) {
+          const canonical = yield* resolveJurisdiction(input.county);
+          const stamp = yield* countyStamp(input.county);
+          const event = yield* Cloudflare.Workflows.WorkflowEvent;
+          const requestedAt =
+            (yield* readWarmStatus(canonical))?.requestedAt ??
+            event.timestamp.toISOString();
+          const running: CountyWarmStatusValue = {
+            county: input.county,
+            canonical,
+            stamp,
+            state: "running",
+            instanceId: event.instanceId,
+            requestedAt,
+            updatedAt: new Date().toISOString(),
+          };
+          yield* writeWarmStatus(running);
+
+          const compiled = yield* Effect.exit(
+            Cloudflare.Workflows.task(
+              "compile-county",
+              Effect.gen(function* () {
+                const result = Option.getOrUndefined(
+                  yield* compileCountyPayload(input.county).pipe(Effect.orDie),
+                );
+                if (result === undefined) {
+                  return yield* Effect.die(
+                    new Error(`no events found for ${input.county}`),
+                  );
+                }
+                return { properties: result.records.length };
+              }),
+              {
+                retries: {
+                  limit: 3,
+                  delay: "15 seconds",
+                  backoff: "exponential",
+                },
+                timeout: "10 minutes",
+              },
+            ),
+          );
+
+          if (Exit.isFailure(compiled)) {
+            const error = Cause.pretty(compiled.cause).split("\n")[0] ?? "county compile failed";
+            yield* writeWarmStatus({
+              ...running,
+              state: "error",
+              updatedAt: new Date().toISOString(),
+              error,
+            });
+            return { ok: false, county: input.county, error };
+          }
+
+          yield* writeWarmStatus({
+            ...running,
+            state: "complete",
+            updatedAt: new Date().toISOString(),
+            properties: compiled.value.properties,
+          });
+          return {
+            ok: true,
+            county: input.county,
+            properties: compiled.value.properties,
+          };
+        }),
+      ),
+    );
+    const countyWarmWorkflow = yield* CountyWarmWorkflow;
+
+    const workflowStatus = (instanceId: string) =>
+      countyWarmWorkflow.get(instanceId).pipe(
+        Effect.flatMap((instance) => instance.status()),
+        Effect.map((status) => status.status),
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      );
+
+    const ensureCountyWarm = (county: string) =>
+      Effect.gen(function* () {
+        const canonical = yield* resolveJurisdiction(county);
+        const stamp = yield* countyStamp(county);
+        const existing = yield* readWarmStatus(canonical);
+        if (
+          existing !== undefined &&
+          shouldReuseWarm(existing, stamp, Date.now())
+        ) {
+          const runtime =
+            existing.instanceId === ""
+              ? undefined
+              : yield* workflowStatus(existing.instanceId);
+          if (runtime !== "errored" && runtime !== "terminated") return existing;
+        }
+
+        const now = new Date().toISOString();
+        const queued: CountyWarmStatusValue = {
+          county,
+          canonical,
+          stamp,
+          state: "queued",
+          instanceId: "",
+          requestedAt: now,
+          updatedAt: now,
+        };
+        yield* writeWarmStatus(queued);
+        let createError = "";
+        const instance = yield* countyWarmWorkflow.create({ params: { county } }).pipe(
+          Effect.map((created) => created as { readonly id: string } | undefined),
+          Effect.catchCause((cause) => {
+            createError = Cause.pretty(cause).split("\n")[0] ?? "could not queue county warm";
+            return Effect.succeed(undefined);
+          }),
+        );
+        if (instance === undefined) {
+          const failed: CountyWarmStatusValue = {
+            ...queued,
+            state: "error",
+            updatedAt: new Date().toISOString(),
+            error: createError,
+          };
+          yield* writeWarmStatus(failed);
+          return failed;
+        }
+
+        const current = yield* readWarmStatus(canonical);
+        if (current?.state !== "queued" || current.stamp !== stamp) {
+          return current ?? queued;
+        }
+        const withInstance: CountyWarmStatusValue = {
+          ...current,
+          instanceId: instance.id,
+          updatedAt: new Date().toISOString(),
+        };
+        yield* writeWarmStatus(withInstance);
+        return withInstance;
+      });
+
     /// True when the county can be answered from R2 without compiling.
     ///
     /// Compiling inline is not merely slow: a cold Norfolk burned about three
@@ -967,15 +1130,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           return rows[0]?.jurisdiction ?? "";
         });
         if (busiest !== "") {
-          const started = Date.now();
-          const compiled = yield* compileCountyPayload(busiest).pipe(
-            Effect.catch(() => Effect.succeed(Option.none<never>())),
-          );
-          yield* Effect.log(
-            Option.isSome(compiled)
-              ? `cron warmed ${busiest} in ${Date.now() - started}ms`
-              : `cron could not warm ${busiest}`,
-          );
+          const warming = yield* ensureCountyWarm(busiest);
+          yield* Effect.log(`cron ${warming.state} county warm for ${busiest}`);
         }
       }),
     );
@@ -983,10 +1139,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const handleFetch = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const url = new URL(request.url, "http://worker");
-        // request.url arrives relative, so url.origin is the placeholder base
-        // and every link built from it pointed at "http://worker". The Host
-        // header is the only thing that knows where this worker actually is.
-        const origin = publicOrigin === "" ? url.origin : publicOrigin;
+        const origin = requestOrigin(request.url, request.headers, publicOrigin);
 
         if (url.pathname === "/health") {
           const version = yield* Effect.tryPromise({
@@ -1064,9 +1217,25 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
         }
 
-        // One county per request. Compiling several in one invocation runs
-        // past the Worker CPU ceiling and the whole call dies with a 1102,
-        // warming nothing.
+        if (url.pathname === "/warm/status") {
+          const asked = url.searchParams.get("county") ?? "";
+          if (asked === "") return json({ ok: false, error: "county is required" }, 400);
+          const canonical = yield* resolveJurisdiction(asked);
+          const status = yield* readWarmStatus(canonical);
+          if (status === undefined) {
+            return json({ ok: true, county: asked, state: "idle" });
+          }
+          const runtime =
+            status.instanceId === ""
+              ? undefined
+              : yield* workflowStatus(status.instanceId);
+          return json({
+            ok: status.state !== "error" && runtime !== "errored",
+            ...status,
+            ...(runtime === undefined ? {} : { workflowState: runtime }),
+          });
+        }
+
         if (url.pathname === "/warm" && request.method === "POST") {
           const asked = url.searchParams.get("county") ?? "";
           const target = yield* asked !== ""
@@ -1081,15 +1250,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 return rows[0]?.jurisdiction ?? "";
               });
           if (target === "") return json({ ok: false, error: "no county to warm" }, 404);
-          const started = Date.now();
-          const compiled = yield* compileCountyPayload(target);
-          const got = Option.getOrUndefined(compiled);
+          const status = yield* ensureCountyWarm(target);
           return json({
-            ok: got !== undefined,
-            county: target,
-            ms: Date.now() - started,
-            properties: got?.records.length ?? 0,
-          });
+            ok: status.state !== "error",
+            ...status,
+          }, status.state === "error" ? 503 : 202);
         }
 
         if (url.pathname === "/run" && request.method === "POST") {
@@ -1313,21 +1478,26 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
           const county = (yield* threads.getByName(phone).snapshot()).county;
           if (!(yield* countyIsWarm(county))) {
-            // Deliberately not compiled here. A cold county burns minutes of
-            // CPU and the request is killed with a Cloudflare 1101, so the
-            // texter gets nothing at all. The cron warms the busiest county
-            // hourly and POST /warm?county= primes any other on demand.
+            const warming = yield* ensureCountyWarm(county);
             const reply =
-              `Collecting information on ${county.replace(/_/g, " ")} now - reading the ` +
-              `county's records and working out the signals for every property.\n\n` +
-              `This is the slow part and it only happens when the data is new. ` +
-              `Text me again in a minute and I will have your matches.`;
+              warming.state === "error"
+                ? `I could not prepare ${county.replace(/_/g, " ")} right now. ` +
+                  `Nothing was guessed or partially scanned. Please try again shortly.`
+                : `Collecting information on ${county.replace(/_/g, " ")} now - reading the ` +
+                  `county's records and working out the signals for every property.\n\n` +
+                  `The durable job is ${warming.state}; it will retry automatically if ` +
+                  `anything interrupts it. Text me again in a few minutes.`;
             yield* Effect.tryPromise({
               try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
               catch: (cause): Error =>
                 cause instanceof Error ? cause : new Error(String(cause)),
             }).pipe(Effect.catch(() => Effect.void));
-            return json({ ok: true, phone, reply, warming: true });
+            return json({
+              ok: warming.state !== "error",
+              phone,
+              reply,
+              warming: warming.state,
+            });
           }
           let input: HandleMessageInput = {
             text,
