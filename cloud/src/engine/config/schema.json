@@ -1,5 +1,5 @@
 {
-  "comment": "The canonical schema: the labels the engine fills. Fields are configuration, not code. kind picks the validator (id, name, address, money, date, status, text); role ties a field to engine behaviour (parcel, address, owner, status, event_date, fallback_date, amount); identity fields let records resolve to properties. Synonyms are the dialect lexicon that label matching scores against. Field order is display order.",
+  "comment": "The canonical schema: the labels the engine fills. Fields are configuration, not code. kind picks the validator (id, name, address, money, date, status, text); role ties a field to engine behaviour (parcel, address, owner, status, event_date, fallback_date, amount); identity fields let records resolve to properties. Synonyms are the dialect lexicon that label matching scores against. authority names the classifier label whose sources win conflict resolution for that field. Field order is display order.",
   "fields": [
     {
       "name": "parcel_id",
@@ -56,6 +56,7 @@
       "kind": "name",
       "role": "owner",
       "identity": true,
+      "authority": "deed_transfer",
       "synonyms": [
         "owner",
         "owner name",
@@ -131,6 +132,7 @@
       "name": "amount_due",
       "kind": "money",
       "role": "amount",
+      "authority": "tax_delinquency",
       "synonyms": [
         "amount due",
         "amount owed",
@@ -151,6 +153,7 @@
       "name": "assessed_value",
       "kind": "money",
       "role": "amount",
+      "authority": "assessor_roll",
       "synonyms": [
         "assessed value",
         "assessment",
@@ -166,6 +169,7 @@
       "name": "sale_price",
       "kind": "money",
       "role": "amount",
+      "authority": "deed_transfer",
       "synonyms": [
         "sale price",
         "consideration",
@@ -210,6 +214,7 @@
       "name": "auction_date",
       "kind": "date",
       "role": "fallback_date",
+      "authority": "trustee_auction",
       "synonyms": [
         "auction date",
         "sale date",
@@ -224,6 +229,7 @@
     {
       "name": "case_number",
       "kind": "id",
+      "authority": "foreclosure_filing",
       "synonyms": [
         "case number",
         "case no",
