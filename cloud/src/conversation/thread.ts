@@ -591,12 +591,16 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             );
           }
           const match = evaluated.match;
+          const basis =
+            pending.kind === "remember_filter"
+              ? `the one-off filter, not your saved criteria v${tree.version}`
+              : `criteria v${tree.version}`;
           const explanation =
             `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
             `${contactSummary(match)}\n\n` +
             `${worthSummary(match)}\n\n` +
             `${linkBlock(match.address, match.propertyKey.split("|")[0] ?? "")}\n\n` +
-            `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
+            `Why it matched (${basis}):\n${explainTrace(evaluated.trace)}`;
           const codexConnected =
             input.codexAccount !== undefined && input.codexAccount !== "";
           if (codexConnected) {

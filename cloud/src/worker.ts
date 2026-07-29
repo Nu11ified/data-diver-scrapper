@@ -335,9 +335,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const admitted = probes.filter(
             (p) => p.outcome.ok && (p.outcome.records ?? 0) > 0,
           );
-          // Every page the crawl put to the engine left a Source row behind so
-          // its events had somewhere to hang; the ones that yielded nothing
-          // must not join the hourly sweep.
+          // Every page the crawl probed left a Source row behind to hang events on.
           const dead = probes
             .flatMap((p) => p.attempted)
             .filter((o) => !(o.ok && (o.records ?? 0) > 0))
@@ -892,12 +890,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       Effect.gen(function* () {
         const outcomes = yield* runAll;
         const failed = outcomes.filter((o) => !o.ok);
-        yield* Effect.log(
-          `cron sweep: ${outcomes.length - failed.length}/${outcomes.length} ok` +
-            (failed.length > 0
-              ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
-              : ""),
-        );
+        yield* outcomes.length === 0
+          ? Effect.logError("cron sweep: no enabled sources; POST /seed to import the bundled list")
+          : Effect.log(
+              `cron sweep: ${outcomes.length - failed.length}/${outcomes.length} ok` +
+                (failed.length > 0
+                  ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
+                  : ""),
+            );
 
         // The sweep just changed every county's event stamp, so the caches it
         // invalidated are rebuilt here rather than by whoever texts first. A
@@ -1037,6 +1037,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
         if (url.pathname === "/run" && request.method === "POST") {
           const outcomes = yield* runAll;
+          if (outcomes.length === 0) {
+            return json(
+              { ok: false, error: "no enabled sources; POST /seed to import the bundled list", outcomes },
+              503,
+            );
+          }
           return json({ ok: outcomes.every((o) => o.ok), outcomes });
         }
 

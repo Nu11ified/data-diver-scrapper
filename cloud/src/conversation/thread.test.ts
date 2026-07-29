@@ -117,6 +117,37 @@ describe("previewFilter", () => {
     expect(preview.evaluations).toEqual([]);
   });
 
+  test("drilling into an overlay match credits the overlay, not the saved version", async () => {
+    const storage = memoryStorage();
+    const { thread, baseline } = await previewBusinessOnly(storage);
+
+    const drill = await run(thread.handleMessage({ text: "1", candidates: CANDIDATES }));
+
+    expect(drill.reply).toContain("22 Commerce Way");
+    expect(drill.reply).toContain("use code 2");
+    expect(drill.reply).toContain(
+      `Why it matched (the one-off filter, not your saved criteria v${baseline.version}):`,
+    );
+    expect(drill.reply).not.toContain(`Why it matched (criteria v${baseline.version})`);
+    expect(drill.evaluations).toEqual([]);
+
+    const after = await storedTree(storage);
+    expect(after.version).toBe(baseline.version);
+    expect(after.graph).toEqual(baseline.graph);
+  });
+
+  test("drilling into a saved-criteria match still credits the saved version", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    await run(thread.handleMessage({ text: "review", candidates: CANDIDATES }));
+    const baseline = await storedTree(storage);
+
+    const drill = await run(thread.handleMessage({ text: "1", candidates: CANDIDATES }));
+
+    expect(drill.reply).toContain(`Why it matched (criteria v${baseline.version}):`);
+    expect(drill.reply).not.toContain("one-off filter");
+  });
+
   test("refuses a graph that fails validation and changes nothing", async () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
