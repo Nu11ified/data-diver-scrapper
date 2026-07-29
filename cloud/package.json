@@ -3,6 +3,12 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "prisma migrate deploy",
+    "dev": "bun run generate && alchemy dev",
+    "deploy": "bun run generate && bun run migrate && alchemy deploy"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "prisma": "^7.9.1"

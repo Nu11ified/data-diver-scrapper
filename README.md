@@ -46,8 +46,9 @@ For the cloud service:
 ```
 cd cloud
 bun install
-bun alchemy dev      # local workerd on http://localhost:1337
-bun alchemy deploy   # provision R2, the worker and its cron
+bun run generate   # prisma client into src/generated (needed before anything builds)
+bun run dev        # local workerd on http://localhost:1337
+bun run deploy     # prisma migrate deploy, then provision R2, the worker and its cron
 ```
 
 ## The demo, in order
@@ -71,7 +72,7 @@ export norfolk       # the compiled county as canonical JSON with per-field
 fresh                # how current each source's records are, not just whether
                      # the fetch succeeded
 bench                # score vs the hand-verified answer key:
-                     # 15/16 classification, 0.95 mapping F1, ~7 ms/document
+                     # 15/16 classification, 0.91 mapping F1, ~7 ms/document
 catalog              # discover county sources nationwide (140 datasets across
                      # 96 jurisdictions); 'catalog add' adds them as sources
 model                # both models' status
@@ -180,7 +181,7 @@ key per credential, wrapped with AES-KW under a worker-held master key —
 before they reach the credentials table. `GET /connect/status` proves a
 stored credential is alive by refreshing it and re-sealing the result.
 
-With an account connected the scout gains a Codex brain: free-text
+With an account connected the assistant gains a Codex brain: free-text
 messages carry the measured signal catalog, the live tree and real scan
 counts into the model, which answers under a strict JSON contract — a
 reply, a validated tree proposal, or a county discovery request.
@@ -219,7 +220,7 @@ repair, auto-accepted only above 75% confidence with the baseline recovered.
    key written by reading the raw columns - it records the engine's own
    mistakes. Wrong mappings on required fields count double (false positive
    and false negative); incomplete runs fail. Currently 15/16 classification,
-   0.95 F1, ~7 ms per document, $0 marginal cost.
+   0.91 F1, ~7 ms per document, $0 marginal cost.
 
 An LLM API could attempt the same mapping; this engine does it
 deterministically, explainably, offline, in milliseconds, at zero marginal
