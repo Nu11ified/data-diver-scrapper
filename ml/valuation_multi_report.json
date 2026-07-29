@@ -1,0 +1,32 @@
+{
+  "counties": 24,
+  "held_out_counties": [
+    "Harford County",
+    "St. Mary's County",
+    "Talbot County"
+  ],
+  "train_sales": 7395,
+  "test_sales": 265,
+  "baseline_mdape": 0.8303030133247375,
+  "model_mdape": 0.29534247517585754,
+  "within_10pct": 0.14339622641509434,
+  "baseline_within_10pct": 0.06037735849056604,
+  "per_county": {
+    "Harford County": {
+      "sales": 75,
+      "assessor_mdape": 1.0138888359069824,
+      "model_mdape": 0.30729493498802185
+    },
+    "St. Mary's County": {
+      "sales": 140,
+      "assessor_mdape": 0.833142876625061,
+      "model_mdape": 0.28349044919013977
+    },
+    "Talbot County": {
+      "sales": 50,
+      "assessor_mdape": 0.6700365543365479,
+      "model_mdape": 0.3202705383300781
+    }
+  },
+  "best_epoch": 9
+}
