@@ -23,6 +23,22 @@ bool get_bool(const json::Value& v, const char* key, bool fallback = false) {
     return member == nullptr ? fallback : member->as_bool(fallback);
 }
 
+std::map<std::string, std::string> get_string_map(const json::Value& v, const char* key) {
+    std::map<std::string, std::string> out;
+    const json::Value* member = v.find(key);
+    if (member == nullptr || !member->is_object()) return out;
+    for (const auto& [name, value] : member->members()) out[name] = value.as_string();
+    return out;
+}
+
+void write_string_map(json::Writer& w, const char* key,
+                      const std::map<std::string, std::string>& values) {
+    w.key(key);
+    w.begin_object();
+    for (const auto& [name, value] : values) w.field(name, value);
+    w.end_object();
+}
+
 std::string unique_id(std::string_view basis) {
     return str::hex64(str::hash64(std::string{basis} + "|" + timeutil::iso_now() + "|" +
                                   std::to_string(timeutil::unix_now())));
@@ -58,6 +74,8 @@ std::string RunRecord::serialize() const {
     w.field("repair_attempted", repair_attempted);
     w.field("repair_accepted", repair_accepted);
     w.field("structure_fingerprint", structure_fingerprint);
+    w.field("fetch_mode", fetch_mode);
+    w.field("truncated", truncated);
     w.field("rss_bytes", rss_bytes);
     w.field("cpu_ms", cpu_ms);
     w.end_object();
@@ -92,6 +110,8 @@ RunRecord RunRecord::deserialize(const std::string& text) {
     r.repair_attempted = get_bool(v, "repair_attempted");
     r.repair_accepted = get_bool(v, "repair_accepted");
     r.structure_fingerprint = get_string(v, "structure_fingerprint");
+    r.fetch_mode = get_string(v, "fetch_mode");
+    r.truncated = get_bool(v, "truncated");
     r.rss_bytes = static_cast<std::int64_t>(get_number(v, "rss_bytes"));
     r.cpu_ms = get_number(v, "cpu_ms");
     if (r.id.empty() || r.source_id.empty()) throw Error("store: run record missing id");
@@ -171,6 +191,9 @@ void Store::load() {
             s.enabled = get_bool(entry, "enabled", true);
             s.seed_from = get_string(entry, "seed_from");
             s.as_of = get_string(entry, "as_of");
+            s.headers = get_string_map(entry, "headers");
+            s.method = get_string(entry, "method");
+            s.body = get_string(entry, "body");
             if (!s.id.empty() && !s.url.empty()) sources_.push_back(std::move(s));
         }
     }
@@ -242,6 +265,9 @@ void Store::persist_sources_locked() {
         w.field("enabled", s.enabled);
         w.field("seed_from", s.seed_from);
         w.field("as_of", s.as_of);
+        write_string_map(w, "headers", s.headers);
+        w.field("method", s.method);
+        w.field("body", s.body);
         w.end_object();
     }
     w.end_array();
@@ -261,6 +287,9 @@ void Store::seed(const std::string& seeds_path) {
         s.jurisdiction = get_string(entry, "jurisdiction");
         s.seed_from = get_string(entry, "seed_from");
         s.as_of = get_string(entry, "as_of");
+        s.headers = get_string_map(entry, "headers");
+        s.method = get_string(entry, "method");
+        s.body = get_string(entry, "body");
         s.added_at = timeutil::iso_now();
         if (s.id.empty() || s.url.empty()) continue;
         const bool present = std::any_of(sources_.begin(), sources_.end(),
@@ -326,6 +355,9 @@ Source Store::update_source(const std::string& id, const SourceUpdate& update) {
         }
         if (update.jurisdiction.has_value()) s.jurisdiction = str::trim(*update.jurisdiction);
         if (update.enabled.has_value()) s.enabled = *update.enabled;
+        if (update.headers.has_value()) s.headers = *update.headers;
+        if (update.method.has_value()) s.method = *update.method;
+        if (update.body.has_value()) s.body = *update.body;
         persist_sources_locked();
         return s;
     }

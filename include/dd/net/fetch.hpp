@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace dd::fetch {
 struct Options {
@@ -9,6 +11,9 @@ struct Options {
     long max_redirects = 5;
     std::int64_t max_body_bytes = 32 * 1024 * 1024;
     std::string user_agent = "DataDiver/0.1 (public-record research; contact site operator)";
+    std::map<std::string, std::string> headers;
+    std::string method; // empty means GET
+    std::string body;   // sent as the request body for POST and other non-GET methods
 };
 
 struct Result {
@@ -23,6 +28,11 @@ struct Result {
     std::string error;         // set when !ok
     std::string fetched_at;    // ISO 8601 UTC
 };
+
+// "name: value" lines for an http(s) request to url: options.headers plus, when
+// DD_SOCRATA_APP_TOKEN is set and url contains "/resource/" and no caller header
+// already names X-App-Token, an X-App-Token line built from the env var.
+std::vector<std::string> request_headers(const std::string& url, const Options& options);
 
 Result get(const std::string& url, const Options& options = {});
 

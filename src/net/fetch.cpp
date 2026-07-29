@@ -21,6 +21,19 @@ std::string local_path(const std::string& url) {
     return url;
 }
 
+std::string socrata_app_token() {
+    const char* token = std::getenv("DD_SOCRATA_APP_TOKEN");
+    return token == nullptr ? std::string{} : std::string{token};
+}
+
+bool has_header_named(const Options& options, std::string_view name) {
+    const std::string lowered_name = str::to_lower(name);
+    for (const auto& entry : options.headers) {
+        if (str::to_lower(entry.first) == lowered_name) return true;
+    }
+    return false;
+}
+
 Result fetch_local(const std::string& url, const Options& options) {
     Result r;
     r.url = url;
@@ -92,6 +105,25 @@ Result fetch_http(const std::string& url, const Options& options) {
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // ask for gzip and let curl inflate
 
+    struct curl_slist* header_list = nullptr;
+    for (const std::string& line : request_headers(url, options)) {
+        header_list = curl_slist_append(header_list, line.c_str());
+    }
+    if (header_list != nullptr) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+
+    const std::string method = str::to_upper(options.method);
+    if (method == "POST") {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, options.body.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(options.body.size()));
+    } else if (!method.empty() && method != "GET") {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, options.method.c_str());
+        if (!options.body.empty()) {
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, options.body.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(options.body.size()));
+        }
+    }
+
     const Stopwatch watch;
     const CURLcode rc = curl_easy_perform(curl);
     r.total_ms = watch.elapsed_ms();
@@ -115,6 +147,7 @@ Result fetch_http(const std::string& url, const Options& options) {
     } else {
         r.error = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(rc);
     }
+    if (header_list != nullptr) curl_slist_free_all(header_list);
     curl_easy_cleanup(curl);
     return r;
 }
@@ -133,6 +166,16 @@ bool http_supported() {
 #else
     return false;
 #endif
+}
+
+std::vector<std::string> request_headers(const std::string& url, const Options& options) {
+    std::vector<std::string> lines;
+    for (const auto& [name, value] : options.headers) lines.push_back(name + ": " + value);
+    if (!has_header_named(options, "X-App-Token") && str::contains(url, "/resource/")) {
+        const std::string token = socrata_app_token();
+        if (!token.empty()) lines.push_back("X-App-Token: " + token);
+    }
+    return lines;
 }
 
 Result fetch_rendered(const std::string& url, const Options& options) {

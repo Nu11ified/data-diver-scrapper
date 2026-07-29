@@ -20,6 +20,9 @@ struct Source {
     bool enabled = true;
     std::string as_of;
     std::string seed_from;
+    std::map<std::string, std::string> headers;
+    std::string method; // empty means GET
+    std::string body;
 };
 
 struct SourceState {
@@ -39,6 +42,9 @@ struct SourceUpdate {
     std::optional<std::string> url;
     std::optional<std::string> jurisdiction;
     std::optional<bool> enabled;
+    std::optional<std::map<std::string, std::string>> headers;
+    std::optional<std::string> method;
+    std::optional<std::string> body;
 };
 
 struct CachedFetch {
@@ -76,6 +82,9 @@ struct RunRecord {
     bool repair_attempted = false;
     bool repair_accepted = false;
     std::string structure_fingerprint;
+
+    std::string fetch_mode; // api/html/rendered/document, from fetch::get_auto
+    bool truncated = false; // Socrata pagination hit the record cap before a short page
 
     std::int64_t rss_bytes = 0;
     double cpu_ms = 0.0;

@@ -1,6 +1,7 @@
 #include "dd/engine/pipeline.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <set>
 #include <thread>
 
@@ -226,6 +227,90 @@ std::string expand_url_template(const store::Source& source, store::Store& store
     return url;
 }
 
+bool is_socrata_resource_url(const std::string& url) {
+    return str::contains(url, "/resource/");
+}
+
+namespace {
+constexpr std::int64_t kSocrataDefaultLimit = 1000;
+constexpr std::int64_t kSocrataRecordCap = 5000;
+
+std::int64_t socrata_url_limit(const std::string& url) {
+    const std::size_t at = url.find("$limit=");
+    if (at == std::string::npos) return kSocrataDefaultLimit;
+    std::size_t start = at + 7;
+    std::size_t end = start;
+    while (end < url.size() && std::isdigit(static_cast<unsigned char>(url[end])) != 0) ++end;
+    if (end == start) return kSocrataDefaultLimit;
+    const std::int64_t limit = std::stoll(url.substr(start, end - start));
+    return limit > 0 ? limit : kSocrataDefaultLimit;
+}
+
+std::string socrata_url_with_offset(const std::string& url, std::int64_t offset) {
+    return url + (str::contains(url, "?") ? "&" : "?") + "$offset=" + std::to_string(offset);
+}
+} // namespace
+
+SocrataFetch fetch_socrata_pages(const std::string& url,
+                                 const std::function<SocrataPage(const std::string&)>& fetch_page) {
+    const std::int64_t limit = socrata_url_limit(url);
+    SocrataFetch out;
+    std::vector<std::string> labels;
+    bool have_model = false;
+    std::int64_t offset = 0;
+    for (bool first = true;; first = false) {
+        const SocrataPage page = fetch_page(socrata_url_with_offset(url, offset));
+        if (first) {
+            out.http_status = page.http_status;
+            out.mode = page.mode;
+            out.first_page_content_type = page.content_type;
+            out.first_page_body = page.body;
+        }
+        out.bytes += page.bytes;
+        out.fetch_ms += page.fetch_ms;
+        if (!page.ok) {
+            if (first) {
+                out.error = page.error;
+                return out;
+            }
+            break; // a later page failed: keep the pages already gathered
+        }
+
+        doc::Model page_model;
+        try {
+            page_model = doc::build_auto(page.content_type, page.body);
+        } catch (const Error&) {
+            break; // an unparseable later page: keep the pages already gathered
+        }
+
+        if (!have_model) {
+            out.model = page_model;
+            labels = page_model.labels;
+            have_model = true;
+        } else if (page_model.labels != labels) {
+            break; // schema drift mid-fetch, not more data: stop here
+        } else {
+            for (doc::RawRecord& record : page_model.records) {
+                out.model.records.push_back(std::move(record));
+            }
+        }
+
+        const std::int64_t page_records = static_cast<std::int64_t>(page_model.records.size());
+        const std::int64_t total = static_cast<std::int64_t>(out.model.records.size());
+        if (total >= kSocrataRecordCap) {
+            if (total > kSocrataRecordCap) {
+                out.model.records.resize(static_cast<std::size_t>(kSocrataRecordCap));
+            }
+            out.truncated = true;
+            break;
+        }
+        if (page_records < limit) break; // short page: no more data
+        offset += limit;
+    }
+    out.ok = true;
+    return out;
+}
+
 std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Source>& sources,
                                                     int threads) {
     std::vector<store::RunRecord> out(sources.size());
@@ -264,6 +349,29 @@ std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Sou
     return out;
 }
 
+namespace {
+fetch::Options source_fetch_options(const store::Source& source) {
+    fetch::Options options;
+    options.headers = source.headers;
+    options.method = source.method;
+    options.body = source.body;
+    return options;
+}
+
+SocrataPage to_socrata_page(const fetch::Fetched& fetched) {
+    SocrataPage page;
+    page.ok = fetched.result.ok;
+    page.error = fetched.result.error;
+    page.http_status = fetched.result.http_status;
+    page.content_type = fetched.result.content_type;
+    page.body = fetched.result.body;
+    page.bytes = fetched.result.bytes;
+    page.fetch_ms = fetched.result.total_ms;
+    page.mode = fetched.mode;
+    return page;
+}
+} // namespace
+
 store::RunRecord Pipeline::run_source(const store::Source& source) {
     const Stopwatch total_watch;
     const double cpu_before = metrics::cpu_time_ms();
@@ -273,38 +381,51 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     run.source_id = source.id;
     run.started_at = timeutil::iso_now();
 
+    auto fail_fetch = [&](const std::string& error) {
+        run.ok = false;
+        run.stage = "fetch";
+        run.error = error;
+        run.total_ms = total_watch.elapsed_ms();
+        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
+        run.rss_bytes = metrics::current_rss_bytes();
+        store_.record_run(run);
+        return run;
+    };
+
     std::string url;
     try {
         url = order_by_learned_date(expand_url_template(source, store_), registry_,
                                     store_.source_state(source.id));
     } catch (const Error& e) {
-        run.ok = false;
-        run.stage = "fetch";
-        run.error = e.what();
-        run.total_ms = total_watch.elapsed_ms();
-        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
-        run.rss_bytes = metrics::current_rss_bytes();
-        store_.record_run(run);
-        return run;
+        return fail_fetch(e.what());
     }
-    const fetch::Result fetched = fetch::get(url);
-    run.http_status = fetched.http_status;
-    run.bytes = fetched.bytes;
-    run.fetch_ms = fetched.total_ms;
-    if (!fetched.ok) {
-        run.ok = false;
-        run.stage = "fetch";
-        run.error = fetched.error;
-        run.total_ms = total_watch.elapsed_ms();
-        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
-        run.rss_bytes = metrics::current_rss_bytes();
-        store_.record_run(run);
-        return run;
-    }
-    store_.save_fetch_cache(source.id, fetched.content_type, fetched.body);
 
-    return ingest(source, std::move(run), total_watch, cpu_before, fetched.content_type,
-                  fetched.body);
+    const fetch::Options options = source_fetch_options(source);
+
+    if (is_socrata_resource_url(url)) {
+        const SocrataFetch paged = fetch_socrata_pages(url, [&](const std::string& page_url) {
+            return to_socrata_page(fetch::get_auto(page_url, options));
+        });
+        run.http_status = paged.http_status;
+        run.bytes = paged.bytes;
+        run.fetch_ms = paged.fetch_ms;
+        run.fetch_mode = std::string{fetch::mode_name(paged.mode)};
+        run.truncated = paged.truncated;
+        if (!paged.ok) return fail_fetch(paged.error);
+        store_.save_fetch_cache(source.id, paged.first_page_content_type, paged.first_page_body);
+        return ingest_model(source, std::move(run), total_watch, cpu_before, paged.model);
+    }
+
+    const fetch::Fetched fetched = fetch::get_auto(url, options);
+    run.http_status = fetched.result.http_status;
+    run.bytes = fetched.result.bytes;
+    run.fetch_ms = fetched.result.total_ms;
+    run.fetch_mode = std::string{fetch::mode_name(fetched.mode)};
+    if (!fetched.result.ok) return fail_fetch(fetched.result.error);
+    store_.save_fetch_cache(source.id, fetched.result.content_type, fetched.result.body);
+
+    return ingest(source, std::move(run), total_watch, cpu_before, fetched.result.content_type,
+                  fetched.result.body);
 }
 
 store::RunRecord Pipeline::run_cached(const store::Source& source) {
@@ -329,6 +450,28 @@ store::RunRecord Pipeline::run_cached(const store::Source& source) {
 store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord run,
                                   const Stopwatch& total_watch, double cpu_before,
                                   const std::string& content_type, const std::string& body) {
+    const Stopwatch parse_watch;
+    doc::Model model;
+    try {
+        model = doc::build_auto(content_type, body);
+    } catch (const Error& e) {
+        run.parse_ms = parse_watch.elapsed_ms();
+        run.ok = false;
+        run.stage = "parse";
+        run.error = e.what();
+        run.total_ms = total_watch.elapsed_ms();
+        run.cpu_ms = metrics::cpu_time_ms() - cpu_before;
+        run.rss_bytes = metrics::current_rss_bytes();
+        store_.record_run(run);
+        return run;
+    }
+    run.parse_ms = parse_watch.elapsed_ms();
+    return ingest_model(source, std::move(run), total_watch, cpu_before, std::move(model));
+}
+
+store::RunRecord Pipeline::ingest_model(const store::Source& source, store::RunRecord run,
+                                        const Stopwatch& total_watch, double cpu_before,
+                                        doc::Model model) {
     auto finish = [&](bool ok, const std::string& stage, const std::string& error) {
         run.ok = ok;
         run.stage = stage;
@@ -340,15 +483,6 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
         return run;
     };
 
-    const Stopwatch parse_watch;
-    doc::Model model;
-    try {
-        model = doc::build_auto(content_type, body);
-    } catch (const Error& e) {
-        run.parse_ms = parse_watch.elapsed_ms();
-        return finish(false, "parse", e.what());
-    }
-    run.parse_ms = parse_watch.elapsed_ms();
     run.format = std::string{doc::format_name(model.format)};
     run.structure_fingerprint = model.structure_fingerprint();
     run.records_extracted = static_cast<std::int64_t>(model.records.size());

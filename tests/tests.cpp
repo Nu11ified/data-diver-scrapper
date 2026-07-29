@@ -1731,6 +1731,185 @@ TEST(store_update_and_remove_source) {
     CHECK_THROWS(store.remove_source(s.id));
 }
 
+TEST(store_source_request_shape_round_trips) {
+    const std::string root = fresh_dir("store_request_shape");
+    dd::store::Store store{root};
+    const dd::store::Source plain =
+        store.add_source("Plain", "https://example.org/resource/abcd.json", "Test");
+    CHECK(plain.headers.empty());
+    CHECK(plain.method.empty());
+    CHECK(plain.body.empty());
+
+    dd::store::SourceUpdate update;
+    update.headers = std::map<std::string, std::string>{
+        {"Authorization", "Bearer secret"}, {"X-Custom", "1"}};
+    update.method = "POST";
+    update.body = R"({"query": "select *"})";
+    const dd::store::Source updated = store.update_source(plain.id, update);
+    CHECK_EQ(updated.headers.size(), std::size_t{2});
+    CHECK_EQ(updated.headers.at("Authorization"), "Bearer secret");
+    CHECK_EQ(updated.method, "POST");
+    CHECK_EQ(updated.body, R"({"query": "select *"})");
+
+    dd::store::Store reopened{root};
+    const dd::store::Source reloaded = *reopened.find_source(plain.id);
+    CHECK_EQ(reloaded.headers.size(), std::size_t{2});
+    CHECK_EQ(reloaded.headers.at("X-Custom"), "1");
+    CHECK_EQ(reloaded.method, "POST");
+    CHECK_EQ(reloaded.body, R"({"query": "select *"})");
+}
+
+TEST(store_seed_reads_request_shape_from_sources_json) {
+    const std::string root = fresh_dir("store_seed_request_shape");
+    const std::string seeds = root + "/seeds.json";
+    dd::fileio::write_file_atomic(seeds, R"([{
+        "id": "shaped",
+        "name": "Shaped Source",
+        "url": "https://example.org/resource/xyz.json",
+        "jurisdiction": "Test",
+        "headers": {"X-Api-Key": "abc"},
+        "method": "POST",
+        "body": "select 1"
+    }])");
+    dd::store::Store store{root};
+    store.seed(seeds);
+    const dd::store::Source shaped = *store.find_source("shaped");
+    CHECK_EQ(shaped.headers.size(), std::size_t{1});
+    CHECK_EQ(shaped.headers.at("X-Api-Key"), "abc");
+    CHECK_EQ(shaped.method, "POST");
+    CHECK_EQ(shaped.body, "select 1");
+}
+
+TEST(fetch_app_token_header_only_for_resource_urls_when_env_set) {
+    unsetenv("DD_SOCRATA_APP_TOKEN");
+    const dd::fetch::Options options;
+    CHECK(dd::fetch::request_headers("https://example.org/resource/abcd.json", options).empty());
+
+    setenv("DD_SOCRATA_APP_TOKEN", "shh-token", 1);
+    const std::vector<std::string> resource_headers =
+        dd::fetch::request_headers("https://example.org/resource/abcd.json", options);
+    CHECK_EQ(resource_headers.size(), std::size_t{1});
+    CHECK_EQ(resource_headers[0], "X-App-Token: shh-token");
+
+    const std::vector<std::string> non_resource_headers =
+        dd::fetch::request_headers("https://example.org/report.json", options);
+    CHECK(non_resource_headers.empty());
+
+    dd::fetch::Options with_own_token;
+    with_own_token.headers["X-App-Token"] = "caller-supplied";
+    const std::vector<std::string> not_duplicated =
+        dd::fetch::request_headers("https://example.org/resource/abcd.json", with_own_token);
+    CHECK_EQ(not_duplicated.size(), std::size_t{1});
+    CHECK_EQ(not_duplicated[0], "X-App-Token: caller-supplied");
+
+    unsetenv("DD_SOCRATA_APP_TOKEN");
+}
+
+TEST(pipeline_socrata_pagination_assembles_pages) {
+    const auto page_body = [](int start, int count) {
+        std::string body = "[";
+        for (int i = 0; i < count; ++i) {
+            if (i > 0) body += ",";
+            body += "{\"id\": \"" + std::to_string(start + i) + "\"}";
+        }
+        body += "]";
+        return body;
+    };
+
+    std::vector<std::string> requested_urls;
+    const auto fetch_page = [&](const std::string& url) {
+        requested_urls.push_back(url);
+        dd::pipeline::SocrataPage page;
+        page.ok = true;
+        page.http_status = 200;
+        page.content_type = "application/json";
+        page.bytes = 10;
+        page.fetch_ms = 1.0;
+        page.mode = dd::fetch::Mode::Api;
+        if (url.find("$offset=0") != std::string::npos) {
+            page.body = page_body(0, 2);
+        } else if (url.find("$offset=2") != std::string::npos) {
+            page.body = page_body(2, 1); // short page: fewer than $limit=2
+        } else {
+            page.ok = false;
+            page.error = "unexpected offset";
+        }
+        return page;
+    };
+
+    const dd::pipeline::SocrataFetch out =
+        dd::pipeline::fetch_socrata_pages("https://x.test/resource/abcd.json?$limit=2", fetch_page);
+    CHECK(out.ok);
+    CHECK(!out.truncated);
+    CHECK_EQ(out.model.records.size(), std::size_t{3});
+    CHECK_EQ(out.bytes, std::int64_t{20});
+    CHECK_EQ(requested_urls.size(), std::size_t{2});
+    CHECK(dd::str::contains(requested_urls[0], "$offset=0"));
+    CHECK(dd::str::contains(requested_urls[1], "$offset=2"));
+}
+
+TEST(pipeline_socrata_pagination_stops_on_label_drift) {
+    const auto fetch_page = [&](const std::string& url) {
+        dd::pipeline::SocrataPage page;
+        page.ok = true;
+        page.http_status = 200;
+        page.content_type = "application/json";
+        page.bytes = 10;
+        if (url.find("$offset=0") != std::string::npos) {
+            page.body = R"([{"id": "1"}, {"id": "2"}])"; // full page: matches $limit=2
+        } else {
+            page.body = R"([{"different_field": "3"}, {"different_field": "4"}])";
+        }
+        return page;
+    };
+    const dd::pipeline::SocrataFetch out =
+        dd::pipeline::fetch_socrata_pages("https://x.test/resource/abcd.json?$limit=2", fetch_page);
+    CHECK(out.ok);
+    CHECK(!out.truncated);
+    CHECK_EQ(out.model.records.size(), std::size_t{2});
+}
+
+TEST(pipeline_socrata_pagination_truncates_at_cap) {
+    const auto fetch_page = [&](const std::string&) {
+        dd::pipeline::SocrataPage page;
+        page.ok = true;
+        page.http_status = 200;
+        page.content_type = "application/json";
+        page.bytes = 100;
+        std::string body = "[";
+        for (int i = 0; i < 1000; ++i) {
+            if (i > 0) body += ",";
+            body += "{\"id\": \"" + std::to_string(i) + "\"}";
+        }
+        body += "]";
+        page.body = body;
+        return page;
+    };
+    const dd::pipeline::SocrataFetch out =
+        dd::pipeline::fetch_socrata_pages("https://x.test/resource/abcd.json", fetch_page);
+    CHECK(out.ok);
+    CHECK(out.truncated);
+    CHECK_EQ(out.model.records.size(), std::size_t{5000});
+}
+
+TEST(pipeline_socrata_pagination_reports_first_page_failure) {
+    const auto fetch_page = [&](const std::string&) {
+        dd::pipeline::SocrataPage page;
+        page.ok = false;
+        page.error = "connection refused";
+        return page;
+    };
+    const dd::pipeline::SocrataFetch out =
+        dd::pipeline::fetch_socrata_pages("https://x.test/resource/abcd.json", fetch_page);
+    CHECK(!out.ok);
+    CHECK_EQ(out.error, "connection refused");
+}
+
+TEST(pipeline_is_socrata_resource_url) {
+    CHECK(dd::pipeline::is_socrata_resource_url("https://x.test/resource/abcd.json?$limit=50"));
+    CHECK(!dd::pipeline::is_socrata_resource_url("https://x.test/api/other.json"));
+}
+
 TEST(repair_resolution_serialization_and_back_compat) {
     const dd::store::RepairRecord legacy_auto = dd::store::RepairRecord::deserialize(
         R"({"id":"r1","source_id":"s1","at":"2026-07-01T00:00:00Z","accepted":true})");
@@ -2531,7 +2710,10 @@ TEST(pipeline_ingests_real_government_source) {
     }
     CHECK(run.ok);
     CHECK_EQ(run.classification, "tax_delinquency");
-    CHECK_EQ(run.records_extracted, std::int64_t{25});
+    // Pagination walks $offset past the seeded $limit=25, so a healthy dataset
+    // returns at least a full page.
+    CHECK(run.records_extracted >= std::int64_t{25});
+    CHECK_EQ(run.fetch_mode, std::string{"api"});
     CHECK(run.extraction_rate > 0.8);
     CHECK(run.events_new > 0);
 }
