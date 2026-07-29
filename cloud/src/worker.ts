@@ -1,10 +1,13 @@
 
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import { Bucket } from "./resources.ts";
+import { makeClient, type Db } from "./db.ts";
 import {
   ConversationThread,
   ConversationThreadLive,
@@ -71,10 +74,16 @@ const json = (value: unknown, status = 200): HttpServerResponse.HttpServerRespon
 
 export default class Scraper extends Cloudflare.Worker<Scraper>()(
   "Scraper",
-  { main: import.meta.url },
+  {
+    main: import.meta.url,
+    env: { DATABASE_URL: Config.redacted("DATABASE_URL") },
+  },
   Effect.gen(function* () {
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
     const threads = yield* ConversationThread;
+    const databaseUrl = yield* Config.redacted("DATABASE_URL");
+    let client: Db | undefined;
+    const db = (): Db => (client ??= makeClient(Redacted.value(databaseUrl)));
 
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
@@ -130,26 +139,84 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
 
         yield* bucket.put(`bodies/${source.id}/${runId}`, body);
-        yield* bucket.put(
-          `events/${source.id}/latest.json`,
-          JSON.stringify(processed.events),
-        );
-        yield* bucket.put(
-          `runs/${source.id}/${runId}.json`,
-          JSON.stringify({
-            runId,
+
+        const stored = yield* Effect.tryPromise({
+          try: async () => {
+            const prisma = db();
+            await prisma.source.upsert({
+              where: { id: source.id },
+              create: {
+                id: source.id,
+                name: source.name,
+                url: source.url,
+                jurisdiction: source.jurisdiction,
+                asOf: source.as_of ?? null,
+              },
+              update: { name: source.name, url: source.url },
+            });
+            await prisma.run.create({
+              data: {
+                id: `${runId}_${source.id}`,
+                sourceId: source.id,
+                startedAt: new Date(fetchStart),
+                ok: true,
+                stage: "done",
+                classification: processed.classification,
+                classConfidence: processed.class_confidence,
+                extractionRate: processed.extraction_rate,
+                records: processed.records,
+                fingerprint: processed.fingerprint,
+                newestRecordDate: processed.newest_record_date,
+                fetchMs,
+                mapping: JSON.parse(JSON.stringify(processed.mapping)) as object,
+              },
+            });
+            await prisma.property.createMany({
+              data: [
+                ...new Map(
+                  processed.events.map((e) => [
+                    e.property_key,
+                    {
+                      key: e.property_key,
+                      jurisdiction: source.jurisdiction,
+                      lifecycleState: "NORMAL",
+                      fields: {},
+                      conflicts: [],
+                      mergedKeys: [],
+                    },
+                  ]),
+                ).values(),
+              ],
+              skipDuplicates: true,
+            });
+            await prisma.event.createMany({
+              data: processed.events.map((e) => ({
+                id: e.id,
+                propertyKey: e.property_key,
+                sourceId: source.id,
+                runId: `${runId}_${source.id}`,
+                kind: e.kind,
+                eventDate: e.event_date || null,
+                recordedAt: new Date(e.recorded_at),
+                asOf: e.as_of || null,
+                amount: e.amount,
+                confidence: e.confidence,
+                details: JSON.parse(JSON.stringify(e.details)) as object,
+              })),
+              skipDuplicates: true,
+            });
+          },
+          catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),
+        }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+        if (stored instanceof Error) {
+          return {
             sourceId: source.id,
-            startedAt: new Date(fetchStart).toISOString(),
+            ok: false,
+            stage: "store",
+            error: stored.message,
             fetchMs,
-            classification: processed.classification,
-            classConfidence: processed.class_confidence,
-            extractionRate: processed.extraction_rate,
-            records: processed.records,
-            fingerprint: processed.fingerprint,
-            newestRecordDate: processed.newest_record_date,
-            mapping: processed.mapping,
-          }),
-        );
+          } satisfies RunOutcome;
+        }
 
         return {
           sourceId: source.id,
@@ -172,21 +239,25 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     });
 
     const loadCountyEvents = (county: string) =>
-      Effect.gen(function* () {
-        const events: PropertyEvent[] = [];
-        const seen = new Set<string>();
-        for (const source of sources) {
-          const object = yield* bucket.get(`events/${source.id}/latest.json`);
-          if (object === null) continue;
-          const text = yield* object.text();
-          const parsed = JSON.parse(text) as readonly PropertyEvent[];
-          for (const event of parsed) {
-            if (seen.has(event.id)) continue;
-            seen.add(event.id);
-            if (event.property_key.split("|")[0]?.includes(county)) events.push(event);
-          }
-        }
-        return events as readonly PropertyEvent[];
+      Effect.promise(async (): Promise<readonly PropertyEvent[]> => {
+        const rows = await db().event.findMany({
+          where: { propertyKey: { contains: county, mode: "insensitive" } },
+          orderBy: { eventDate: "asc" },
+          take: 20_000,
+        });
+        return rows.map((row) => ({
+          id: row.id,
+          property_key: row.propertyKey,
+          kind: row.kind,
+          event_date: row.eventDate ?? "",
+          recorded_at: row.recordedAt.toISOString(),
+          source_id: row.sourceId,
+          as_of: row.asOf ?? "",
+          run_id: row.runId,
+          amount: row.amount === null ? 0 : Number(row.amount),
+          confidence: row.confidence,
+          details: row.details as Record<string, string>,
+        }));
       });
 
     const countyMatches = (county: string) =>
