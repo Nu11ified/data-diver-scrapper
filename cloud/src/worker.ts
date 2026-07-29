@@ -1,5 +1,6 @@
 
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -752,6 +753,27 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         return Option.some({ payload, records: parsed.records });
       });
 
+    /// True when the county can be answered from R2 without compiling.
+    ///
+    /// Compiling inline is not merely slow: a cold Norfolk burned about three
+    /// minutes of CPU and the request died with a Cloudflare 1101, so the
+    /// texter got nothing at all. A reply that admits it is warming beats a
+    /// worker that is killed mid-answer.
+    const countyIsWarm = (county: string) =>
+      Effect.gen(function* () {
+        const canonical = yield* resolveJurisdiction(county);
+        const cached = yield* bucket.get(`compiled/${canonical}.json`);
+        if (cached === null) return false;
+        const decoded = yield* Schema.decodeUnknownEffect(CompiledCache)(
+          JSON.parse(yield* cached.text()),
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+        if (decoded === undefined) return false;
+        return (
+          decoded.stamp === (yield* countyStamp(county)) &&
+          Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS
+        );
+      }).pipe(Effect.catch(() => Effect.succeed(false)));
+
     const countyMatches = (county: string) =>
       Effect.gen(function* () {
         const compiled = Option.getOrUndefined(yield* compileCountyPayload(county));
@@ -1004,6 +1026,22 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: true, phone, reply, deleted: true });
           }
           const county = (yield* threads.getByName(phone).snapshot()).county;
+          if (!(yield* countyIsWarm(county))) {
+            // Deliberately not compiled here. A cold county burns minutes of
+            // CPU and the request is killed with a Cloudflare 1101, so the
+            // texter gets nothing at all. The cron warms the busiest county
+            // hourly and POST /warm?county= primes any other on demand.
+            const reply =
+              `Still compiling ${county.replace(/_/g, " ")} from the county records. ` +
+              `This takes a couple of minutes the first time after new data lands.\n\n` +
+              `Text me again shortly and I will have the matches.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply, warming: true });
+          }
           let input: HandleMessageInput = {
             text,
             candidates: yield* countyMatches(county),
@@ -1281,6 +1319,22 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         ),
         Effect.catchTag("SchemaError", (cause) =>
           Effect.succeed(json({ ok: false, error: cause.message }, 500)),
+        ),
+        // Anything still unhandled would surface to a texter as a Cloudflare
+        // 1101 with no body at all. Two were seen, both moments after a
+        // deployment swapped the Durable Object class, and neither reproduced
+        // on demand. Whatever the cause, an answer beats a dead request.
+        Effect.catchCause((cause) =>
+          Effect.succeed(
+            json(
+              {
+                ok: false,
+                error: "the scout hit an unexpected error; text again in a moment",
+                detail: Cause.pretty(cause).slice(0, 400),
+              },
+              500,
+            ),
+          ),
         ),
       ),
     };
