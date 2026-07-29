@@ -66,13 +66,7 @@ interface CountyRecord {
   readonly fields: Readonly<
     Record<string, { readonly value: string; readonly source: string }>
   >;
-  readonly signals: {
-    readonly delinquent_amount?: number;
-    readonly assessed_value?: number;
-    readonly assessed_value_previous?: number;
-    readonly debt_to_value?: number;
-    readonly code_violations?: number;
-  };
+  readonly signals: Readonly<Record<string, number>>;
   readonly conflicts?: readonly unknown[];
   readonly events: ReadonlyArray<{ readonly source: string }>;
 }
@@ -364,6 +358,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               debtToValue: record.signals.debt_to_value ?? 0,
               violations: record.signals.code_violations ?? 0,
               sources: sourceIds.size,
+              signals: record.signals,
             };
           })
           .filter((match) => match.address !== "");

@@ -3,11 +3,14 @@ import * as Schema from "effect/Schema";
 
 import {
   DEFAULT_SPEC,
+  SIGNAL_CATALOG,
   TreeDoc,
   compileSpec,
   describe,
   evaluate,
   explainTrace,
+  validateGraph,
+  type Graph,
   type Subject,
 } from "./graph.ts";
 
@@ -113,6 +116,68 @@ suite("evaluate", () => {
       ],
     } as const;
     expect(evaluate(cyclic, subject({})).outcome).toBe("invalid");
+  });
+});
+
+suite("dynamic signals", () => {
+  const customTree: Graph = {
+    entry: "night_activity",
+    nodes: [
+      {
+        kind: "condition",
+        id: "night_activity",
+        field: "utility_shutoffs",
+        op: "gte",
+        value: 1,
+        onPass: "match",
+        onFail: "discard",
+      },
+      { kind: "action", id: "match", action: "match" },
+      { kind: "action", id: "discard", action: "discard" },
+    ],
+  };
+
+  test("conditions can reference any signal key the subject carries", () => {
+    const verdict = evaluate(customTree, { utility_shutoffs: 2 });
+    expect(verdict.outcome).toBe("match");
+  });
+
+  test("an unmeasured signal fails the condition and the trace says so", () => {
+    const verdict = evaluate(customTree, subject({ owed: 99_999 }));
+    expect(verdict.outcome).toBe("discard");
+    const first = verdict.trace[0];
+    if (first?.kind !== "condition") throw new Error("expected condition step");
+    expect(first.present).toBe(false);
+    expect(first.passed).toBe(false);
+    expect(explainTrace(verdict.trace)).toContain("not measured for this property");
+  });
+
+  test("validateGraph accepts a compiled tree", () => {
+    const tree = compileSpec(DEFAULT_SPEC, "acquisition", 1);
+    expect(validateGraph(tree.graph, Object.keys(SIGNAL_CATALOG))).toEqual([]);
+  });
+
+  test("validateGraph reports unknown signals, dangling refs and missing match", () => {
+    const broken: Graph = {
+      entry: "gone",
+      nodes: [
+        {
+          kind: "condition",
+          id: "c1",
+          field: "mystery_signal",
+          op: "gte",
+          value: 1,
+          onPass: "nowhere",
+          onFail: "discard",
+        },
+        { kind: "action", id: "discard", action: "discard" },
+      ],
+    };
+    const problems = validateGraph(broken, Object.keys(SIGNAL_CATALOG));
+    expect(problems.some((p) => p.includes('entry "gone"'))).toBe(true);
+    expect(problems.some((p) => p.includes("mystery_signal"))).toBe(true);
+    expect(problems.some((p) => p.includes('missing "nowhere"'))).toBe(true);
+    expect(problems.some((p) => p.includes("no match action"))).toBe(true);
   });
 });
 

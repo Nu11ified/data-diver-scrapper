@@ -1,21 +1,12 @@
 import * as Schema from "effect/Schema";
 
-export const ConditionField = Schema.Literals([
-  "owed",
-  "assessed",
-  "debtToValue",
-  "violations",
-  "sources",
-]);
-export type ConditionField = (typeof ConditionField)["Type"];
-
 export const ConditionOp = Schema.Literals(["gte", "gt", "lte", "lt", "eq"]);
 export type ConditionOp = (typeof ConditionOp)["Type"];
 
 export const ConditionNode = Schema.Struct({
   kind: Schema.Literal("condition"),
   id: Schema.String,
-  field: ConditionField,
+  field: Schema.String,
   op: ConditionOp,
   value: Schema.Number,
   onPass: Schema.String,
@@ -57,7 +48,7 @@ export type CriteriaSpec = (typeof CriteriaSpec)["Type"];
 export const TreeDoc = Schema.Struct({
   name: Schema.String,
   version: Schema.Int,
-  spec: CriteriaSpec,
+  spec: Schema.optional(CriteriaSpec),
   graph: Graph,
 });
 export type TreeDoc = (typeof TreeDoc)["Type"];
@@ -66,6 +57,47 @@ export const DEFAULT_SPEC: CriteriaSpec = {
   minOwed: 10_000,
   requireMultiSource: false,
   minDebtToValue: 0,
+};
+
+export interface SignalInfo {
+  readonly label: string;
+  readonly format: "money" | "ratio" | "count";
+  readonly description: string;
+}
+
+/// Signals the engine measures today; condition fields are open strings so
+/// new engine signals become usable without touching the graph model.
+export const SIGNAL_CATALOG: Readonly<Record<string, SignalInfo>> = {
+  owed: {
+    label: "amount owed",
+    format: "money",
+    description: "total delinquent taxes and liens recorded against the property",
+  },
+  assessed: {
+    label: "assessed value",
+    format: "money",
+    description: "most recent county assessor valuation",
+  },
+  assessedPrior: {
+    label: "prior assessed value",
+    format: "money",
+    description: "previous edition of the assessor valuation",
+  },
+  debtToValue: {
+    label: "debt to value",
+    format: "ratio",
+    description: "delinquent amount divided by assessed value",
+  },
+  violations: {
+    label: "open violations",
+    format: "count",
+    description: "open code enforcement cases",
+  },
+  sources: {
+    label: "corroborating sources",
+    format: "count",
+    description: "independent county sources that reported this property",
+  },
 };
 
 export const compileSpec = (spec: CriteriaSpec, name: string, version: number): TreeDoc => {
@@ -127,15 +159,16 @@ export const compileSpec = (spec: CriteriaSpec, name: string, version: number): 
   };
 };
 
-export type Subject = Readonly<Record<ConditionField, number>>;
+export type Subject = Readonly<Record<string, number>>;
 
 export interface ConditionStep {
   readonly node: string;
   readonly kind: "condition";
-  readonly field: ConditionField;
+  readonly field: string;
   readonly op: ConditionOp;
   readonly value: number;
   readonly actual: number;
+  readonly present: boolean;
   readonly passed: boolean;
 }
 export interface ApprovalStep {
@@ -190,8 +223,11 @@ export const evaluate = (graph: Graph, subject: Subject): Verdict => {
     }
     switch (node.kind) {
       case "condition": {
-        const actual = subject[node.field];
-        const passed = holds(node.op, actual, node.value);
+        const measured = subject[node.field];
+        const present = measured !== undefined;
+        // An absent signal fails the condition: unmeasured never means qualified.
+        const actual = measured ?? 0;
+        const passed = present && holds(node.op, actual, node.value);
         trace.push({
           node: node.id,
           kind: "condition",
@@ -199,6 +235,7 @@ export const evaluate = (graph: Graph, subject: Subject): Verdict => {
           op: node.op,
           value: node.value,
           actual,
+          present,
           passed,
         });
         currentId = passed ? node.onPass : node.onFail;
@@ -221,6 +258,31 @@ export const evaluate = (graph: Graph, subject: Subject): Verdict => {
   return { outcome: "invalid", reason: "graph cycled without reaching an action", trace };
 };
 
+export const validateGraph = (
+  graph: Graph,
+  knownSignals: readonly string[],
+): readonly string[] => {
+  const ids = new Set(graph.nodes.map((node) => node.id));
+  const known = new Set(knownSignals);
+  const problems: string[] = [];
+  if (!ids.has(graph.entry)) problems.push(`entry "${graph.entry}" is not a node`);
+  if (ids.size !== graph.nodes.length) problems.push("duplicate node ids");
+  for (const node of graph.nodes) {
+    if (node.kind === "condition") {
+      if (!known.has(node.field)) problems.push(`condition "${node.id}" uses unknown signal "${node.field}"`);
+      if (!ids.has(node.onPass)) problems.push(`condition "${node.id}" onPass -> missing "${node.onPass}"`);
+      if (!ids.has(node.onFail)) problems.push(`condition "${node.id}" onFail -> missing "${node.onFail}"`);
+    }
+    if (node.kind === "approval" && !ids.has(node.next)) {
+      problems.push(`approval "${node.id}" next -> missing "${node.next}"`);
+    }
+  }
+  if (!graph.nodes.some((node) => node.kind === "action" && node.action === "match")) {
+    problems.push("no match action: nothing can ever qualify");
+  }
+  return problems;
+};
+
 const OP_TEXT: Record<ConditionOp, string> = {
   gte: "at least",
   gt: "more than",
@@ -229,25 +291,18 @@ const OP_TEXT: Record<ConditionOp, string> = {
   eq: "exactly",
 };
 
-const FIELD_TEXT: Record<ConditionField, string> = {
-  owed: "amount owed",
-  assessed: "assessed value",
-  debtToValue: "debt to value",
-  violations: "open violations",
-  sources: "corroborating sources",
-};
-
 const money = (value: number): string => `$${Math.round(value).toLocaleString("en-US")}`;
 
-export const formatValue = (field: ConditionField, value: number): string => {
-  switch (field) {
-    case "owed":
-    case "assessed":
+const signalLabel = (field: string): string =>
+  SIGNAL_CATALOG[field]?.label ?? field.replace(/_/g, " ");
+
+export const formatValue = (field: string, value: number): string => {
+  switch (SIGNAL_CATALOG[field]?.format) {
+    case "money":
       return money(value);
-    case "debtToValue":
+    case "ratio":
       return `${value}x`;
-    case "violations":
-    case "sources":
+    default:
       return String(value);
   }
 };
@@ -260,7 +315,7 @@ export const describe = (graph: Graph): string => {
     const node = byId.get(currentId);
     if (node === undefined) return [...lines, `- broken link to "${currentId}"`].join("\n");
     if (node.kind === "condition") {
-      lines.push(`- ${FIELD_TEXT[node.field]} ${OP_TEXT[node.op]} ${formatValue(node.field, node.value)}`);
+      lines.push(`- ${signalLabel(node.field)} ${OP_TEXT[node.op]} ${formatValue(node.field, node.value)}`);
       currentId = node.onPass;
     } else if (node.kind === "approval") {
       lines.push(`- ${node.prompt.toLowerCase()}`);
@@ -276,8 +331,14 @@ export const explainTrace = (trace: readonly TraceStep[]): string =>
   trace
     .flatMap((step) => {
       if (step.kind === "condition") {
+        if (!step.present) {
+          return [
+            `✗ ${signalLabel(step.field)} is not measured for this property ` +
+              `(needs ${OP_TEXT[step.op]} ${formatValue(step.field, step.value)})`,
+          ];
+        }
         return [
-          `${step.passed ? "✓" : "✗"} ${FIELD_TEXT[step.field]} ` +
+          `${step.passed ? "✓" : "✗"} ${signalLabel(step.field)} ` +
             `${formatValue(step.field, step.actual)} (needs ${OP_TEXT[step.op]} ` +
             `${formatValue(step.field, step.value)})`,
         ];

@@ -25,6 +25,7 @@ export interface PropertyMatch {
   readonly debtToValue: number;
   readonly violations: number;
   readonly sources: number;
+  readonly signals: Readonly<Record<string, number>>;
 }
 
 interface Turn {
@@ -79,6 +80,7 @@ const money = (value: number): string =>
   `$${Math.round(value).toLocaleString("en-US")}`;
 
 const subjectOf = (match: PropertyMatch): Subject => ({
+  ...match.signals,
   owed: match.owed,
   assessed: match.assessed,
   debtToValue: match.debtToValue,
@@ -118,7 +120,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
       const record = (
         userText: string,
         reply: string,
-        spec: CriteriaSpec,
+        tree: TreeDoc,
         turns: readonly Turn[],
         summary: string,
       ) =>
@@ -133,11 +135,16 @@ export const ConversationThreadLive = ConversationThread.make<never>(
           if (nextTurns.length > TURN_WINDOW) {
             const folded = nextTurns.slice(0, -TURNS_KEPT_AFTER_COMPACTION);
             const userAsks = folded.filter((t) => t.role === "user").length;
+            const spec = tree.spec;
+            const criteriaText =
+              spec === undefined
+                ? `criteria v${tree.version} (custom decision tree)`
+                : `criteria now: owed >= ${money(spec.minOwed)}` +
+                  `${spec.requireMultiSource ? ", multi-source only" : ""}` +
+                  `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}`;
             const paragraph =
               `[${folded[0]?.at.slice(0, 10) ?? ""}..${folded.at(-1)?.at.slice(0, 10) ?? ""}] ` +
-              `${userAsks} user messages handled; criteria now: owed >= ${money(spec.minOwed)}` +
-              `${spec.requireMultiSource ? ", multi-source only" : ""}` +
-              `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}.`;
+              `${userAsks} user messages handled; ${criteriaText}.`;
             nextSummary = `${nextSummary}\n${paragraph}`.trim().slice(-SUMMARY_LIMIT);
             nextTurns = nextTurns.slice(-TURNS_KEPT_AFTER_COMPACTION);
           }
@@ -185,7 +192,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
             ) =>
               Effect.gen(function* () {
                 yield* state.storage.put("pending", nextPending);
-                yield* record(userText, reply, tree.spec, turns, summary);
+                yield* record(userText, reply, tree, turns, summary);
                 const toPersist = changedTree ?? (evaluations.length > 0 ? tree : undefined);
                 const outcome: HandleOutcome =
                   toPersist === undefined
@@ -306,9 +313,24 @@ export const ConversationThreadLive = ConversationThread.make<never>(
             }
 
             const minOwedMatch = /^min owed (\d+)$/.exec(lower);
-            if (minOwedMatch !== null) {
+            const wantsSpecEdit =
+              minOwedMatch !== null ||
+              lower === "require multi source" ||
+              lower === "any source" ||
+              /^min debt ratio ([0-9.]+)$/.test(lower);
+            const baseSpec = tree.spec;
+            if (wantsSpecEdit && baseSpec === undefined) {
+              return yield* respond(
+                text,
+                `Your criteria are a custom decision tree (v${tree.version}), so the ` +
+                  `shorthand commands do not apply. Describe the change in plain ` +
+                  `language instead.`,
+                pending,
+              );
+            }
+            if (minOwedMatch !== null && baseSpec !== undefined) {
               const value = Number.parseInt(minOwedMatch[1] ?? "0", 10);
-              yield* adopt({ ...tree.spec, minOwed: value });
+              yield* adopt({ ...baseSpec, minOwed: value });
               const remaining = qualifiedOf(evaluateAll()).length;
               return yield* respond(
                 text,
@@ -317,8 +339,8 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 { kind: "idle" },
               );
             }
-            if (lower === "require multi source") {
-              yield* adopt({ ...tree.spec, requireMultiSource: true });
+            if (lower === "require multi source" && baseSpec !== undefined) {
+              yield* adopt({ ...baseSpec, requireMultiSource: true });
               return yield* respond(
                 text,
                 `Done: only properties corroborated by more than one county source ` +
@@ -326,8 +348,8 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 { kind: "idle" },
               );
             }
-            if (lower === "any source") {
-              yield* adopt({ ...tree.spec, requireMultiSource: false });
+            if (lower === "any source" && baseSpec !== undefined) {
+              yield* adopt({ ...baseSpec, requireMultiSource: false });
               return yield* respond(
                 text,
                 `Done: single-source properties can match again (criteria v${tree.version}).`,
@@ -335,9 +357,9 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               );
             }
             const ratioMatch = /^min debt ratio ([0-9.]+)$/.exec(lower);
-            if (ratioMatch !== null) {
+            if (ratioMatch !== null && baseSpec !== undefined) {
               const value = Number.parseFloat(ratioMatch[1] ?? "0");
-              yield* adopt({ ...tree.spec, minDebtToValue: value });
+              yield* adopt({ ...baseSpec, minDebtToValue: value });
               return yield* respond(
                 text,
                 `Done: minimum debt/value is now ${value}x (criteria v${tree.version}).`,
