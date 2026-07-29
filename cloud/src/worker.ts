@@ -442,8 +442,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 id: `${runId}_${source.id}`,
                 sourceId: source.id,
                 startedAt: new Date(fetchStart),
-                ok: true,
-                stage: "done",
+                // Written as unfinished. Only the update at the end of this
+                // block, after the properties and events actually land, marks
+                // it done; a crash in between leaves a record that says so
+                // instead of a run that claims a success it never had.
+                ok: false,
+                stage: "store",
                 classification: processed.classification,
                 classConfidence: processed.class_confidence,
                 extractionRate: processed.extraction_rate,
@@ -488,10 +492,26 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               })),
               skipDuplicates: true,
             });
+            // Everything landed, so the run may finally claim it.
+            await prisma.run.update({
+              where: { id: `${runId}_${source.id}` },
+              data: { ok: true, stage: "done" },
+            });
           },
           catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),
         }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
         if (stored instanceof Error) {
+          // Record why, rather than leaving a run stuck at "store" with no
+          // explanation for whoever reads the table later.
+          yield* Effect.tryPromise({
+            try: () =>
+              db().run.update({
+                where: { id: `${runId}_${source.id}` },
+                data: { error: stored.message.slice(0, 500) },
+              }),
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch(() => Effect.void));
           return {
             sourceId: source.id,
             ok: false,
@@ -541,12 +561,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       );
     });
 
+    const EVENT_LIMIT = 20_000;
+
     const loadCountyEvents = (county: string) =>
       Effect.promise(async (): Promise<readonly PropertyEvent[]> => {
+        // A property key is "<jurisdiction>|<id>", so a bare substring let
+        // "york" pull New York's events into York's county view. Matching the
+        // segment before the pipe keeps jurisdictions apart.
+        const slug = county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
         const rows = await db().event.findMany({
-          where: { propertyKey: { contains: county, mode: "insensitive" } },
+          where: {
+            OR: [
+              { propertyKey: { startsWith: `${slug}|` } },
+              { propertyKey: { contains: `_${slug}|` } },
+              { propertyKey: { contains: `${slug}_`, mode: "insensitive" } },
+            ],
+          },
           orderBy: { eventDate: "asc" },
-          take: 20_000,
+          take: EVENT_LIMIT,
         });
         return rows.map((row) => ({
           id: row.id,
@@ -597,14 +629,55 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const compileCountyPayload = (county: string) =>
       Effect.gen(function* () {
         const events = yield* loadCountyEvents(county);
+        if (events.length >= EVENT_LIMIT) {
+          // Compiling a truncated slice and presenting it as the county is how
+          // a partial answer becomes a confident one.
+          yield* Effect.log(
+            `county ${county}: hit the ${EVENT_LIMIT} event ceiling; the compiled ` +
+              `view is incomplete and is reported as such`,
+          );
+        }
         if (events.length === 0) {
           return Option.none<{
             readonly payload: string;
             readonly records: readonly CountyRecord[];
           }>();
         }
+        // Each run persisted its learned mapping, field-level confidence and
+        // all. Passing {} made the resolver fall back to document-class
+        // confidence, so the worker settled conflicting owners and assessments
+        // differently from the CLI and independently of measured mapping
+        // quality - which is exactly the provenance the payload advertises.
+        const trust = yield* Effect.promise(async () => {
+          const sourceIds = [...new Set(events.map((e) => e.source_id))];
+          if (sourceIds.length === 0) return {};
+          const runs = await db().run.findMany({
+            where: { sourceId: { in: sourceIds }, ok: true },
+            orderBy: { startedAt: "desc" },
+            select: { sourceId: true, mapping: true },
+          });
+          const out: Record<string, Record<string, number>> = {};
+          for (const run of runs) {
+            if (out[run.sourceId] !== undefined) continue; // newest run wins
+            const mapping = run.mapping as
+              | { readonly fields?: ReadonlyArray<Record<string, unknown>> }
+              | null;
+            const fields = mapping?.fields;
+            if (fields === undefined) continue;
+            const perField: Record<string, number> = {};
+            for (const field of fields) {
+              const name = field.field;
+              const confidence = field.confidence;
+              if (typeof name === "string" && typeof confidence === "number") {
+                perField[name] = confidence;
+              }
+            }
+            if (Object.keys(perField).length > 0) out[run.sourceId] = perField;
+          }
+          return out;
+        });
         const payload = yield* Effect.promise(() =>
-          compileCounty(schemaJson, events, {}, county),
+          compileCounty(schemaJson, events, trust, county),
         );
         const parsed = JSON.parse(payload) as { readonly records: readonly CountyRecord[] };
         const jurisdiction = events[0]?.property_key.split("|")[0] ?? county;
@@ -738,6 +811,78 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
 
           const lower = text.trim().toLowerCase();
+
+          // Handled before the model sees anything: wiping an account is not a
+          // decision to route through an interpreter.
+          const wants = lower.replace(/^\//, "").replace(/[_-]/g, " ").trim();
+          if (wants === "reset" || wants === "reset account") {
+            const wiped = yield* Effect.tryPromise({
+              try: async () => {
+                const prisma = db();
+                const where = { tenantId: preflight.tenantId };
+                const [outreach, evaluations, trees, messages, criteria] = await Promise.all([
+                  prisma.outreach.deleteMany({ where }),
+                  prisma.evaluation.deleteMany({ where }),
+                  prisma.decisionTree.deleteMany({ where }),
+                  prisma.message.deleteMany({ where }),
+                  prisma.criteria.deleteMany({ where }),
+                ]);
+                return (
+                  outreach.count + evaluations.count + trees.count + messages.count +
+                  criteria.count
+                );
+              },
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+            if (wiped instanceof Error) {
+              return json({ ok: false, phone, error: wiped.message }, 500);
+            }
+            yield* threads.getByName(phone).forget();
+            const reply =
+              `Account reset. ${wiped} stored rows removed: criteria, decision trees, ` +
+              `evaluations, outreach and transcript, plus this thread's memory.\n` +
+              `Your Codex connection was kept so you do not have to link again ` +
+              `(text DELETE ACCOUNT to remove that too).\n\n` +
+              `Say anything to start over.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply, reset: wiped });
+          }
+
+          if (wants === "delete account" || wants === "delete") {
+            if (wants === "delete") {
+              return json({
+                ok: true,
+                phone,
+                reply: "Text DELETE ACCOUNT to erase everything, including your Codex link.",
+              });
+            }
+            const removed = yield* Effect.tryPromise({
+              // The tenant row cascades to credentials, criteria, trees,
+              // evaluations, outreach and messages.
+              try: () => db().tenant.delete({ where: { id: preflight.tenantId } }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+            if (removed instanceof Error) {
+              return json({ ok: false, phone, error: removed.message }, 500);
+            }
+            yield* threads.getByName(phone).forget();
+            const reply =
+              `Account deleted. Everything held for ${phone} is gone: the Codex ` +
+              `connection, criteria, decision trees, evaluations, outreach and the ` +
+              `whole transcript.\n\nText again to start fresh as a new user.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply, deleted: true });
+          }
           const county = (yield* threads.getByName(phone).snapshot()).county;
           let input: HandleMessageInput = {
             text,

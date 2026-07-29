@@ -113,10 +113,14 @@ const COMMAND_WORDS = [
   "connect codex",
   "any source",
   "require multi source",
+  "reset",
+  "reset account",
+  "delete",
+  "delete account",
 ];
 
 export const isDeterministicCommand = (text: string): boolean => {
-  const lower = text.trim().toLowerCase();
+  const lower = text.trim().toLowerCase().replace(/^\//, "").replace(/[_-]/g, " ").trim();
   return (
     /^\d+$/.test(lower) ||
     COMMAND_WORDS.includes(lower) ||
@@ -232,6 +236,7 @@ export interface AttachDraftInput {
 }
 
 export interface ThreadShape {
+  readonly forget: () => Effect.Effect<void, never, RuntimeContextInterface>;
   readonly handleMessage: (
     input: HandleMessageInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
@@ -299,6 +304,17 @@ export const ConversationThreadLive = ConversationThread.make<never>(
       });
 
       return {
+        /// Everything this thread remembers: the tree, the turns, the folded
+        /// summary, the pending step and the county. Clearing the rows in
+        /// Postgres without this leaves the object still holding a compacted
+        /// history, so the next message would not look like a first one.
+        forget: () =>
+          Effect.gen(function* () {
+            for (const key of ["tree", "criteria", "turns", "summary", "pending", "county"]) {
+              yield* state.storage.delete(key);
+            }
+          }),
+
         handleMessage: (input: HandleMessageInput) =>
           Effect.gen(function* () {
             const loaded = yield* loadTree;
