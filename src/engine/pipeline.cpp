@@ -1,6 +1,7 @@
 #include "dd/engine/pipeline.hpp"
 
 #include <atomic>
+#include <set>
 #include <thread>
 
 #include "dd/core/core.hpp"
@@ -169,27 +170,82 @@ store::RunRecord Pipeline::run_source_id(const std::string& source_id) {
     return run_source(*source);
 }
 
-std::string expand_url_template(const store::Source& source, const store::Store& store) {
-    const std::size_t at = source.url.find("{parcels}");
-    if (at == std::string::npos) return source.url;
-    const std::string slug = str::slug(source.jurisdiction);
-    std::vector<std::string> parcels;
+namespace {
+
+bool quote_safe(const std::string& value) {
+    if (value.empty()) return false;
+    for (char c : value) {
+        if (c == '\'' || c == '"' || c == '\n') return false;
+    }
+    return true;
+}
+
+// The parcels this jurisdiction already tracks.
+std::vector<std::string> tracked_parcels(const store::Source& source, const store::Store& store) {
+    const std::string prefix = str::slug(source.jurisdiction) + "|p:";
+    std::vector<std::string> out;
     for (const std::string& key : store.property_keys()) {
-        if (parcels.size() >= 150) break;
-        const std::string prefix = slug + "|p:";
+        if (out.size() >= 150) break;
         if (key.rfind(prefix, 0) != 0) continue;
         const std::string parcel = key.substr(prefix.size());
-        bool clean = !parcel.empty();
-        for (char c : parcel) {
-            if (c == '\'' || c == '"') clean = false;
+        if (quote_safe(parcel)) out.push_back("'" + parcel + "'");
+    }
+    return out;
+}
+
+// The street names of every address this jurisdiction has seen, without the
+// house number or the suffix. Offices that publish different id spaces still
+// share streets, which is how a delinquency keyed by a billing account finds
+// its assessment keyed by a parcel.
+std::vector<std::string> tracked_streets(const store::Source& source, store::Store& store) {
+    static const std::vector<std::string> kSuffixes = {
+        "ST", "AVE", "AV", "RD", "DR", "BLVD", "LN", "CT", "PL", "CIR", "TER", "WAY",
+        "PKWY", "HWY", "TRL", "SQ", "STREET", "AVENUE", "ROAD", "DRIVE", "COURT",
+        "BOULEVARD", "LANE", "PLACE", "CRESCENT", "N", "S", "E", "W"};
+    const std::string prefix = str::slug(source.jurisdiction) + "|";
+    std::vector<std::string> out;
+    for (const std::string& key : store.property_keys()) {
+        if (out.size() >= 60) break;
+        if (key.rfind(prefix, 0) != 0) continue;
+        for (const events::PropertyEvent& e : store.events_for(key)) {
+            const auto it = e.details.find("address");
+            if (it == e.details.end()) continue;
+            std::vector<std::string> words = str::split(str::to_upper(it->second), ' ');
+            std::vector<std::string> name;
+            for (const std::string& word : words) {
+                if (word.empty() || str::is_digits(word)) continue;
+                if (std::find(kSuffixes.begin(), kSuffixes.end(), word) != kSuffixes.end()) {
+                    continue;
+                }
+                name.push_back(word);
+            }
+            const std::string street = str::join(name, " ");
+            if (!quote_safe(street) || street.size() < 3) continue;
+            const std::string quoted = "'" + street + "'";
+            if (std::find(out.begin(), out.end(), quoted) == out.end()) out.push_back(quoted);
+            break;
         }
-        if (clean) parcels.push_back("'" + parcel + "'");
     }
-    if (parcels.empty()) {
-        throw Error("enrichment source " + source.id + " has no parcels to target yet; run " +
-                    "the jurisdiction's primary sources first");
-    }
-    return source.url.substr(0, at) + str::join(parcels, ",") + source.url.substr(at + 9);
+    return out;
+}
+
+} // namespace
+
+std::string expand_url_template(const store::Source& source, store::Store& store) {
+    std::string url = source.url;
+    const auto substitute = [&](const std::string& token,
+                                const std::vector<std::string>& values) {
+        const std::size_t at = url.find(token);
+        if (at == std::string::npos) return;
+        if (values.empty()) {
+            throw Error("enrichment source " + source.id + " has nothing to target yet; run " +
+                        "the jurisdiction's primary sources first");
+        }
+        url = url.substr(0, at) + str::join(values, ",") + url.substr(at + token.size());
+    };
+    substitute("{parcels}", tracked_parcels(source, store));
+    substitute("{streets}", tracked_streets(source, store));
+    return url;
 }
 
 std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Source>& sources,
@@ -416,8 +472,37 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
     run.mapping_confidence = mapping.confidence;
 
     // --------------------------------------------- resolve and add events --
-    const std::vector<events::PropertyEvent> batch =
+    std::vector<events::PropertyEvent> batch =
         to_events(registry_, source, run, prediction.label, prediction.confidence, extraction);
+    // An enrichment feed asks a wide question (every parcel on these streets)
+    // to answer a narrow one, so it may only add detail to properties the
+    // jurisdiction already tracks. Without this it would import a street.
+    if (str::contains(source.url, "{parcels}") || str::contains(source.url, "{streets}")) {
+        const std::size_t before = batch.size();
+        std::set<std::string> known_keys;
+        std::set<std::string> known_addresses;
+        const std::string prefix = str::slug(source.jurisdiction) + "|";
+        for (const std::string& key : store_.property_keys()) {
+            if (key.rfind(prefix, 0) != 0) continue;
+            known_keys.insert(key);
+            for (const events::PropertyEvent& e : store_.events_for(key)) {
+                const auto it = e.details.find("address");
+                if (it == e.details.end() || it->second.empty()) continue;
+                known_addresses.insert(entity::normalize_address(it->second));
+            }
+        }
+        std::erase_if(batch, [&](const events::PropertyEvent& e) {
+            if (known_keys.count(e.property_key) != 0) return false;
+            const auto it = e.details.find("address");
+            if (it == e.details.end()) return true;
+            return known_addresses.count(entity::normalize_address(it->second)) == 0;
+        });
+        if (batch.size() < before) {
+            logging::info("pipeline: " + source.id + " kept " + std::to_string(batch.size()) +
+                          " of " + std::to_string(before) + " records that match tracked "
+                          "properties");
+        }
+    }
     run.events_new = static_cast<std::int64_t>(store_.add_events(batch));
     store_.save_latest_records(source.id,
                                extraction_snapshot(run, model, prediction, mapping, extraction));

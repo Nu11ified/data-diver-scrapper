@@ -151,11 +151,12 @@ void county_properties(store::Store& store, const schema::Registry& registry,
     std::size_t hidden = 0;
     std::size_t merged = 0;
     std::size_t conflicts = 0;
+    std::size_t cross_source = 0;
     for (const compile::Property& p : properties) {
         conflicts += p.conflicts.size();
         if (p.keys.size() > 1) ++merged;
         const std::string address = field_or(p, "address");
-        if (address.empty() && !include_all) {
+        if (!p.locates_a_building && !include_all) {
             ++hidden;
             continue;
         }
@@ -167,6 +168,7 @@ void county_properties(store::Store& store, const schema::Registry& registry,
         }
         std::set<std::string> sources;
         for (const events::PropertyEvent& e : p.events) sources.insert(e.source_id);
+        if (sources.size() > 1) ++cross_source;
         std::string parcel = field_or(p, "parcel_id");
         if (p.keys.size() > 1) parcel += "*";
         const events::PropertyEvent& last = p.events.back();
@@ -182,7 +184,8 @@ void county_properties(store::Store& store, const schema::Registry& registry,
     render::table({"parcel", "owner", "address", "lifecycle", "owed", "assessed", "debt/val",
                    "viol", "src", "last event"},
                   table);
-    std::string note = std::to_string(table.size()) + " properties, most distressed first";
+    std::string note = std::to_string(table.size()) + " properties, most distressed first; " +
+                       std::to_string(cross_source) + " corroborated by more than one source";
     if (merged > 0) {
         note += "; " + std::to_string(merged) + " merged across id spaces (*)";
     }
@@ -191,8 +194,8 @@ void county_properties(store::Store& store, const schema::Registry& registry,
                 " conflicts resolved by measured source trust (see export)";
     }
     if (hidden > 0) {
-        note += "; " + std::to_string(hidden) + " without an address hidden ('county " +
-                county + " all')";
+        note += "; " + std::to_string(hidden) +
+                " block-level or unlocatable records hidden ('county " + county + " all')";
     }
     std::printf("  %s\n", paint("dim", note).c_str());
 }

@@ -25,10 +25,14 @@ std::string first_address(const std::vector<events::PropertyEvent>& evs) {
     return {};
 }
 
-// An address is only merge evidence when it pins down one building: it must
-// start with a real house number. "0 ADMIRAL TAUSSIG BLVD" is a placeholder
-// shared by many parcels, and "S S 50TH ST" names a block, not a house.
+// An address pins down one building when it starts with a real house number
+// and does not name a block. "0 ADMIRAL TAUSSIG BLVD" is a placeholder shared
+// by many parcels, "3200 BLOCK OF ARGONNE AVE" is a complaint location, and
+// "S S 50TH ST" names a stretch of street.
 bool mergeable_address(const std::string& normalized) {
+    if (str::contains(normalized, "block of") || str::contains(normalized, "blk of")) {
+        return false;
+    }
     const std::size_t space = normalized.find(' ');
     if (space == std::string::npos || space == 0) return false;
     const std::string number = normalized.substr(0, space);
@@ -156,6 +160,12 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
         property.state = events::reduce(property.events).state;
         resolve_fields(registry, trust, &property);
         measure_signals(&property);
+        const auto parcel = property.fields.find("parcel_id");
+        const auto address = property.fields.find("address");
+        property.locates_a_building =
+            (parcel != property.fields.end() && !parcel->second.value.empty()) ||
+            (address != property.fields.end() &&
+             mergeable_address(entity::normalize_address(address->second.value)));
         out.push_back(std::move(property));
     }
 

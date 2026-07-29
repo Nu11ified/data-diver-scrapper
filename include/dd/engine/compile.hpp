@@ -35,6 +35,11 @@ struct Conflict {
 
 struct Property {
     std::vector<std::string> keys;  // the store keys merged into this record
+    // A record locates a building when it carries a parcel id or a street
+    // address with a real house number. Complaint feeds also publish block
+    // references ("3200 BLOCK OF ARGONNE AVENUE") and placeholder addresses,
+    // which name an area rather than a property and can never be enriched.
+    bool locates_a_building = false;
     std::vector<events::PropertyEvent> events;  // chronological
     events::State state = events::State::Normal;
     std::map<std::string, ResolvedField> fields;

@@ -14,7 +14,7 @@ std::string county_json(store::Store& store, const schema::Registry& registry,
 
     std::size_t without_address = 0;
     for (const compile::Property& p : properties) {
-        if (p.fields.count("address") == 0) ++without_address;
+        if (!p.locates_a_building) ++without_address;
     }
 
     json::Writer w;
@@ -22,11 +22,11 @@ std::string county_json(store::Store& store, const schema::Registry& registry,
     w.field("county", county);
     w.field("generated_at", timeutil::iso_now());
     w.field("properties", static_cast<std::int64_t>(properties.size() - without_address));
-    w.field("hidden_without_address", static_cast<std::int64_t>(without_address));
+    w.field("hidden_unlocatable", static_cast<std::int64_t>(without_address));
     w.key("records");
     w.begin_array();
     for (const compile::Property& p : properties) {
-        if (p.fields.count("address") == 0) continue;
+        if (!p.locates_a_building) continue;
         w.begin_object();
         w.key("keys");
         w.begin_array();
