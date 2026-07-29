@@ -44,7 +44,7 @@
   {
     "id": "norfolk_assessments",
     "name": "Norfolk VA Property Assessments FY25",
-    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$order=current_total_value DESC&$limit=50",
+    "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,current_total_value AS assessed_value,current_land_value AS land_value,current_improvement_value AS improvement_value,residential_finished_living AS living_area,improvement_year_built AS year_built,acreage AS land_area,property_use&$where=current_total_value > 0&$limit=4000",
     "jurisdiction": "City of Norfolk VA",
     "as_of": "2025"
   },
