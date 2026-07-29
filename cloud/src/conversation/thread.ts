@@ -15,11 +15,21 @@ import {
   type TraceStep,
   type TreeDoc,
 } from "../decision/graph.ts";
+import {
+  classifyOwner,
+  formatInZone,
+  nextSendWindow,
+  zoneFor,
+  type Audience,
+} from "../outreach/schedule.ts";
 
 export interface PropertyMatch {
   readonly propertyKey: string;
   readonly address: string;
   readonly owner: string;
+  readonly mailing: string;
+  readonly phone: string;
+  readonly email: string;
   readonly lifecycleState: string;
   readonly owed: number;
   readonly assessed: number;
@@ -28,6 +38,21 @@ export interface PropertyMatch {
   readonly sources: number;
   readonly signals: Readonly<Record<string, number>>;
 }
+
+export const templateDraft = (match: PropertyMatch): string =>
+  `Hi ${match.owner.split(",")[0] ?? "there"}, I'm reaching out about the ` +
+  `property at ${match.address}. Would you be open to discussing an offer?`;
+
+export const contactSummary = (match: PropertyMatch): string => {
+  const lines = [
+    match.mailing !== "" ? `Mailing address: ${match.mailing}` : "",
+    match.phone !== "" ? `Phone (from county records): ${match.phone}` : "",
+    match.email !== "" ? `Email (from county records): ${match.email}` : "",
+  ].filter((line) => line !== "");
+  return lines.length > 0
+    ? lines.join("\n")
+    : "No contact details in county records beyond the owner name.";
+};
 
 export interface Turn {
   readonly role: "user" | "scout";
@@ -91,9 +116,25 @@ export interface HandleMessageInput {
   readonly codexAccount?: string;
 }
 
+export interface DraftRequest {
+  readonly match: PropertyMatch;
+  readonly explanation: string;
+  readonly requiresApproval: boolean;
+}
+
+export interface OutreachOrder {
+  readonly propertyKey: string;
+  readonly draft: string;
+  readonly audience: Audience;
+  readonly scheduledForIso: string;
+  readonly approved: boolean;
+}
+
 export interface HandleOutcome {
   readonly reply: string;
   readonly tree?: TreeDoc;
+  readonly draftRequest?: DraftRequest;
+  readonly outreach?: OutreachOrder;
   readonly evaluations: readonly PropertyEvaluation[];
 }
 
@@ -140,6 +181,14 @@ export interface ApplyScoutInput {
   readonly graph?: Graph;
 }
 
+export interface AttachDraftInput {
+  readonly userText: string;
+  readonly match: PropertyMatch;
+  readonly explanation: string;
+  readonly draft: string;
+  readonly requiresApproval: boolean;
+}
+
 export interface ThreadShape {
   readonly handleMessage: (
     input: HandleMessageInput,
@@ -147,6 +196,9 @@ export interface ThreadShape {
   readonly snapshot: () => Effect.Effect<ThreadSnapshot, never, RuntimeContextInterface>;
   readonly applyScout: (
     input: ApplyScoutInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly attachDraft: (
+    input: AttachDraftInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
 }
 
@@ -233,16 +285,18 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               reply: string,
               nextPending: Pending,
               evaluations: readonly PropertyEvaluation[] = [],
+              outreach?: OutreachOrder,
             ) =>
               Effect.gen(function* () {
                 yield* state.storage.put("pending", nextPending);
                 yield* record(userText, reply, tree, turns, summary);
                 const toPersist = changedTree ?? (evaluations.length > 0 ? tree : undefined);
-                const outcome: HandleOutcome =
-                  toPersist === undefined
-                    ? { reply, evaluations }
-                    : { reply, evaluations, tree: toPersist };
-                return outcome;
+                return {
+                  reply,
+                  evaluations,
+                  ...(toPersist === undefined ? {} : { tree: toPersist }),
+                  ...(outreach === undefined ? {} : { outreach }),
+                } satisfies HandleOutcome;
               });
 
             const evaluateAll = () =>
@@ -275,11 +329,23 @@ export const ConversationThreadLive = ConversationThread.make<never>(
 
             if (pending.kind === "approve_outreach") {
               if (lower === "approve" || lower === "yes") {
+                const match = pending.match;
+                const audience = classifyOwner(match.owner);
+                const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
+                const window = nextSendWindow(audience, new Date(), timeZone);
                 const sent =
-                  `Simulated outreach sent for ${pending.match.address}.\n` +
-                  `(Demo mode: no real message left this system.)\n\n` +
+                  `Approved. Outreach to ${match.owner || "the recorded owner"} is ` +
+                  `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
+                  `(Demo mode: this message will NOT actually be sent. No real ` +
+                  `outreach leaves this system.)\n\n` +
                   `Reply REVIEW to see remaining matches.`;
-                return yield* respond(text, sent, { kind: "idle" });
+                return yield* respond(text, sent, { kind: "idle" }, [], {
+                  propertyKey: match.propertyKey,
+                  draft: pending.draft,
+                  audience,
+                  scheduledForIso: window.at.toISOString(),
+                  approved: true,
+                });
               }
               if (lower === "reject" || lower === "no") {
                 return yield* respond(
@@ -301,24 +367,50 @@ export const ConversationThreadLive = ConversationThread.make<never>(
                 );
               }
               const match = evaluated.match;
-              const draft =
-                `Hi ${match.owner.split(",")[0] ?? "there"}, I'm reaching out about the ` +
-                `property at ${match.address}. Would you be open to discussing an offer?`;
               const explanation =
-                `${match.address} — recorded owner: ${match.owner || "unknown"}.\n\n` +
-                `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}\n\n` +
-                `Draft (simulated outreach):\n"${draft}"`;
+                `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
+                `${contactSummary(match)}\n\n` +
+                `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
+              const codexConnected =
+                input.codexAccount !== undefined && input.codexAccount !== "";
+              if (codexConnected) {
+                // The worker drafts through Codex, then finalizes via attachDraft.
+                return {
+                  reply: "",
+                  evaluations: [],
+                  draftRequest: {
+                    match,
+                    explanation,
+                    requiresApproval: evaluated.requiresApproval,
+                  },
+                  ...(changedTree === undefined ? {} : { tree: changedTree }),
+                } satisfies HandleOutcome;
+              }
+              const draft = templateDraft(match);
+              const body = `${explanation}\n\nDraft (simulated outreach):\n"${draft}"`;
               if (!evaluated.requiresApproval) {
+                const audience = classifyOwner(match.owner);
+                const timeZone = zoneFor(match.propertyKey.split("|")[0] ?? "");
+                const window = nextSendWindow(audience, new Date(), timeZone);
                 return yield* respond(
                   text,
-                  `${explanation}\n\nYour decision tree has no approval gate: ` +
-                    `simulated outreach sent.\n(Demo mode: no real message left this system.)`,
+                  `${body}\n\nYour decision tree has no approval gate: outreach ` +
+                    `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
+                    `(Demo mode: this message will NOT actually be sent.)`,
                   { kind: "idle" },
+                  [],
+                  {
+                    propertyKey: match.propertyKey,
+                    draft,
+                    audience,
+                    scheduledForIso: window.at.toISOString(),
+                    approved: false,
+                  },
                 );
               }
               return yield* respond(
                 text,
-                `${explanation}\n\nReply APPROVE to simulate sending it, or REJECT to discard.`,
+                `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`,
                 { kind: "approve_outreach", match, draft },
               );
             }
@@ -464,6 +556,52 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               recentTurns: turns.slice(-8),
               configured: loaded.tree.version > 1,
             };
+          }),
+
+        attachDraft: (input: AttachDraftInput) =>
+          Effect.gen(function* () {
+            const loaded = yield* loadTree;
+            const tree = loaded.tree;
+            const changedTree = loaded.created ? loaded.tree : undefined;
+            const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
+            const summary = (yield* state.storage.get<string>("summary")) ?? "";
+            const body =
+              `${input.explanation}\n\nDraft (simulated outreach):\n"${input.draft}"`;
+            let reply: string;
+            let nextPending: Pending;
+            let outreach: OutreachOrder | undefined;
+            if (input.requiresApproval) {
+              reply = `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`;
+              nextPending = {
+                kind: "approve_outreach",
+                match: input.match,
+                draft: input.draft,
+              };
+            } else {
+              const audience = classifyOwner(input.match.owner);
+              const timeZone = zoneFor(input.match.propertyKey.split("|")[0] ?? "");
+              const window = nextSendWindow(audience, new Date(), timeZone);
+              reply =
+                `${body}\n\nYour decision tree has no approval gate: outreach ` +
+                `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
+                `(Demo mode: this message will NOT actually be sent.)`;
+              nextPending = { kind: "idle" };
+              outreach = {
+                propertyKey: input.match.propertyKey,
+                draft: input.draft,
+                audience,
+                scheduledForIso: window.at.toISOString(),
+                approved: false,
+              };
+            }
+            yield* state.storage.put("pending", nextPending);
+            yield* record(input.userText, reply, tree, turns, summary);
+            return {
+              reply,
+              evaluations: [],
+              ...(changedTree === undefined ? {} : { tree: changedTree }),
+              ...(outreach === undefined ? {} : { outreach }),
+            } satisfies HandleOutcome;
           }),
 
         applyScout: (input: ApplyScoutInput) =>

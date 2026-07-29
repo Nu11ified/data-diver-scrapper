@@ -16,6 +16,7 @@ import {
   ConversationThreadLive,
   isDeterministicCommand,
   subjectOf,
+  templateDraft,
   type HandleMessageInput,
   type HandleOutcome,
   type PropertyMatch,
@@ -236,6 +237,38 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
         }
         return yield* thread.applyScout({ userText: text, reply: decision.text });
+      });
+
+    const draftOutreach = (tenantId: string, match: PropertyMatch) =>
+      Effect.gen(function* () {
+        const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
+        if (credential === undefined) {
+          return yield* new CodexError({ message: "no codex credential stored", status: 0 });
+        }
+        const facts = [
+          `property address: ${match.address}`,
+          `recorded owner: ${match.owner}`,
+          match.mailing !== "" ? `owner mailing address: ${match.mailing}` : "",
+          match.assessed > 0 ? `county assessed value: $${Math.round(match.assessed)}` : "",
+        ]
+          .filter((line) => line !== "")
+          .join("\n");
+        const instructions = [
+          `You write the first outreach message from a property acquisition team to`,
+          `a property owner. Use only the facts provided; never invent names,`,
+          `numbers or circumstances. Address the owner naturally by name. Reference`,
+          `the property address. Express interest in buying and invite a`,
+          `conversation. Do not mention taxes, debts, delinquency, violations or`,
+          `hardship of any kind. 2 to 4 sentences. Output the message as plain`,
+          `text only: no placeholders, no signature block, no quotes, no JSON.`,
+        ].join("\n");
+        const raw = yield* complete({
+          accessToken: credential.accessToken,
+          accountId: credential.accountId,
+          instructions,
+          userText: facts,
+        });
+        return raw.trim();
       });
 
     const runSource = (source: SourceConfig, runId: string) =>
@@ -473,6 +506,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               propertyKey: record.keys[0] ?? "",
               address: record.fields.address?.value ?? "",
               owner: record.fields.owner?.value ?? "",
+              mailing: record.fields.mailing_address?.value ?? "",
+              phone: record.fields.owner_phone?.value ?? "",
+              email: record.fields.owner_email?.value ?? "",
               lifecycleState: record.lifecycle_state,
               owed: record.signals.delinquent_amount ?? 0,
               assessed: record.signals.assessed_value ?? 0,
@@ -607,7 +643,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               }),
             );
           }
-          const outcome = scouted ?? (yield* thread.handleMessage(input));
+          let outcome = scouted ?? (yield* thread.handleMessage(input));
+
+          const draftRequest = outcome.draftRequest;
+          if (draftRequest !== undefined) {
+            const drafted = yield* draftOutreach(preflight.tenantId, draftRequest.match).pipe(
+              Effect.catch((cause) => {
+                scoutError = cause.message;
+                return Effect.succeed(templateDraft(draftRequest.match));
+              }),
+            );
+            outcome = yield* thread.attachDraft({
+              userText: text,
+              match: draftRequest.match,
+              explanation: draftRequest.explanation,
+              draft: drafted,
+              requiresApproval: draftRequest.requiresApproval,
+            });
+          }
 
           const delivery = yield* Effect.tryPromise({
             try: async () => {
@@ -646,6 +699,21 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                     version: { not: tree.version },
                   },
                   data: { status: "superseded" },
+                });
+              }
+              const outreach = outcome.outreach;
+              if (outreach !== undefined) {
+                await prisma.outreach.create({
+                  data: {
+                    tenantId: preflight.tenantId,
+                    propertyKey: outreach.propertyKey,
+                    draft: outreach.draft,
+                    status: "scheduled",
+                    audience: outreach.audience,
+                    scheduledFor: new Date(outreach.scheduledForIso),
+                    approvedAt: outreach.approved ? new Date() : null,
+                    simulated: true,
+                  },
                 });
               }
               const first = outcome.evaluations[0];
