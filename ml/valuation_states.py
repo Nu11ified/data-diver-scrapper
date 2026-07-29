@@ -157,6 +157,15 @@ class Valuer(nn.Module):
 
 
 def run(train_sales, test_sales, label: str, epochs: int, lr: float, batch: int, seed: int):
+    """test_sales is scored exactly once, at the end.
+
+    Choosing the epoch by the held-out score and then publishing that same
+    score is adaptive overfitting: the holdout has been consulted once per
+    epoch, so its minimum is a selected best case rather than an estimate of
+    unseen performance. The epoch is therefore chosen on jurisdictions carved
+    out of the training half, and the test half is untouched until the model
+    is frozen.
+    """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -173,17 +182,31 @@ def run(train_sales, test_sales, label: str, epochs: int, lr: float, batch: int,
         # is exactly the position a new state is in on day one.
         ratios.setdefault(state, fallback)
 
-    x_train = featurize(train_sales, ratios)
+    # A validation slice taken from the training jurisdictions, never from the
+    # test ones, is what the epoch is chosen on.
+    val_j = {j for j in {(t.state, t.jurisdiction) for t in train_sales}
+             if hashlib.sha256(f"val|{j[0]}|{j[1]}".encode()).digest()[0] % 5 == 0}
+    fit_sales = [t for t in train_sales if (t.state, t.jurisdiction) not in val_j]
+    val_sales = [t for t in train_sales if (t.state, t.jurisdiction) in val_j]
+    if not val_sales:
+        fit_sales, val_sales = train_sales, train_sales
+
+    x_train = featurize(fit_sales, ratios)
+    x_val = featurize(val_sales, ratios)
     x_test = featurize(test_sales, ratios)
     y_train = np.asarray([math.log(s.price) - math.log(s.assessed * ratios[s.state])
-                          for s in train_sales], dtype=np.float32)
+                          for s in fit_sales], dtype=np.float32)
+    y_val = np.asarray([s.price for s in val_sales], dtype=np.float32)
+    cal_val = np.asarray([s.assessed * ratios[s.state] for s in val_sales], dtype=np.float32)
     y_test = np.asarray([s.price for s in test_sales], dtype=np.float32)
     calibrated = np.asarray([s.assessed * ratios[s.state] for s in test_sales], dtype=np.float32)
     raw = np.asarray([s.assessed for s in test_sales], dtype=np.float32)
 
     mean, std = x_train.mean(axis=0), x_train.std(axis=0)
     std[std == 0] = 1.0
-    x_train, x_test = (x_train - mean) / std, (x_test - mean) / std
+    x_train = (x_train - mean) / std
+    x_val = (x_val - mean) / std
+    x_test = (x_test - mean) / std
 
     raw_mdape, cal_mdape = mdape(y_test, raw), mdape(y_test, calibrated)
     bar = min(raw_mdape, cal_mdape)
@@ -210,8 +233,8 @@ def run(train_sales, test_sales, label: str, epochs: int, lr: float, batch: int,
         with torch.no_grad():
             # A model asked about a state whose ratio it cannot know produces
             # wild corrections; clamp so the failure is a bad number, not an inf.
-            pred = calibrated * np.exp(np.clip(model(torch.from_numpy(x_test)).numpy(), -3.0, 3.0))
-        score = mdape(y_test, pred)
+            pred = cal_val * np.exp(np.clip(model(torch.from_numpy(x_val)).numpy(), -3.0, 3.0))
+        score = mdape(y_val, pred)
         if score < best["mdape"]:
             best = {"mdape": score,
                     "state": {k: v.clone() for k, v in model.state_dict().items()},
@@ -221,7 +244,8 @@ def run(train_sales, test_sales, label: str, epochs: int, lr: float, batch: int,
     with torch.no_grad():
         pred = calibrated * np.exp(np.clip(model(torch.from_numpy(x_test)).numpy(), -3.0, 3.0))
     score = mdape(y_test, pred)
-    print(f"  model (epoch {best['epoch']}):     MdAPE {score:.1%}")
+    print(f"  model (epoch {best['epoch']} chosen on {len(val_sales)} validation sales):"
+          f"     MdAPE {score:.1%}")
     print(f"    within 10%: {within(y_test, pred, .10):.1%} (bar {within(y_test, calibrated, .10):.1%})")
     print(f"    within 20%: {within(y_test, pred, .20):.1%} (bar {within(y_test, calibrated, .20):.1%})")
     verdict = "beats" if score < bar else "loses to"

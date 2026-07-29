@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
 
+import { makeLimiter, type Limiter } from "./politeness.ts";
+
 /// The engine's crawler lives in C++, but wasm in a Worker has no sockets, so
 /// the fetching half is here and the parsing half stays in the module.
 
@@ -13,6 +15,9 @@ export interface CrawlOptions {
   readonly maxPages: number;
   readonly maxDepth: number;
   readonly userAgent: string;
+  /// Shared so one request cannot spend several crawls' worth of a host's
+  /// budget by fanning out over candidates.
+  readonly limiter?: Limiter;
 }
 
 const LINK = /<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
@@ -99,6 +104,7 @@ export const crawl = <E, R>(
       catch: () => new Error("no robots"),
     }).pipe(Effect.catch(() => Effect.succeed("")));
     const denied = disallowedPaths(robots);
+    const limiter = options.limiter ?? makeLimiter();
 
     const queue: Array<{ url: string; depth: number }> = [{ url: seed, depth: 0 }];
     const queued = new Set([seed]);
@@ -116,6 +122,11 @@ export const crawl = <E, R>(
         continue;
       }
 
+      const allowed = yield* Effect.promise(() => limiter.take(next.url));
+      if (!allowed) {
+        blocked += 1;
+        continue;
+      }
       const response = yield* Effect.tryPromise({
         try: () => fetch(next.url, { headers }),
         catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),

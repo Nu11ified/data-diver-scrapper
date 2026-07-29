@@ -70,12 +70,16 @@ export const worthSummary = (match: PropertyMatch): string => {
   if (valued === undefined) {
     return "No assessed value on record, so no estimate.";
   }
+  // Deliberately not called a confidence interval. The number is a median
+  // absolute error, so by construction about half of past sales missed by
+  // more than this; quoting it as a range would promise coverage it has
+  // never been measured to have.
   return (
-    `Estimated worth: ${money(valued.estimate)} ` +
-    `(${money(valued.low)}-${money(valued.high)}), against ` +
+    `Estimated worth: ${money(valued.estimate)}, against ` +
     `${money(match.assessed)} assessed.\n` +
-    `That band is this model's measured error: ${(holdoutError() * 100).toFixed(0)}% median, ` +
-    `on sales in jurisdictions it never trained on.`
+    `Half of past sales in jurisdictions this model never trained on landed ` +
+    `within ${(holdoutError() * 100).toFixed(0)}% of its estimate; the other ` +
+    `half missed by more. Not a confidence interval.`
   );
 };
 

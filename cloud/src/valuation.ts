@@ -22,6 +22,9 @@ export interface Valuation {
   readonly estimate: number;
   readonly low: number;
   readonly high: number;
+  /// Median absolute percentage error on held-out jurisdictions. Half of past
+  /// sales missed by more than this, so it is not a confidence interval.
+  readonly typicalError: number;
   readonly state: string;
 }
 
@@ -93,12 +96,15 @@ export const estimate = (input: ValuationInput): Valuation | undefined => {
   const ratios: Record<string, number> = weights.state_ratios;
   const base = input.assessed * (ratios[input.state.toUpperCase()] ?? 1);
   const value = base * Math.exp(correction);
-  // The band is the model's own measured holdout error, not a guess.
+  // low/high bracket the median error, which is not a coverage interval:
+  // half of held-out sales fell outside it. Callers that present it must say
+  // so, which is why the field is named typicalError rather than margin.
   const spread = weights.holdout_mdape;
   return {
     estimate: value,
     low: value * (1 - spread),
     high: value * (1 + spread),
+    typicalError: spread,
     state: input.state.toUpperCase(),
   };
 };

@@ -33,10 +33,13 @@ bool split_url(const std::string& url, Split* out) {
     if (scheme_end == std::string::npos) return false;
     out->scheme = str::to_lower(url.substr(0, scheme_end));
     const std::size_t host_start = scheme_end + 3;
-    const std::size_t path_start = url.find('/', host_start);
+    const std::size_t path_start = url.find_first_of("/?#", host_start);
     if (path_start == std::string::npos) {
         out->host = str::to_lower(url.substr(host_start));
         out->path = "/";
+    } else if (url[path_start] != '/') {
+        out->host = str::to_lower(url.substr(host_start, path_start - host_start));
+        out->path = "/" + url.substr(path_start);
     } else {
         out->host = str::to_lower(url.substr(host_start, path_start - host_start));
         out->path = url.substr(path_start);
@@ -97,6 +100,15 @@ std::string resolve_url(const std::string& base, const std::string& href) {
     if (clean.rfind("//", 0) == 0) return split.scheme + ":" + clean;
     if (!clean.empty() && clean[0] == '/') {
         return split.scheme + "://" + split.host + normalize_path(clean);
+    }
+    // "?page=2" replaces the query and keeps the path. Treating it as a
+    // relative segment drops the page being paginated, which is the one link
+    // a crawler most needs to follow.
+    if (clean[0] == '?') {
+        std::string path = split.path;
+        const std::size_t existing = path.find('?');
+        if (existing != std::string::npos) path = path.substr(0, existing);
+        return split.scheme + "://" + split.host + normalize_path(path) + clean;
     }
     std::string directory = split.path;
     const std::size_t query = directory.find('?');

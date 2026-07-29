@@ -10,6 +10,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import { Bucket } from "./resources.ts";
 import { crawl } from "./crawl.ts";
+import { makeLimiter } from "./politeness.ts";
 import { makeClient, type Db } from "./db.ts";
 import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
@@ -125,6 +126,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         : sendblue(Redacted.value(sendblueKey), Redacted.value(sendblueSecret));
 
     const masterKeyB64 = Redacted.value(yield* Config.redacted("CREDENTIAL_MASTER_KEY"));
+
+    // One budget for the worker's lifetime. Every county fetch, crawl and
+    // discovery attempt draws on it, so no single request can turn this into a
+    // battering ram against someone else's server.
+    const limiter = makeLimiter();
 
     const CREDENTIAL_FRESH_MS = 45 * 60_000;
 
@@ -243,7 +249,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                     let bestUrl = "";
                     yield* crawl(
                       candidate.url,
-                      { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT },
+                      { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT, limiter },
                       (page) =>
                         Effect.gen(function* () {
                           const outcome = yield* runSource(
@@ -356,6 +362,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
         const fetchStart = Date.now();
+        const permitted = yield* Effect.promise(() => limiter.take(source.url));
+        if (!permitted) {
+          return {
+            sourceId: source.id,
+            ok: false,
+            stage: "fetch",
+            error: "host request budget spent; try again shortly",
+          } satisfies RunOutcome;
+        }
         const response = yield* Effect.tryPromise({
           try: () =>
             fetch(source.url, {

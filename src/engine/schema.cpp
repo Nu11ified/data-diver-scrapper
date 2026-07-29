@@ -321,7 +321,14 @@ std::optional<std::string> parse_date(std::string_view value) {
     const auto timestamp_tail = [&](int consumed) {
         if (consumed <= 0 || static_cast<std::size_t>(consumed) > cleaned.size()) return false;
         const std::string_view rest = std::string_view{cleaned}.substr(consumed);
-        return rest.empty() || rest.front() == 'T' || rest.front() == ' ';
+        if (rest.empty()) return true;
+        if (rest.front() != 'T' && rest.front() != ' ') return false;
+        // Whatever follows must actually look like a clock, or "2026-02-11
+        // garbage" passes as a date, wins the mapping on pass rate, and
+        // corrupts every ordering built on it.
+        int hh = 0, mm = 0, tail = 0;
+        return std::sscanf(rest.data() + 1, "%2d:%2d%n", &hh, &mm, &tail) == 2 && tail >= 4 &&
+               hh >= 0 && hh < 24 && mm >= 0 && mm < 60;
     };
     int y = 0, m = 0, d = 0, used = 0;
     if ((std::sscanf(cleaned.c_str(), "%4d-%2d-%2d%n", &y, &m, &d, &used) == 3 ||
@@ -590,7 +597,12 @@ Mapping Mapping::deserialize(const std::string& text) {
             }
         }
         for (const FieldMapping& existing : out.fields) {
-            if (existing.field == fm.field || existing.source_label == fm.source_label) {
+            // A composite column legitimately appears once per part, so the
+            // label alone is not the identity: the slot is label plus part.
+            // Comparing labels only rejected the very mappings inference is
+            // now allowed to produce, the first time they were reloaded.
+            if (existing.field == fm.field ||
+                (existing.source_label == fm.source_label && existing.part == fm.part)) {
                 throw Error("schema: mapping duplicates field or label " + fm.field);
             }
         }

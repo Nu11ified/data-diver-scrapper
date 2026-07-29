@@ -202,7 +202,12 @@ Chain parse_chain(std::string_view text) {
         } else if (!had_space) {
             throw Error{"selector: expected a combinator at offset " + std::to_string(i)};
         }
-        if (i >= text.size()) break;
+        if (i >= text.size()) {
+            if (combinator == Combinator::Child) {
+                throw Error{"selector: '>' with nothing after it"};
+            }
+            break;
+        }
         chain.combinators.push_back(combinator);
         chain.steps.push_back(parse_compound(text, i));
     }

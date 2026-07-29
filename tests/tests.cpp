@@ -263,6 +263,22 @@ TEST(crawl_resolves_urls_against_the_page) {
     CHECK_EQ(dd::crawl::host_of("https://County.GOV/x"), std::string{"county.gov"});
 }
 
+TEST(crawl_resolves_query_only_links_onto_the_same_page) {
+    // Query-driven pagination is the commonest shape on county result pages,
+    // and dropping the path walks the crawler off the results entirely.
+    const std::string base = "https://county.gov/tax/list";
+    CHECK_EQ(dd::crawl::resolve_url(base, "?page=2"),
+             std::string{"https://county.gov/tax/list?page=2"});
+    CHECK_EQ(dd::crawl::resolve_url("https://county.gov/tax/list?page=1", "?page=2"),
+             std::string{"https://county.gov/tax/list?page=2"});
+    CHECK_EQ(dd::crawl::resolve_url("https://county.gov/tax/", "?page=3"),
+             std::string{"https://county.gov/tax/?page=3"});
+    // A url whose host is followed straight by a query still parses as a host.
+    CHECK_EQ(dd::crawl::host_of("https://county.gov?x=1"), std::string{"county.gov"});
+    CHECK_EQ(dd::crawl::resolve_url("https://county.gov?x=1", "?page=2"),
+             std::string{"https://county.gov/?page=2"});
+}
+
 TEST(crawl_obeys_robots_txt) {
     const std::string text =
         "User-agent: *\n"
@@ -345,6 +361,10 @@ TEST(css_selector_matches_like_a_dom) {
 
     CHECK_THROWS(dd::html::css("table..bad"));
     CHECK_THROWS(dd::html::css(""));
+    // A dangling combinator silently became "table", which quietly returns the
+    // whole table when the caller asked for a child.
+    CHECK_THROWS(dd::html::css("table >"));
+    CHECK_THROWS(dd::html::css("table > "));
 }
 
 TEST(dom_traversal_axes) {
@@ -1045,6 +1065,12 @@ TEST(schema_date_parsing) {
     CHECK_EQ(*dd::schema::parse_date("2026-07-27T22:46:46.000"), "2026-07-27");
     CHECK_EQ(*dd::schema::parse_date("4/26/2018 12:00:00 AM"), "2018-04-26");
     CHECK(!dd::schema::parse_date("2026-02-11garbage").has_value());
+    // A separator is not a licence for anything to follow it.
+    CHECK(!dd::schema::parse_date("2026-02-11 garbage").has_value());
+    CHECK(!dd::schema::parse_date("2026-02-11Tnot-a-time").has_value());
+    CHECK(!dd::schema::parse_date("2026-02-11 99:99").has_value());
+    CHECK_EQ(*dd::schema::parse_date("2026-02-11 09:30"), "2026-02-11");
+    CHECK_EQ(*dd::schema::parse_date("2026-02-11T09:30:00.000"), "2026-02-11");
 }
 
 TEST(schema_validators) {
@@ -1116,6 +1142,30 @@ TEST(schema_splits_a_composite_column_into_fields) {
     const auto& first = extraction.records[0].values;
     CHECK_EQ(first.at("latitude"), std::string{"36.930961"});
     CHECK_EQ(first.at("longitude"), std::string{"-76.201715"});
+}
+
+TEST(schema_split_mapping_survives_a_reload) {
+    // Inference may map two parts of one column to two fields; if the format
+    // cannot carry that back, the source works once and throws on reopen.
+    dd::schema::Mapping mapping;
+    mapping.fields.push_back({"latitude", "latitude_longitude", 1.0, 1.0, 1.0, true, 0});
+    mapping.fields.push_back({"longitude", "latitude_longitude", 1.0, 1.0, 1.0, true, 1});
+    mapping.confidence = 1.0;
+    const dd::schema::Mapping back = dd::schema::Mapping::deserialize(mapping.serialize());
+    CHECK_EQ(back.fields.size(), std::size_t{2});
+    const dd::schema::FieldMapping* lat = back.find("latitude");
+    const dd::schema::FieldMapping* lon = back.find("longitude");
+    CHECK(lat != nullptr);
+    CHECK(lon != nullptr);
+    CHECK_EQ(lat->source_label, lon->source_label);
+    CHECK(lat->part != lon->part);
+
+    // The same label and the same part twice is still a duplicate.
+    dd::schema::Mapping clashing;
+    clashing.fields.push_back({"latitude", "x", 1.0, 1.0, 1.0, true, 0});
+    clashing.fields.push_back({"longitude", "x", 1.0, 1.0, 1.0, true, 0});
+    clashing.confidence = 1.0;
+    CHECK_THROWS(dd::schema::Mapping::deserialize(clashing.serialize()));
 }
 
 TEST(schema_refuses_to_split_ragged_prose) {
