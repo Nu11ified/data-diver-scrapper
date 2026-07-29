@@ -1,4 +1,5 @@
 
+import wasmModule from "./datadiver.wasm";
 import createModule, { type EmscriptenModule } from "./datadiver.mjs";
 
 export interface FieldMapping {
@@ -65,7 +66,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 let modulePromise: Promise<EmscriptenModule> | undefined;
 
 const engine = (): Promise<EmscriptenModule> => {
-  modulePromise ??= createModule().catch((cause: unknown) => {
+  modulePromise ??= createModule({
+    instantiateWasm: (imports, onSuccess) => {
+      const instance = new WebAssembly.Instance(wasmModule, imports);
+      onSuccess(instance, wasmModule);
+      return instance.exports;
+    },
+  }).catch((cause: unknown) => {
     modulePromise = undefined;
     throw new EngineError(`wasm startup failed: ${String(cause)}`);
   });
