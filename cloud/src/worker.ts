@@ -753,6 +753,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       stamp: Schema.String,
       at: Schema.String,
       payload: Schema.String,
+      abi: Schema.optional(Schema.Number),
     });
 
     const compileCountyPayload = (county: string) =>
@@ -760,6 +761,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const canonical = yield* resolveJurisdiction(county);
         const cacheKey = `compiled/${canonical}.json`;
         const stamp = yield* countyStamp(county);
+        const { abi } = yield* Effect.promise(() => engineVersion());
         const cached = yield* bucket.get(cacheKey);
         if (cached !== null) {
           const decoded = yield* Schema.decodeUnknownEffect(CompiledCache)(
@@ -767,6 +769,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           ).pipe(Effect.catch(() => Effect.succeed(undefined)));
           const fresh =
             decoded !== undefined &&
+            decoded.abi === abi &&
             decoded.stamp === stamp &&
             Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS;
           if (fresh && decoded !== undefined) {
@@ -835,7 +838,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         yield* persist(jurisdiction, parsed.records);
         yield* bucket.put(
           cacheKey,
-          JSON.stringify({ stamp, at: new Date().toISOString(), payload }),
+          JSON.stringify({ stamp, at: new Date().toISOString(), payload, abi }),
         );
         return Option.some({ payload, records: parsed.records });
       });
@@ -855,7 +858,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           JSON.parse(yield* cached.text()),
         ).pipe(Effect.catch(() => Effect.succeed(undefined)));
         if (decoded === undefined) return false;
+        const { abi } = yield* Effect.promise(() => engineVersion());
         return (
+          decoded.abi === abi &&
           decoded.stamp === (yield* countyStamp(county)) &&
           Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS
         );

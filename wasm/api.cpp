@@ -58,7 +58,7 @@ char* dd_version() {
     w.begin_object();
     w.field("ok", true);
     w.field("engine", "datadiver");
-    w.field("abi", 1);
+    w.field("abi", 2);
     w.end_object();
     return to_c(w.take());
 }
