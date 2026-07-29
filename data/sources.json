@@ -90,6 +90,30 @@
   "jurisdiction": "Tarrant County TX"
  },
  {
+  "id": "norfolk_permits",
+  "name": "Norfolk VA Building Permits",
+  "url": "https://data.norfolk.gov/resource/fahm-yuh4.json?$order=application_date DESC&$limit=50",
+  "jurisdiction": "City of Norfolk VA"
+ },
+ {
+  "id": "norfolk_inspections",
+  "name": "Norfolk VA Inspections",
+  "url": "https://data.norfolk.gov/resource/ihzr-5x5n.json?$order=completed_date DESC&$limit=50",
+  "jurisdiction": "City of Norfolk VA"
+ },
+ {
+  "id": "norfolk_short_term_rentals",
+  "name": "Norfolk VA Short Term Rental Registrations",
+  "url": "https://data.norfolk.gov/resource/7mjv-xiqs.json?$order=permit_issue_date DESC&$limit=50",
+  "jurisdiction": "City of Norfolk VA"
+ },
+ {
+  "id": "norfolk_plan_reviews",
+  "name": "Norfolk VA Plan Reviews",
+  "url": "https://data.norfolk.gov/resource/dhk3-hr4y.json?$order=completed_date DESC&$limit=50",
+  "jurisdiction": "City of Norfolk VA"
+ },
+ {
   "id": "norfolk_parcel_assessments",
   "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
   "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=200",
