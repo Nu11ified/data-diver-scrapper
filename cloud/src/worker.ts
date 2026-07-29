@@ -578,6 +578,19 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       };
     };
 
+    /// Every spelling of a county has to land on one cache entry, or warming
+    /// "city_of_norfolk_va" leaves a thread asking for "norfolk" to compile
+    /// from cold anyway. The jurisdiction that actually prefixes the property
+    /// keys is the canonical name.
+    const resolveJurisdiction = (county: string) =>
+      Effect.promise(async () => {
+        const row = await db().event.findFirst({
+          where: countyWhere(county),
+          select: { propertyKey: true },
+        });
+        return row === null ? countySlug(county) : (row.propertyKey.split("|")[0] ?? countySlug(county));
+      });
+
     /// Cheap summary of what the county's events currently are. Compiling is
     /// the expensive step, so the cache turns on whether anything was ingested
     /// since, not on a clock: a fresh run changes the count or the newest
@@ -656,7 +669,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const compileCountyPayload = (county: string) =>
       Effect.gen(function* () {
-        const cacheKey = `compiled/${countySlug(county)}.json`;
+        const canonical = yield* resolveJurisdiction(county);
+        const cacheKey = `compiled/${canonical}.json`;
         const stamp = yield* countyStamp(county);
         const cached = yield* bucket.get(cacheKey);
         if (cached !== null) {
@@ -774,6 +788,31 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
               : ""),
         );
+
+        // The sweep just changed every county's event stamp, so the caches it
+        // invalidated are rebuilt here rather than by whoever texts first. A
+        // county compiles once, on the cron's clock, instead of making a
+        // person wait three minutes for their first reply.
+        const busiest = yield* Effect.promise(async () => {
+          const rows = await db().property.groupBy({
+            by: ["jurisdiction"],
+            _count: { key: true },
+            orderBy: { _count: { key: "desc" } },
+            take: 1,
+          });
+          return rows[0]?.jurisdiction ?? "";
+        });
+        if (busiest !== "") {
+          const started = Date.now();
+          const compiled = yield* compileCountyPayload(busiest).pipe(
+            Effect.catch(() => Effect.succeed(Option.none<never>())),
+          );
+          yield* Effect.log(
+            Option.isSome(compiled)
+              ? `cron warmed ${busiest} in ${Date.now() - started}ms`
+              : `cron could not warm ${busiest}`,
+          );
+        }
       }),
     );
 
@@ -791,6 +830,34 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: false, error: version.message }, 500);
           }
           return json({ ok: true, ...version, sources: sources.length });
+        }
+
+        // One county per request. Compiling several in one invocation runs
+        // past the Worker CPU ceiling and the whole call dies with a 1102,
+        // warming nothing.
+        if (url.pathname === "/warm" && request.method === "POST") {
+          const asked = url.searchParams.get("county") ?? "";
+          const target = yield* asked !== ""
+            ? Effect.succeed(asked)
+            : Effect.promise(async () => {
+                const rows = await db().property.groupBy({
+                  by: ["jurisdiction"],
+                  _count: { key: true },
+                  orderBy: { _count: { key: "desc" } },
+                  take: 1,
+                });
+                return rows[0]?.jurisdiction ?? "";
+              });
+          if (target === "") return json({ ok: false, error: "no county to warm" }, 404);
+          const started = Date.now();
+          const compiled = yield* compileCountyPayload(target);
+          const got = Option.getOrUndefined(compiled);
+          return json({
+            ok: got !== undefined,
+            county: target,
+            ms: Date.now() - started,
+            properties: got?.records.length ?? 0,
+          });
         }
 
         if (url.pathname === "/run" && request.method === "POST") {
