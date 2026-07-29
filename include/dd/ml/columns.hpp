@@ -37,15 +37,25 @@ struct TrainConfig {
 
 struct ClassResult {
     std::string label;
-    std::size_t total = 0;
-    std::size_t correct = 0;
+    std::size_t total = 0;      // held-out columns whose true label is this
+    std::size_t correct = 0;    // of those, predicted correctly
+    std::size_t predicted = 0;  // held-out columns predicted as this label
+
+    double recall() const;
+    double precision() const;
+    double f1() const;
 };
 
 struct TrainReport {
     std::size_t train_examples = 0;
     std::size_t holdout_examples = 0;
     std::size_t parameters = 0;
-    double holdout_accuracy = 0.0;
+    double holdout_accuracy = 0.0;  // flattered by the "none" majority
+    /// Macro-F1 over the field classes, excluding "none". This is the number
+    /// worth quoting: a class the model never gets right cannot hide in it.
+    double macro_f1 = 0.0;
+    double positive_accuracy = 0.0;  // accuracy over non-"none" columns only
+    std::size_t positive_examples = 0;
     std::vector<double> epoch_loss;
     std::vector<ClassResult> per_class;  // on the holdout
 };

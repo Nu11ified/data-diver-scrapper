@@ -551,16 +551,21 @@ int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
               });
     for (const columns::ClassResult& r : per_class) {
         rows.push_back({r.label, std::to_string(r.correct) + "/" + std::to_string(r.total),
-                        meter(r.total == 0 ? 0.0
-                                           : static_cast<double>(r.correct) /
-                                                 static_cast<double>(r.total))});
+                        pct(r.precision()), pct(r.recall()), meter(r.f1())});
     }
-    render::table({"class", "correct", "accuracy"}, rows);
-    std::printf("  overall %s on %zu held-out columns\n",
-                pct(report.holdout_accuracy).c_str(), report.holdout_examples);
+    render::table({"class", "correct", "precision", "recall", "f1"}, rows);
+    std::printf("  macro F1 %s over %zu field classes; %s on the %zu columns that carry a field\n",
+                pct(report.macro_f1).c_str(),
+                report.per_class.empty() ? 0 : report.per_class.size() - 1,
+                pct(report.positive_accuracy).c_str(), report.positive_examples);
+    std::printf("  %s\n",
+                paint("dim", "overall accuracy " + pct(report.holdout_accuracy) + " on " +
+                                 std::to_string(report.holdout_examples) +
+                                 " columns counts the 'none' majority: macro F1 is the honest one")
+                    .c_str());
 
-    if (report.holdout_accuracy < 0.75) {
-        std::printf("  %s below 0.75: not saved\n", stamp("failed").c_str());
+    if (report.macro_f1 < 0.50) {
+        std::printf("  %s macro F1 below 0.50: not saved\n", stamp("failed").c_str());
         return 1;
     }
     model.save(model_path);

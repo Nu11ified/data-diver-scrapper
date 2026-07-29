@@ -11,6 +11,20 @@
 #include <thread>
 
 namespace dd::columns {
+double ClassResult::recall() const {
+    return total == 0 ? 0.0 : static_cast<double>(correct) / static_cast<double>(total);
+}
+
+double ClassResult::precision() const {
+    return predicted == 0 ? 0.0 : static_cast<double>(correct) / static_cast<double>(predicted);
+}
+
+double ClassResult::f1() const {
+    const double p = precision();
+    const double r = recall();
+    return p + r == 0.0 ? 0.0 : 2.0 * p * r / (p + r);
+}
+
 namespace {
 constexpr int kCls = 1;
 constexpr int kSep = 2;
@@ -571,19 +585,41 @@ TrainReport ColumnModel::train(const std::vector<Example>& train_set,
 
     std::map<std::string, ClassResult> per_class;
     std::size_t correct = 0;
+    std::size_t positives = 0;
+    std::size_t positives_correct = 0;
     for (const Example& e : holdout) {
         const Prediction p = predict(e.name, e.values);
-        ClassResult& r = per_class[e.label];
-        r.label = e.label;
-        ++r.total;
-        if (p.label == e.label) {
-            ++r.correct;
+        ClassResult& truth = per_class[e.label];
+        truth.label = e.label;
+        ++truth.total;
+        ClassResult& guess = per_class[p.label];
+        guess.label = p.label;
+        ++guess.predicted;
+        const bool hit = p.label == e.label;
+        if (hit) {
+            ++truth.correct;
             ++correct;
         }
+        if (e.label != "none") {
+            ++positives;
+            if (hit) ++positives_correct;
+        }
     }
-    for (const auto& [label, r] : per_class) report.per_class.push_back(r);
+    double f1_total = 0.0;
+    std::size_t f1_classes = 0;
+    for (const auto& [label, r] : per_class) {
+        report.per_class.push_back(r);
+        if (label == "none" || r.total == 0) continue;
+        f1_total += r.f1();
+        ++f1_classes;
+    }
     report.holdout_accuracy =
         holdout.empty() ? 0.0 : static_cast<double>(correct) / static_cast<double>(holdout.size());
+    report.macro_f1 = f1_classes == 0 ? 0.0 : f1_total / static_cast<double>(f1_classes);
+    report.positive_examples = positives;
+    report.positive_accuracy =
+        positives == 0 ? 0.0
+                       : static_cast<double>(positives_correct) / static_cast<double>(positives);
     return report;
 }
 
