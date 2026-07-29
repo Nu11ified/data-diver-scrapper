@@ -14,10 +14,10 @@ bytes.
 ## Build and run
 
 ```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-./build/datadiver
+make            # configure, build, run the tests
+make run        # build and open the shell
+make renderer   # install the headless browser used for JS-only portals
+make run-with-renderer   # shell with rendering enabled
 ```
 
 ## The demo, in order
@@ -25,20 +25,23 @@ ctest --test-dir build --output-on-failure
 Inside the shell:
 
 ```
-run all              # ingest all 16 real sources: Socrata APIs + county HTML.
-                     # the last one is the enrichment source: {parcels} in its
-                     # URL expands to the parcels already tracked, so the
-                     # assessor roll is fetched for the exact properties the
-                     # violations feed surfaced - those properties end up with
-                     # events from two sources (violation + owner/assessed value)
+run all              # ingest all 16 real sources concurrently (Socrata APIs
+                     # and county HTML), about 1.4 s wall clock for 7 s of work.
+                     # enrichment sources run in a second wave: {parcels} in
+                     # their URL expands to the parcels the first wave found,
+                     # so the assessor roll is fetched for exactly the
+                     # properties the violations feed surfaced
 counties             # the store rolled up by county
-county norfolk       # one county's properties, filled per the schema
+county norfolk       # properties ranked by distress, merged across id spaces,
+                     # conflicting fields resolved by measured source trust
 
 export norfolk       # the compiled county as canonical JSON with per-field
                      # source + as-of provenance: the payload an API would serve
 
 bench                # score vs the hand-verified answer key:
-                     # 15/15 classification, 0.94 mapping F1, ~8 ms/document
+                     # 15/16 classification, 0.95 mapping F1, ~7 ms/document
+catalog              # discover county sources nationwide (140 datasets across
+                     # 96 jurisdictions); 'catalog add' adds them as sources
 model                # both models' status
 map SOURCE_ID        # what matched what, with sample values
 review SOURCE_ID     # y/n on uncertain matches; answers persist as overrides
@@ -56,11 +59,14 @@ of a fixture, edit it in another pane, and you see drift detection and the
 self-heal live. `help` lists everything; one-shot equivalents exist as
 `datadiver <command>`.
 
-JS-rendered portals: prefix the URL with `render+` and the bytes come from
-an external headless browser (`make renderer` installs the Puppeteer script
-in `tools/`, `make run-with-renderer` wires it up). The engine consumes its
-stdout and nothing else - parsing, classification, matching and ML stay
-in-process, in C++, measured (`align` prints parse throughput and RSS).
+Source shape is detected, not configured. JSON, CSV and static HTML are
+parsed directly; a page that is only a framework shell (an app mount point,
+a hydration payload, or far more script than text) is re-fetched through a
+headless browser when one is available, and `align` reports which path it
+took. Socrata's React grid yields no records over a static fetch and 100
+records through the renderer. The browser only ever supplies bytes:
+parsing, classification, matching and the models stay in C++, measured
+(`align` prints parse throughput and resident memory).
 
 ## The schema is configuration
 
@@ -74,7 +80,11 @@ business-license schema.
 ## The two models (both in-repo, no ML dependencies)
 
 - **Document classifier**: multinomial naive Bayes with tunable Lidstone
-  smoothing, leave-one-out validated (`train`, `train sweep`).
+  smoothing, trained on 115 real county datasets pulled from live portals
+  by `harvest docs`. Leave-one-out is 83%, and the confusions are mostly
+  genuine overlap (a tax sale list is both a delinquency and an auction)
+  plus label noise from the search queries that gathered it, which is why
+  `train` names the files that disagree with their folder.
 - **Column transformer**: a byte-level transformer encoder written from
   scratch (pre-LN multi-head attention, hand-derived backprop verified
   against finite differences in the tests). It reads a column's name and
@@ -98,13 +108,16 @@ repair, auto-accepted only above 75% confidence with the baseline recovered.
 
 ## Proving it
 
-1. `ctest`: 104 behaviour tests, including the transformer gradient check.
-2. `train` / `train columns`: cross-validated model accuracy, per-class.
+1. `ctest`: 109 behaviour tests, including the transformer gradient check
+   and a concurrency test that proves parallel ingestion loses nothing.
+2. `train` / `train columns`: cross-validated accuracy per class, plus the
+   corpus files whose content disagrees with their folder, so weak labels
+   are auditable rather than assumed.
 3. `bench`: the engine vs `data/golden/golden.json`, a hand-verified answer
    key written by reading the raw columns - it records the engine's own
    mistakes. Wrong mappings on required fields count double (false positive
-   and false negative); incomplete runs fail. Currently 15/15 classification,
-   0.94 F1, ~8 ms per document, $0 marginal cost.
+   and false negative); incomplete runs fail. Currently 15/16 classification,
+   0.95 F1, ~7 ms per document, $0 marginal cost.
 
 An LLM API could attempt the same mapping; this engine does it
 deterministically, explainably, offline, in milliseconds, at zero marginal
