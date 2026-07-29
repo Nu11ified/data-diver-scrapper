@@ -119,6 +119,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
   "Scraper",
   {
     main: import.meta.url,
+    build: {
+      output: {
+        codeSplitting: false,
+      },
+    },
     env: {
       DATABASE_URL: Config.redacted("DATABASE_URL"),
       SENDBLUE_API_KEY: Config.redacted("SENDBLUE_API_KEY"),
