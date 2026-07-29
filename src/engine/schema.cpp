@@ -82,14 +82,25 @@ bool validator_is_weak(Kind k) {
     return k == Kind::Name || k == Kind::Address || k == Kind::Status || k == Kind::Text;
 }
 constexpr double kWeakValidatorLabelFloor = 0.70;
+constexpr std::size_t kMaxParts = 6;
+// A part must clear a higher bar than a whole cell: splitting is a claim about
+// the column's shape, so weak evidence should leave the cell intact.
+constexpr double kPartAcceptThreshold = 0.80;
+
+std::string part_value(std::string_view raw, int part) {
+    if (part == kWholeValue) return str::trim(raw);
+    const std::vector<std::string> parts = split_parts(raw);
+    if (part < 0 || static_cast<std::size_t>(part) >= parts.size()) return {};
+    return parts[static_cast<std::size_t>(part)];
+}
 
 struct PassStats {
     double rate = 0.0;
     bool reformatted = false;
 };
 
-PassStats measured_pass(const FieldDef& field, const std::string& label,
-                        const doc::Model& model) {
+PassStats measured_pass(const FieldDef& field, const std::string& label, const doc::Model& model,
+                        int part) {
     std::size_t sampled = 0;
     std::size_t good = 0;
     std::size_t extracted = 0;
@@ -97,8 +108,10 @@ PassStats measured_pass(const FieldDef& field, const std::string& label,
         if (sampled >= kSampleLimit) break;
         const doc::Cell* cell = record.find(label);
         if (cell == nullptr || cell->value.empty()) continue;
+        const std::string piece = part_value(cell->value, part);
+        if (piece.empty()) continue;
         ++sampled;
-        const Coercion c = coerce(field, cell->value);
+        const Coercion c = coerce(field, piece);
         if (c.ok) {
             ++good;
             if (c.reformatted) ++extracted;
@@ -109,6 +122,27 @@ PassStats measured_pass(const FieldDef& field, const std::string& label,
     out.rate = static_cast<double>(good) / static_cast<double>(sampled);
     out.reformatted = extracted * 2 > good;
     return out;
+}
+
+/// How many parts the column splits into, when it splits the same way in
+/// every sampled row. A ragged column is not a composite, it is prose.
+std::size_t stable_part_count(const std::string& label, const doc::Model& model) {
+    std::size_t agreed = 0;
+    std::size_t sampled = 0;
+    for (const doc::RawRecord& record : model.records) {
+        if (sampled >= kSampleLimit) break;
+        const doc::Cell* cell = record.find(label);
+        if (cell == nullptr || cell->value.empty()) continue;
+        const std::size_t parts = split_parts(cell->value).size();
+        ++sampled;
+        if (sampled == 1) {
+            agreed = parts;
+        } else if (parts != agreed) {
+            return 0;
+        }
+    }
+    if (sampled < 2 || agreed < 2 || agreed > kMaxParts) return 0;
+    return agreed;
 }
 
 std::size_t field_order(const Registry& registry, std::string_view name) {
@@ -145,13 +179,14 @@ std::string_view kind_name(Kind k) {
     case Kind::Text: return "text";
     case Kind::Email: return "email";
     case Kind::Phone: return "phone";
+    case Kind::Number: return "number";
     }
     return "text";
 }
 
 std::optional<Kind> kind_from_name(std::string_view name) {
     for (Kind k : {Kind::Id, Kind::Name, Kind::Address, Kind::Money, Kind::Date, Kind::Status,
-                   Kind::Text, Kind::Email, Kind::Phone}) {
+                   Kind::Text, Kind::Email, Kind::Phone, Kind::Number}) {
         if (kind_name(k) == name) return k;
     }
     return std::nullopt;
@@ -187,6 +222,13 @@ Registry Registry::from_json(const std::string& text) {
         if (role != nullptr) def.role = role->as_string();
         const json::Value* identity = entry.find("identity");
         if (identity != nullptr) def.identity = identity->as_bool();
+        const json::Value* min = entry.find("min");
+        const json::Value* max = entry.find("max");
+        if (min != nullptr && max != nullptr) {
+            def.min = min->as_number();
+            def.max = max->as_number();
+            def.has_range = true;
+        }
         const json::Value* synonyms = entry.find("synonyms");
         if (synonyms != nullptr && synonyms->is_array()) {
             for (const json::Value& s : synonyms->items()) def.synonyms.push_back(s.as_string());
@@ -359,6 +401,21 @@ bool validate(const FieldDef& field, std::string_view raw) {
         const std::size_t dot = domain.rfind('.');
         return dot != std::string_view::npos && dot > 0 && domain.size() - dot >= 3;
     }
+    case Kind::Number: {
+        if (value.size() > 40) return false;
+        const char* begin = value.c_str();
+        char* end = nullptr;
+        const double parsed = std::strtod(begin, &end);
+        if (end == begin) return false;
+        while (end != nullptr && *end != '\0' &&
+               std::isspace(static_cast<unsigned char>(*end)) != 0) {
+            ++end;
+        }
+        if (end == nullptr || *end != '\0') return false;
+        if (!std::isfinite(parsed)) return false;
+        if (!field.has_range) return true;
+        return parsed >= field.min && parsed <= field.max;
+    }
     case Kind::Phone: {
         const std::size_t digits = digit_count(value);
         if (digits < 10 || digits > 15) return false;
@@ -395,6 +452,7 @@ std::string normalize(const FieldDef& field, std::string_view raw) {
     case Kind::Address:
     case Kind::Status:
     case Kind::Phone:
+    case Kind::Number:
     case Kind::Text: return str::collapse_ws(value);
     }
     return value;
@@ -419,6 +477,33 @@ std::vector<std::string> embedded_candidates(std::string_view raw) {
 
 bool kind_coercible(Kind k) { return k == Kind::Id || k == Kind::Money || k == Kind::Date; }
 } // namespace
+
+std::vector<std::string> split_parts(std::string_view value) {
+    static const std::vector<char> kSeparators = {',', ';', '|', '\t'};
+    const std::string text = str::trim(value);
+    if (text.empty()) return {};
+    for (const char separator : kSeparators) {
+        if (text.find(separator) == std::string::npos) continue;
+        std::vector<std::string> parts;
+        std::string current;
+        for (const char c : text) {
+            if (c == separator) {
+                parts.push_back(str::trim(current));
+                current.clear();
+            } else {
+                current.push_back(c);
+            }
+        }
+        parts.push_back(str::trim(current));
+        bool all_present = true;
+        for (const std::string& part : parts) {
+            if (part.empty()) all_present = false;
+        }
+        if (all_present && parts.size() >= 2) return parts;
+    }
+    return {};
+}
+
 
 Coercion coerce(const FieldDef& field, std::string_view raw) {
     if (validate(field, raw)) {
@@ -465,6 +550,7 @@ std::string Mapping::serialize() const {
         w.field("value_pass_rate", fm.value_pass_rate);
         w.field("confidence", fm.confidence);
         w.field("reformatted", fm.reformatted);
+        w.field("part", static_cast<double>(fm.part));
         w.end_object();
     }
     w.end_array();
@@ -496,6 +582,8 @@ Mapping Mapping::deserialize(const std::string& text) {
         if (conf != nullptr) fm.confidence = conf->as_number();
         const json::Value* ref = entry.find("reformatted");
         if (ref != nullptr) fm.reformatted = ref->as_bool();
+        const json::Value* part = entry.find("part");
+        if (part != nullptr) fm.part = static_cast<int>(part->as_number(kWholeValue));
         for (const double score : {fm.label_similarity, fm.value_pass_rate, fm.confidence}) {
             if (!std::isfinite(score) || score < 0.0 || score > 1.0) {
                 throw Error("schema: mapping score out of range for " + fm.field);
@@ -530,22 +618,49 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
                 neural_confidence = verdict.confidence;
             }
         }
+        const std::size_t parts = stable_part_count(label, model);
         for (const FieldDef& field : registry.fields()) {
             const double sim = score_label(field, label);
             const double nn = field.name == neural_field ? neural_confidence : 0.0;
             const double name_evidence = std::max(sim, nn);
-            const PassStats pass = measured_pass(field, label, model);
+            const PassStats pass = measured_pass(field, label, model, kWholeValue);
             const double combined = kLabelWeight * name_evidence + kValueWeight * pass.rate;
-            if (pass.rate <= 0.0 || combined < floor) continue;
-            Candidate c;
-            c.field = field.name;
-            c.source_label = label;
-            c.label_similarity = sim;
-            c.neural = nn;
-            c.value_pass_rate = pass.rate;
-            c.confidence = combined;
-            c.reformatted = pass.reformatted;
-            candidates.push_back(std::move(c));
+            if (pass.rate > 0.0 && combined >= floor) {
+                Candidate c;
+                c.field = field.name;
+                c.source_label = label;
+                c.label_similarity = sim;
+                c.neural = nn;
+                c.value_pass_rate = pass.rate;
+                c.confidence = combined;
+                c.reformatted = pass.reformatted;
+                candidates.push_back(std::move(c));
+            }
+            // A composite column names its parts in order often enough to rely
+            // on: "lat_long", "city_state_zip". Part p is scored against token
+            // p, so the label says which half is which. Without that alignment
+            // a split would be a guess, and the part is left unclaimed.
+            const std::vector<std::string> label_tokens = str::tokenize_words(label);
+            if (label_tokens.size() != parts) continue;
+            for (std::size_t p = 0; p < parts; ++p) {
+                const PassStats part_pass =
+                    measured_pass(field, label, model, static_cast<int>(p));
+                if (part_pass.rate <= 0.0) continue;
+                const double part_evidence = score_label(field, label_tokens[p]);
+                const double part_combined =
+                    kLabelWeight * part_evidence + kValueWeight * part_pass.rate;
+                if (part_combined < floor) continue;
+                Candidate c;
+                c.field = field.name;
+                c.source_label = label;
+                c.label_similarity = sim;
+                c.neural = nn;
+                c.value_pass_rate = part_pass.rate;
+                c.confidence = part_combined;
+                c.reformatted = true;
+                c.part = static_cast<int>(p);
+                candidates.push_back(std::move(c));
+            }
         }
     }
     std::stable_sort(candidates.begin(), candidates.end(),
@@ -554,24 +669,38 @@ std::vector<Candidate> score_candidates(const Registry& registry, const doc::Mod
                      });
 
     std::vector<std::string> used_fields;
-    std::vector<std::string> used_labels;
+    std::vector<std::string> used_slots;  // label, or label#part for a composite
     for (Candidate& c : candidates) {
-        if (c.confidence < kAcceptThreshold) continue;
+        const bool is_part = c.part != kWholeValue;
+        if (c.confidence < (is_part ? kPartAcceptThreshold : kAcceptThreshold)) continue;
         const FieldDef* field = registry.find(c.field);
         if (field == nullptr) continue;
-        if (validator_is_weak(field->kind) && c.label_similarity < kWeakValidatorLabelFloor) {
+        // A split into a weakly validated field is unfalsifiable: refuse it.
+        if (validator_is_weak(field->kind) &&
+            (is_part || c.label_similarity < kWeakValidatorLabelFloor)) {
             continue;
         }
         if (std::find(used_fields.begin(), used_fields.end(), c.field) != used_fields.end()) {
             continue;
         }
-        if (std::find(used_labels.begin(), used_labels.end(), c.source_label) !=
-            used_labels.end()) {
+        const std::string slot =
+            is_part ? c.source_label + "#" + std::to_string(c.part) : c.source_label;
+        if (std::find(used_slots.begin(), used_slots.end(), slot) != used_slots.end()) continue;
+        // Claiming a part rules out claiming the whole column, and the reverse.
+        const std::string whole = c.source_label;
+        if (is_part && std::find(used_slots.begin(), used_slots.end(), whole) != used_slots.end()) {
             continue;
+        }
+        if (!is_part) {
+            bool part_taken = false;
+            for (const std::string& used : used_slots) {
+                if (used.rfind(whole + "#", 0) == 0) part_taken = true;
+            }
+            if (part_taken) continue;
         }
         c.accepted = true;
         used_fields.push_back(c.field);
-        used_labels.push_back(c.source_label);
+        used_slots.push_back(slot);
     }
     return candidates;
 }
@@ -582,7 +711,8 @@ Mapping infer_mapping(const Registry& registry, const doc::Model& model,
     for (const Candidate& c : score_candidates(registry, model, kAcceptThreshold, neural)) {
         if (!c.accepted) continue;
         mapping.fields.push_back(FieldMapping{c.field, c.source_label, c.label_similarity,
-                                              c.value_pass_rate, c.confidence, c.reformatted});
+                                              c.value_pass_rate, c.confidence, c.reformatted,
+                                              c.part});
     }
     sort_by_schema_order(registry, mapping.fields);
 
@@ -615,7 +745,7 @@ Mapping apply_overrides(const Registry& registry, const Mapping& mapping,
         }
         std::erase_if(out.fields,
                       [&](const FieldMapping& fm) { return fm.source_label == label; });
-        const PassStats pass = measured_pass(*field, label, model);
+        const PassStats pass = measured_pass(*field, label, model, kWholeValue);
         FieldMapping fm;
         fm.field = name;
         fm.source_label = label;
@@ -650,7 +780,9 @@ ExtractionResult apply_mapping(const Registry& registry, const Mapping& mapping,
             if (field == nullptr) continue; // mapping from another schema version
             const doc::Cell* cell = record.find(fm.source_label);
             if (cell == nullptr) continue;
-            const Coercion coerced = coerce(*field, cell->value);
+            const std::string piece = part_value(cell->value, fm.part);
+            if (piece.empty()) continue;
+            const Coercion coerced = coerce(*field, piece);
             if (!coerced.ok) continue;
             canonical.values[fm.field] = coerced.value;
             ++field_hits[fm.field];

@@ -1017,6 +1017,60 @@ TEST(schema_validators) {
     CHECK(!tvalidate("owner_phone", "rosebert@gmail.com"));
 }
 
+TEST(schema_splits_a_composite_column_into_fields) {
+    // One column carries two values; neither field has a column of its own.
+    dd::doc::Model model;
+    model.labels = {"parcel_id", "latitude_longitude"};
+    for (const auto& [parcel, location] :
+         std::vector<std::pair<std::string, std::string>>{{"101-22-0001", "36.930961, -76.201715"},
+                                                          {"101-22-0002", "36.874750, -76.254110"},
+                                                          {"101-22-0003", "36.901230, -76.221000"},
+                                                          {"101-22-0004", "36.845600, -76.288900"}}) {
+        dd::doc::RawRecord record;
+        record.cells.push_back({"parcel_id", parcel});
+        record.cells.push_back({"latitude_longitude", location});
+        model.records.push_back(std::move(record));
+    }
+
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), model);
+    const dd::schema::FieldMapping* lat = mapping.find("latitude");
+    const dd::schema::FieldMapping* lon = mapping.find("longitude");
+    CHECK(lat != nullptr);
+    CHECK(lon != nullptr);
+    // The same column feeds both fields, through different parts.
+    CHECK_EQ(lat->source_label, std::string{"latitude_longitude"});
+    CHECK_EQ(lon->source_label, std::string{"latitude_longitude"});
+    CHECK(lat->part != lon->part);
+    CHECK(lat->value_pass_rate > 0.9);
+
+    const dd::schema::ExtractionResult extraction =
+        dd::schema::apply_mapping(test_registry(), mapping, model);
+    CHECK_EQ(extraction.records.size(), std::size_t{4});
+    const auto& first = extraction.records[0].values;
+    CHECK_EQ(first.at("latitude"), std::string{"36.930961"});
+    CHECK_EQ(first.at("longitude"), std::string{"-76.201715"});
+}
+
+TEST(schema_refuses_to_split_ragged_prose) {
+    // A column that splits differently per row is prose, not a composite.
+    dd::doc::Model model;
+    model.labels = {"parcel_id", "notes"};
+    for (const auto& [parcel, note] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"101-22-0001", "sold, vacant, boarded"},
+             {"101-22-0002", "occupied"},
+             {"101-22-0003", "lien, filed"},
+             {"101-22-0004", "36.9, -76.2, extra, more"}}) {
+        dd::doc::RawRecord record;
+        record.cells.push_back({"parcel_id", parcel});
+        record.cells.push_back({"notes", note});
+        model.records.push_back(std::move(record));
+    }
+    const dd::schema::Mapping mapping = dd::schema::infer_mapping(test_registry(), model);
+    CHECK(mapping.find("latitude") == nullptr);
+    CHECK(mapping.find("longitude") == nullptr);
+}
+
 TEST(schema_normalization) {
     CHECK_EQ(tnormalize("amount_due", "$8,421.37"), "8421.37");
     CHECK_EQ(tnormalize("event_date", "06/18/2026"), "2026-06-18");

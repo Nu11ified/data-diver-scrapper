@@ -10,7 +10,12 @@
 #include <vector>
 
 namespace dd::schema {
-enum class Kind { Id, Name, Address, Money, Date, Status, Text, Email, Phone };
+enum class Kind { Id, Name, Address, Money, Date, Status, Text, Email, Phone, Number };
+
+/// A composite cell splits into parts; a part index of -1 uses the whole cell.
+/// Splitting is what lets one "36.9, -76.2" column fill latitude and longitude.
+constexpr int kWholeValue = -1;
+std::vector<std::string> split_parts(std::string_view value);
 
 std::string_view kind_name(Kind k);
 std::optional<Kind> kind_from_name(std::string_view name);
@@ -21,6 +26,9 @@ struct FieldDef {
     std::string role;
     bool identity = false;
     std::vector<std::string> synonyms;
+    double min = 0.0;  // Number kind only; a closed range the value must fall in
+    double max = 0.0;
+    bool has_range = false;
 };
 
 class Registry {
@@ -56,6 +64,7 @@ struct FieldMapping {
     double value_pass_rate = 0.0;   // measured over sampled values, [0,1]
     double confidence = 0.0;        // combined; never a constant
     bool reformatted = false;       // values need extraction, not direct use
+    int part = kWholeValue;         // which split part of the cell carries it
 };
 
 struct Mapping {
@@ -81,6 +90,7 @@ struct Candidate {
     bool reformatted = false;
     double neural = 0.0;   // column transformer posterior for this pair
     bool accepted = false; // part of what infer_mapping would keep
+    int part = kWholeValue;
 };
 std::vector<Candidate> score_candidates(const Registry& registry, const doc::Model& model,
                                         double floor,

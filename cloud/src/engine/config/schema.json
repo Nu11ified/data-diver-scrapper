@@ -325,6 +325,30 @@
         "work desc",
         "complaint description"
       ]
+    },
+    {
+      "name": "latitude",
+      "kind": "number",
+      "min": -90,
+      "max": 90,
+      "synonyms": [
+        "latitude",
+        "lat",
+        "y coordinate"
+      ]
+    },
+    {
+      "name": "longitude",
+      "kind": "number",
+      "min": -180,
+      "max": 180,
+      "synonyms": [
+        "longitude",
+        "lon",
+        "lng",
+        "long",
+        "x coordinate"
+      ]
     }
   ]
 }
