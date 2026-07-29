@@ -100,34 +100,33 @@ export interface Turn {
   readonly at: string;
 }
 
-const COMMAND_WORDS = [
-  "review",
-  "scan",
-  "yes",
-  "no",
-  "approve",
-  "reject",
-  "criteria",
-  "memory",
+/// Only these bypass the model. Everything a person would actually say is
+/// conversation, and routing it to a keyword table is how a demo answers "Hi"
+/// with a menu.
+const SLASH_COMMANDS = [
   "connect",
-  "connect codex",
-  "any source",
-  "require multi source",
+  "login",
+  "logout",
+  "disconnect",
   "reset",
-  "reset account",
+  "reset-account",
   "delete",
-  "delete account",
+  "delete-account",
+  "help",
+  "status",
 ];
 
-export const isDeterministicCommand = (text: string): boolean => {
-  const lower = text.trim().toLowerCase().replace(/^\//, "").replace(/[_-]/g, " ").trim();
-  return (
-    /^\d+$/.test(lower) ||
-    COMMAND_WORDS.includes(lower) ||
-    /^min owed \d+$/.test(lower) ||
-    /^min debt ratio [0-9.]+$/.test(lower)
-  );
+export const slashCommand = (text: string): string => {
+  const trimmed = text.trim().toLowerCase();
+  if (!trimmed.startsWith("/")) return "";
+  const word = trimmed.slice(1).split(/\s+/)[0] ?? "";
+  const normalized = word.replace(/_/g, "-");
+  return SLASH_COMMANDS.includes(normalized) ? normalized : "";
 };
+
+export const isDeterministicCommand = (text: string): boolean =>
+  slashCommand(text) !== "";
+
 
 interface EvaluatedMatch {
   readonly match: PropertyMatch;

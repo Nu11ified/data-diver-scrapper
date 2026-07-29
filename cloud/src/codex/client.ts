@@ -8,7 +8,12 @@ export class CodexError extends Data.TaggedError("CodexError")<{
   readonly status: number;
 }> {}
 
-export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+/// Conversation is chatty and constant, so it runs on the cheaper, faster
+/// model; hunting county records is the reasoning-heavy job and gets the
+/// stronger one.
+export const CHAT_MODEL = "gpt-5.6-luna";
+export const RESEARCH_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CODEX_MODEL = CHAT_MODEL;
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
 
 const DeltaEvent = Schema.Struct({

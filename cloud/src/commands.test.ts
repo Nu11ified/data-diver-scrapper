@@ -1,32 +1,40 @@
 import { describe, expect, test } from "bun:test";
 
-import { isDeterministicCommand } from "./conversation/thread.ts";
+import { isDeterministicCommand, slashCommand } from "./conversation/thread.ts";
 
-describe("destructive commands never reach the model", () => {
-  test("reset and delete are recognised in every form the user might type", () => {
-    for (const form of [
+describe("only slash commands bypass the model", () => {
+  test("the commands that must never be interpreted", () => {
+    expect(slashCommand("/connect")).toBe("connect");
+    expect(slashCommand("/login")).toBe("login");
+    expect(slashCommand("/logout")).toBe("logout");
+    expect(slashCommand("/reset")).toBe("reset");
+    expect(slashCommand("/reset-account")).toBe("reset-account");
+    expect(slashCommand("/reset_account")).toBe("reset-account");
+    expect(slashCommand("/delete account")).toBe("delete");
+    expect(slashCommand("  /HELP  ")).toBe("help");
+  });
+
+  test("everything a person would actually say goes to the model", () => {
+    // The bug this replaced answered "Hi" with a keyword menu.
+    for (const said of [
+      "Hi",
+      "hello there",
+      "review",
+      "criteria",
+      "approve",
+      "what have you got for me",
+      "scan orlando",
+      "1",
+      "connect",
       "reset",
-      "RESET",
-      " reset ",
-      "/reset-account",
-      "reset account",
-      "/reset_account",
-      "delete",
-      "delete account",
-      "/delete-account",
-      "DELETE ACCOUNT",
     ]) {
-      expect(isDeterministicCommand(form)).toBe(true);
+      expect(slashCommand(said)).toBe("");
+      expect(isDeterministicCommand(said)).toBe(false);
     }
   });
 
-  test("ordinary conversation still routes to the model", () => {
-    for (const form of [
-      "can you reset my minimum owed to 40000",
-      "delete the third property from the list",
-      "scan chesterfield county",
-    ]) {
-      expect(isDeterministicCommand(form)).toBe(false);
-    }
+  test("an unknown slash word is conversation, not a command", () => {
+    expect(slashCommand("/wat")).toBe("");
+    expect(slashCommand("/")).toBe("");
   });
 });

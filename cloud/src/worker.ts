@@ -17,7 +17,7 @@ import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
   ConversationThread,
   ConversationThreadLive,
-  isDeterministicCommand,
+  slashCommand,
   subjectOf,
   templateDraft,
   type HandleMessageInput,
@@ -110,6 +110,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       SENDBLUE_API_KEY: Config.redacted("SENDBLUE_API_KEY"),
       SENDBLUE_SECRET_KEY: Config.redacted("SENDBLUE_SECRET_KEY"),
       CREDENTIAL_MASTER_KEY: Config.redacted("CREDENTIAL_MASTER_KEY"),
+      PUBLIC_ORIGIN: Config.redacted("PUBLIC_ORIGIN"),
     },
   },
   Effect.gen(function* () {
@@ -127,6 +128,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         : sendblue(Redacted.value(sendblueKey), Redacted.value(sendblueSecret));
 
     const masterKeyB64 = Redacted.value(yield* Config.redacted("CREDENTIAL_MASTER_KEY"));
+    // Requests arrive with a relative url, so nothing in them knows the public
+    // address of this worker. A link built from a guess is a link that does
+    // not open, which is worse than no link.
+    const publicOrigin = Redacted.value(yield* Config.redacted("PUBLIC_ORIGIN")).replace(
+      /\/+$/,
+      "",
+    );
 
     // One budget for the worker's lifetime. Every county fetch, crawl and
     // discovery attempt draws on it, so no single request can turn this into a
@@ -226,6 +234,29 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           ),
         );
         const decision = parseScoutDecision(raw);
+        // The thread already implements listing, opening and approving, with
+        // the pending state and traces those need. The model chooses; this
+        // replays its choice through the same path a keyword used to take.
+        const asInternal =
+          decision.kind === "show_matches"
+            ? "review"
+            : decision.kind === "show_property"
+              ? String(decision.index)
+              : decision.kind === "approve_outreach"
+                ? "approve"
+                : "";
+        if (asInternal !== "") {
+          const acted = yield* thread.handleMessage({
+            text: asInternal,
+            candidates,
+            codexAccount: "",
+          });
+          const lead = decision.text.trim();
+          return {
+            ...acted,
+            reply: lead === "" ? acted.reply : `${lead}\n\n${acted.reply}`,
+          };
+        }
         if (decision.kind === "discover") {
           const jurisdiction = decision.jurisdiction
             .toLowerCase()
@@ -841,6 +872,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const handleFetch = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const url = new URL(request.url, "http://worker");
+        // request.url arrives relative, so url.origin is the placeholder base
+        // and every link built from it pointed at "http://worker". The Host
+        // header is the only thing that knows where this worker actually is.
+        const origin = publicOrigin === "" ? url.origin : publicOrigin;
 
         if (url.pathname === "/health") {
           const version = yield* Effect.tryPromise({
@@ -926,11 +961,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: false, error: "from_number and content are required" }, 400);
           }
 
-          yield* Effect.tryPromise({
+          const showTyping = Effect.tryPromise({
             try: () => sender.typing(phone, ourNumber),
             catch: (cause): Error =>
               cause instanceof Error ? cause : new Error(String(cause)),
           }).pipe(Effect.catch(() => Effect.void));
+          yield* showTyping;
 
           const preflight = yield* Effect.tryPromise({
             try: async () => {
@@ -954,10 +990,79 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
           const lower = text.trim().toLowerCase();
 
-          // Handled before the model sees anything: wiping an account is not a
-          // decision to route through an interpreter.
-          const wants = lower.replace(/^\//, "").replace(/[_-]/g, " ").trim();
-          if (wants === "reset" || wants === "reset account") {
+          // A single-use link, minted whenever the user needs to sign in.
+          const mintConnectUrl = Effect.gen(function* () {
+            const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+            yield* bucket.put(
+              `connect/${token}`,
+              JSON.stringify({
+                phone,
+                verifier: makeVerifier(),
+                createdAt: new Date().toISOString(),
+              }),
+            );
+            return `${origin}/connect/${token}`;
+          });
+
+          // Only slash commands bypass the model. Everything else is
+          // conversation, including "hi".
+          const wants = slashCommand(text);
+          if (wants === "help" || wants === "status") {
+            const reply =
+              preflight.codexAccount === ""
+                ? `Goliath Scout. You are not signed in yet, so text /connect to link ` +
+                  `your ChatGPT account. After that just talk to me normally.\n\n` +
+                  `/connect  /reset  /delete  /help`
+                : `Signed in as ${preflight.codexAccount}. Just talk to me normally - ` +
+                  `ask what matches, change your criteria, or name a county to scan.\n\n` +
+                  `/logout  /reset  /delete  /help`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply });
+          }
+
+          if (wants === "connect" || wants === "login") {
+            if (masterKeyB64 === "") {
+              return json({ ok: false, phone, error: "credential store not configured" }, 503);
+            }
+            const link = yield* mintConnectUrl;
+            const reply =
+              preflight.codexAccount !== ""
+                ? `Already signed in as ${preflight.codexAccount}. To switch accounts, ` +
+                  `open this:\n${link}`
+                : `Open this to sign in with ChatGPT:\n${link}\n\n` +
+                  `Single use, expires in 15 minutes. Your tokens are stored encrypted.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply });
+          }
+
+          if (wants === "logout" || wants === "disconnect") {
+            const gone = yield* Effect.tryPromise({
+              try: () => db().credential.deleteMany({ where: { tenantId: preflight.tenantId } }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+            const reply =
+              gone instanceof Error
+                ? `Could not sign you out: ${gone.message}`
+                : `Signed out. Your criteria and history are kept; text /connect to ` +
+                  `sign back in.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: !(gone instanceof Error), phone, reply });
+          }
+
+          if (wants === "reset" || wants === "reset-account") {
             const wiped = yield* Effect.tryPromise({
               try: async () => {
                 const prisma = db();
@@ -995,12 +1100,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: true, phone, reply, reset: wiped });
           }
 
-          if (wants === "delete account" || wants === "delete") {
-            if (wants === "delete") {
+          if (wants === "delete" || wants === "delete-account") {
+            if (wants === "delete" && !/account/i.test(text)) {
               return json({
                 ok: true,
                 phone,
-                reply: "Text DELETE ACCOUNT to erase everything, including your Codex link.",
+                reply: "Text /delete account to erase everything, including your Codex link.",
               });
             }
             const removed = yield* Effect.tryPromise({
@@ -1057,17 +1162,35 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 createdAt: new Date().toISOString(),
               }),
             );
-            input = { ...input, connectUrl: `${url.origin}/connect/${token}` };
+            input = { ...input, connectUrl: `${origin}/connect/${token}` };
           }
 
           const thread = threads.getByName(phone);
-          const scoutEligible =
-            !isDeterministicCommand(text) &&
-            preflight.codexAccount !== "" &&
-            masterKeyB64 !== "";
+          // Signing in is not optional: the model is the conversation, so
+          // without it there is nothing to answer with except a link.
+          if (preflight.codexAccount === "") {
+            const link = masterKeyB64 === "" ? "" : yield* mintConnectUrl;
+            const reply =
+              link === ""
+                ? `Goliath Scout is not configured to sign users in on this deployment.`
+                : `Hi - I am Goliath Scout. I find distressed properties in county ` +
+                  `records and text you the ones worth a call.\n\n` +
+                  `Sign in with ChatGPT to start:\n${link}\n\n` +
+                  `Then just talk to me normally. Single-use link, 15 minutes.`;
+            yield* Effect.tryPromise({
+              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.catch(() => Effect.void));
+            return json({ ok: true, phone, reply, signedIn: false });
+          }
+
+          // The bubble lapses after a few seconds and the model routinely takes
+          // longer, so it is raised again immediately before the slow call.
+          yield* showTyping;
           let scoutError = "";
           let scouted: HandleOutcome | undefined;
-          if (scoutEligible) {
+          {
             scouted = yield* scoutTurn(preflight.tenantId, phone, text, input.candidates).pipe(
               Effect.map((o): HandleOutcome | undefined => o),
               Effect.catch((cause) => {
@@ -1205,7 +1328,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
           const challenge = yield* challengeFor(connectState.verifier);
           const location = authorizeUrl({
-            redirectUri: `${url.origin}/connect/callback`,
+            redirectUri: `${origin}/connect/callback`,
             state: token,
             challenge,
           });
@@ -1232,7 +1355,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const masterKey = yield* importMasterKey(masterKeyB64);
           const tokens = yield* exchangeCode({
             code,
-            redirectUri: `${url.origin}/connect/callback`,
+            redirectUri: `${origin}/connect/callback`,
             verifier: connectState.verifier,
           });
           const identity = yield* identityFromIdToken(tokens.idToken);
