@@ -241,6 +241,60 @@ TEST(html_basic_tree) {
     CHECK(dd::str::contains(doc.text(), "Hello world"));
 }
 
+TEST(css_selector_matches_like_a_dom) {
+    const dd::html::Document doc = dd::html::parse(
+        "<html><body>"
+        "<table class='results Sortable' id='main'>"
+        "  <thead><tr><th>Parcel</th></tr></thead>"
+        "  <tbody>"
+        "    <tr class='row odd'><td class='parcel'>101-22</td><td>SMITH, JANE</td></tr>"
+        "    <tr class='row even'><td class='parcel'>101-23</td><td>ACME LLC</td></tr>"
+        "  </tbody>"
+        "</table>"
+        "<table class='nav'><tbody><tr><td class='parcel'>ignore me</td></tr></tbody></table>"
+        "<a href='/next' data-page='2'>Next</a>"
+        "</body></html>");
+
+    CHECK_EQ(dd::html::query_all(doc, "tr").size(), std::size_t{4});
+    CHECK_EQ(dd::html::query_all(doc, "table.results tr").size(), std::size_t{3});
+    CHECK_EQ(dd::html::query_all(doc, "table.results > tbody > tr").size(), std::size_t{2});
+    CHECK_EQ(dd::html::query_all(doc, "#main tbody td.parcel").size(), std::size_t{2});
+    CHECK_EQ(dd::html::query_all(doc, "table.results.sortable tbody tr").size(), std::size_t{2});
+    CHECK_EQ(dd::html::query_all(doc, "th, a").size(), std::size_t{2});
+    CHECK_EQ(dd::html::query_all(doc, "[data-page]").size(), std::size_t{1});
+    CHECK_EQ(dd::html::query_all(doc, "[data-page='2']").size(), std::size_t{1});
+    CHECK_EQ(dd::html::query_all(doc, "[data-page='9']").size(), std::size_t{0});
+    CHECK_EQ(dd::html::query_all(doc, "tbody > td").size(), std::size_t{0}); // td is not a tbody child
+
+    const dd::html::Node* first = dd::html::query(doc, "table.results tbody td.parcel");
+    CHECK(first != nullptr);
+    CHECK_EQ(first->text_content(), "101-22");
+
+    // The nav table's cell must not be reachable through the results table.
+    const std::vector<const dd::html::Node*> parcels =
+        dd::html::query_all(doc, "table.results td.parcel");
+    CHECK_EQ(parcels.size(), std::size_t{2});
+    CHECK_EQ(parcels[1]->text_content(), "101-23");
+
+    CHECK_THROWS(dd::html::css("table..bad"));
+    CHECK_THROWS(dd::html::css(""));
+}
+
+TEST(dom_traversal_axes) {
+    const dd::html::Document doc = dd::html::parse(
+        "<div class='card'><span>a</span><span>b</span>text<span>c</span></div>");
+    const dd::html::Node* card = dd::html::query(doc, "div.card");
+    CHECK(card != nullptr);
+    const std::vector<const dd::html::Node*> kids = dd::html::element_children(card);
+    CHECK_EQ(kids.size(), std::size_t{3}); // the bare text node is not an element
+    CHECK_EQ(dd::html::next_element(kids[0])->text_content(), "b");
+    CHECK_EQ(dd::html::previous_element(kids[2])->text_content(), "b");
+    CHECK(dd::html::next_element(kids[2]) == nullptr);
+    CHECK(dd::html::previous_element(kids[0]) == nullptr);
+    CHECK_EQ(dd::html::closest(kids[1], dd::html::css("div.card")), card);
+    CHECK(dd::html::closest(kids[1], dd::html::css("table")) == nullptr);
+}
+
 TEST(html_recovers_from_unclosed_tags) {
     const dd::html::Document doc = dd::html::parse(
         "<table><tr><td>a<td>b<tr><td>c<td>d</table>");

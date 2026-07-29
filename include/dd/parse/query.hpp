@@ -67,4 +67,19 @@ Selector is_element();
 std::vector<const Node*> select(const Node* root, const Selector& selector);
 std::vector<const Node*> select(const Document& document, const Selector& selector);
 const Node* select_first(const Node* root, const Selector& selector);
+
+/// A CSS subset: type, universal, .class, #id, [attr], [attr="value"],
+/// compounds, descendant and child combinators, and comma groups.
+/// Throws Error on a malformed selector rather than matching nothing.
+Selector css(std::string_view selector);
+
+std::vector<const Node*> query_all(const Node* root, std::string_view selector);
+std::vector<const Node*> query_all(const Document& document, std::string_view selector);
+const Node* query(const Node* root, std::string_view selector);
+const Node* query(const Document& document, std::string_view selector);
+
+const Node* closest(const Node* node, const Selector& selector);
+std::vector<const Node*> element_children(const Node* node);
+const Node* next_element(const Node* node);
+const Node* previous_element(const Node* node);
 } // namespace dd::html
