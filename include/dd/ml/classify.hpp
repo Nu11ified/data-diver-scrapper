@@ -19,6 +19,7 @@ struct Prediction {
 struct LooPrediction {
     std::string actual;
     std::string predicted;
+    std::string source;  // corpus file, so disagreements can be inspected
 };
 
 struct TrainReport {

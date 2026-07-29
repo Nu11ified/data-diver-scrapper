@@ -212,4 +212,99 @@ Result get(const std::string& url, const Options& options) {
     return r;
 }
 
+std::string_view mode_name(Mode m) {
+    switch (m) {
+    case Mode::Api: return "api";
+    case Mode::Html: return "html";
+    case Mode::Rendered: return "rendered";
+    case Mode::Document: return "document";
+    }
+    return "html";
+}
+
+bool renderer_available() {
+    const char* renderer = std::getenv("DD_RENDERER");
+    return renderer != nullptr && renderer[0] != '\0';
+}
+
+bool likely_script_rendered(const std::string& content_type, const std::string& body) {
+    const std::string type = str::to_lower(content_type);
+    const std::string head = str::to_lower(body.substr(0, std::min<std::size_t>(body.size(), 4096)));
+    const bool html = str::contains(type, "html") ||
+                      (type.empty() && (str::contains(head, "<!doctype html") ||
+                                        str::contains(head, "<html")));
+    if (!html || body.empty()) return false;
+
+    static const char* kShells[] = {
+        "id=\"root\"", "id=\"app\"", "id=\"__next\"", "__next_data__", "ng-app",
+        "data-reactroot", "window.__initial_state__", "id=\"react-root\"",
+    };
+    const std::string lowered = str::to_lower(body);
+    bool shell = false;
+    for (const char* marker : kShells) {
+        if (str::contains(lowered, marker)) shell = true;
+    }
+
+    // Script-to-text ratio: a framework shell is mostly code, a server
+    // rendered page mostly prose and table cells.
+    std::size_t script_bytes = 0;
+    std::size_t at = 0;
+    while ((at = lowered.find("<script", at)) != std::string::npos) {
+        const std::size_t close = lowered.find("</script>", at);
+        if (close == std::string::npos) break;
+        script_bytes += close - at;
+        at = close + 9;
+    }
+    std::size_t text_bytes = 0;
+    bool in_tag = false;
+    for (char c : body) {
+        if (c == '<') in_tag = true;
+        else if (c == '>') in_tag = false;
+        else if (!in_tag && std::isspace(static_cast<unsigned char>(c)) == 0) ++text_bytes;
+    }
+    const bool code_heavy = text_bytes * 4 < script_bytes;
+    return shell || code_heavy;
+}
+
+Fetched get_auto(const std::string& url, const Options& options) {
+    Fetched out;
+    out.result = get(url, options);
+    if (has_prefix(url, "render+")) {
+        out.mode = Mode::Rendered;
+        out.render_attempted = true;
+        return out;
+    }
+    if (!out.result.ok) return out;
+
+    const std::string type = str::to_lower(out.result.content_type);
+    if (str::contains(type, "json") || str::contains(type, "csv") ||
+        str::contains(type, "xml")) {
+        out.mode = Mode::Api;
+        return out;
+    }
+    if (str::contains(type, "pdf")) {
+        out.mode = Mode::Document;
+        return out;
+    }
+    if (is_local(url)) return out;
+
+    if (!likely_script_rendered(out.result.content_type, out.result.body)) return out;
+    if (!renderer_available()) {
+        out.render_note = "looks script-rendered; set DD_RENDERER to fetch it through a browser";
+        return out;
+    }
+    out.render_attempted = true;
+    Fetched rendered;
+    rendered.result = get("render+" + url, options);
+    if (!rendered.result.ok) {
+        out.render_note = "render attempt failed: " + rendered.result.error;
+        return out;
+    }
+    rendered.mode = Mode::Rendered;
+    rendered.render_attempted = true;
+    rendered.result.url = url;
+    rendered.render_note = "static body was a framework shell";
+    return rendered;
+}
+
 } // namespace dd::fetch

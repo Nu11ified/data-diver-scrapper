@@ -368,7 +368,7 @@ int harvest_docs(const std::string& corpus_dir, std::size_t datasets_per_query) 
 }
 
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
-          const std::string& model_path, double alpha, bool sweep) {
+          const std::string& model_path, double alpha, bool sweep, double min_accuracy) {
     struct Attempt {
         double alpha;
         classify::TrainReport report;
@@ -395,11 +395,15 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
     // Per-class results and confusion from the winning run.
     std::map<std::string, std::pair<std::size_t, std::size_t>> per_class; // correct, total
     std::map<std::string, std::size_t> confusion;
+    std::vector<classify::LooPrediction> disagreements;
     for (const classify::LooPrediction& p : best->report.predictions) {
         auto& [correct, total] = per_class[p.actual];
         ++total;
         if (p.actual == p.predicted) ++correct;
-        else ++confusion[p.actual + " misread as " + p.predicted];
+        else {
+            ++confusion[p.actual + " misread as " + p.predicted];
+            disagreements.push_back(p);
+        }
     }
     section("Validation at alpha " + std::to_string(best->alpha).substr(0, 4));
     std::vector<std::vector<std::string>> rows;
@@ -415,10 +419,26 @@ int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
         for (const auto& [pair, count] : confusion) {
             std::printf("  %s %s (x%zu)\n", stamp("review").c_str(), pair.c_str(), count);
         }
+        // Naming the files makes the confusion table an audit an operator can
+        // act on: harvested labels come from a search query, so a
+        // disagreement is as likely to be a wrong folder as a wrong model.
+        std::printf("\n  %s\n", paint("dim", "documents that disagree with their folder:").c_str());
+        std::size_t shown = 0;
+        for (const classify::LooPrediction& p : disagreements) {
+            if (++shown > 12) {
+                std::printf("    %s\n",
+                            paint("dim", "... " + std::to_string(disagreements.size() - 12) +
+                                             " more").c_str());
+                break;
+            }
+            std::printf("    %-52s %s -> %s\n", p.source.c_str(), p.actual.c_str(),
+                        p.predicted.c_str());
+        }
     }
 
-    if (best->report.leave_one_out_accuracy < 0.85) {
-        std::printf("%s accuracy below 0.85; model not saved\n", stamp("failed").c_str());
+    if (best->report.leave_one_out_accuracy < min_accuracy) {
+        std::printf("%s accuracy below %.2f; model not saved\n", stamp("failed").c_str(),
+                    min_accuracy);
         return 1;
     }
     best->classifier.save(model_path);
@@ -562,6 +582,46 @@ int export_county(store::Store& store, const schema::Registry& registry,
     fileio::write_file_atomic(out_path, payload);
     std::printf("  %s wrote %zu bytes to %s\n", stamp("ok").c_str(), payload.size(),
                 out_path.c_str());
+    return 0;
+}
+
+int catalog(store::Store& store, std::size_t datasets_per_query, bool add) {
+    section("Country-wide source discovery");
+    const std::vector<harvest::Discovered> found = harvest::discover(
+        datasets_per_query, [](const std::string& line) { std::printf("  %s\n", line.c_str()); });
+    if (found.empty()) {
+        std::printf("  %s catalog returned nothing\n", stamp("failed").c_str());
+        return 1;
+    }
+    std::set<std::string> existing;
+    for (const store::Source& s : store.sources()) existing.insert(s.url);
+
+    std::map<std::string, std::size_t> by_jurisdiction;
+    std::size_t added = 0;
+    for (const harvest::Discovered& d : found) {
+        by_jurisdiction[d.jurisdiction] += 1;
+        if (existing.count(d.url) != 0) continue;
+        if (add) {
+            store.add_source(d.name, d.url, d.jurisdiction);
+            ++added;
+        }
+    }
+    std::vector<std::vector<std::string>> rows;
+    std::size_t shown = 0;
+    for (const auto& [jurisdiction, count] : by_jurisdiction) {
+        if (++shown > 20) break;
+        rows.push_back({jurisdiction, std::to_string(count)});
+    }
+    render::table({"jurisdiction", "datasets"}, rows);
+    std::printf("  %zu datasets across %zu jurisdictions%s\n", found.size(),
+                by_jurisdiction.size(),
+                by_jurisdiction.size() > 20 ? " (first 20 shown)" : "");
+    if (add) {
+        std::printf("  %s %zu new sources added; 'run all' ingests them\n",
+                    stamp("ok").c_str(), added);
+    } else {
+        std::printf("  %s\n", paint("dim", "'catalog add' adds these as sources").c_str());
+    }
     return 0;
 }
 

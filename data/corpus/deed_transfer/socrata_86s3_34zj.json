@@ -1,0 +1,5 @@
+[{"town":"Berkshire","property_category":"Commercial","number_transfers":"2","number_other_sales":"2"}
+,{"town":"Colchester","property_category":"Industrial","number_transfers":"1","number_other_sales":"1"}
+,{"town":"Colchester","property_category":"Farms","number_transfers":"1","number_other_sales":"1"}
+,{"town":"Barre City","property_category":"Industrial","number_transfers":"6","number_other_sales":"2","number":"4","total_amount":"331000","selling_price_average":"82750","selling_price_median":"59873","totaltaxdue":"4800"}
+,{}]

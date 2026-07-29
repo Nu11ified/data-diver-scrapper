@@ -409,6 +409,7 @@ struct ShellState {
     std::string model_path;
     std::string schema_path;
     std::string columns_model_path;
+    double min_accuracy = 0.80;
     std::optional<dd::columns::ColumnModel> column_model;
     std::optional<dd::store::Store> store;
     std::optional<dd::pipeline::Pipeline> pipeline;
@@ -471,6 +472,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  review SOURCE_ID       confirm or refuse uncertain matches\n"
                         "  harvest [N]            build the column corpus from live portals\n"
                         "  harvest docs [N]       grow the document corpus with real datasets\n"
+                        "  catalog [add] [N]      discover county sources nationwide\n"
                         "  train columns [EPOCHS] train the column transformer, validate by domain\n"
                         "  export COUNTY [FILE]   the compiled county as canonical JSON\n"
                         "  bench                  score against the hand-verified answer key\n"
@@ -590,6 +592,21 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                                    parts.size() == 3 ? parts[2] : "");
             continue;
         }
+        if (command == "catalog") {
+            const bool add = parts.size() >= 2 && parts[1] == "add";
+            const std::size_t value_index = add ? 2 : 1;
+            std::optional<long> per_query{10};
+            if (parts.size() == value_index + 1) {
+                per_query = parse_long(parts[value_index], 1, 200);
+            }
+            if (parts.size() > value_index + 1 || !per_query.has_value()) {
+                std::printf("  usage: catalog [add] [DATASETS_PER_QUERY (1-200)]\n");
+                continue;
+            }
+            state.ensure();
+            dd::cli::catalog(*state.store, static_cast<std::size_t>(*per_query), add);
+            continue;
+        }
         if (command == "bench" && parts.size() == 1) {
             dd::pipeline::Pipeline& pipeline = state.ensure();
             dd::cli::bench(*state.store, pipeline, "data/golden/golden.json");
@@ -612,7 +629,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                 continue;
             }
             dd::cli::train(state.pipeline.has_value() ? &*state.pipeline : nullptr,
-                           "data/corpus", state.model_path, *alpha, sweep);
+                           "data/corpus", state.model_path, *alpha, sweep, state.min_accuracy);
             continue;
         }
         if (command == "schema" && parts.size() == 1) {
@@ -809,8 +826,14 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "datadiver: --alpha must be a positive number\n");
                 return 2;
             }
+            const std::optional<double> floor =
+                parse_positive_double(flag(args, "min-accuracy", "0.80"), 1.0);
+            if (!floor.has_value()) {
+                std::fprintf(stderr, "datadiver: --min-accuracy must be between 0 and 1\n");
+                return 2;
+            }
             return dd::cli::train(nullptr, flag(args, "corpus", "data/corpus"), model_path,
-                                  *alpha, args.flags.count("sweep") != 0);
+                                  *alpha, args.flags.count("sweep") != 0, *floor);
         }
 
         if (args.command == "counties" || args.command == "county" || args.command == "map" ||

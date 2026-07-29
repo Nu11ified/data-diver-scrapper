@@ -35,9 +35,32 @@ struct Result {
 // "render+https://..." URLs are fetched through an external renderer (a
 // headless browser) named by the DD_RENDERER environment variable: the
 // command is run with the URL as its argument and its stdout becomes the
-// body. The engine takes bytes from it and nothing else - parsing,
+// body. The engine takes bytes from it and nothing else, so parsing,
 // classification and extraction stay in-process.
 Result get(const std::string& url, const Options& options = {});
+
+// How a body arrived, reported so the CLI can show which path a source took.
+enum class Mode { Api, Html, Rendered, Document };
+std::string_view mode_name(Mode m);
+
+struct Fetched {
+    Result result;
+    Mode mode = Mode::Html;
+    bool render_attempted = false;
+    std::string render_note;  // why rendering was or was not used
+};
+
+// A body is script-rendered when the markup is a framework shell: an app
+// mount point or hydration payload, and far more script than visible text.
+bool likely_script_rendered(const std::string& content_type, const std::string& body);
+
+bool renderer_available();
+
+// One retrieval that handles every source shape without the caller knowing
+// which it is: JSON and CSV come back as they are, static HTML likewise, and
+// a framework shell is re-fetched through the renderer when one is
+// configured. The chosen path is reported, never guessed at silently.
+Fetched get_auto(const std::string& url, const Options& options = {});
 
 bool is_local(const std::string& url);
 bool http_supported();

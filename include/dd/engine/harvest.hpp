@@ -63,4 +63,14 @@ std::map<std::string, std::size_t> grow_corpus(const std::string& corpus_dir,
                                                std::size_t datasets_per_query,
                                                const std::function<void(const std::string&)>& log);
 
+// Country-wide source discovery: finds distressed-property datasets across
+// every US portal in the catalog and returns them as store sources, with the
+// publishing agency as the jurisdiction. Nothing is fetched here beyond the
+// catalog itself; the operator decides what to ingest.
+struct Discovered {
+    std::string id, name, url, jurisdiction, query;
+};
+std::vector<Discovered> discover(std::size_t datasets_per_query,
+                                 const std::function<void(const std::string&)>& log);
+
 } // namespace dd::harvest

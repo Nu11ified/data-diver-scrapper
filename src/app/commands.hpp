@@ -36,7 +36,7 @@ int harvest_docs(const std::string& corpus_dir, std::size_t datasets_per_query);
 // model (best one when sweeping) if accuracy clears 0.85 and hot-swaps the
 // pipeline's classifier when one is given.
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
-          const std::string& model_path, double alpha, bool sweep);
+          const std::string& model_path, double alpha, bool sweep, double min_accuracy);
 
 // Harvests the column corpus from live Socrata portals into corpus_path
 // (overwriting), then reports what was gathered.
@@ -53,6 +53,10 @@ int train_columns(pipeline::Pipeline* pipeline, const std::string& corpus_path,
 // or prints it when out_path is empty.
 int export_county(store::Store& store, const schema::Registry& registry,
                   const std::string& county, const std::string& out_path);
+
+// Country-wide discovery: finds distressed-property datasets on every US
+// portal and adds the new ones as sources, reporting jurisdiction coverage.
+int catalog(store::Store& store, std::size_t datasets_per_query, bool add);
 
 // The validity benchmark: scores the engine's classification and mapping on
 // every golden source against the hand-verified answer key, from cached

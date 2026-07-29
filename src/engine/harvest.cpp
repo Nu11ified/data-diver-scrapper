@@ -318,4 +318,72 @@ std::map<std::string, std::size_t> grow_corpus(
     return written;
 }
 
+std::vector<Discovered> discover(std::size_t datasets_per_query,
+                                 const std::function<void(const std::string&)>& log) {
+    fetch::Options net;
+    net.timeout_seconds = 20;
+    std::vector<Discovered> out;
+    std::set<std::string> seen;
+    // Property queries only: the column corpus needs unrelated datasets for
+    // negatives, a source catalog does not.
+    static const std::vector<std::string> kQueries = {
+        "property tax", "tax sale", "delinquent", "code violations", "building permits",
+        "property assessment", "foreclosure", "sheriff sale", "deed", "parcel",
+        "housing inspection",
+    };
+    for (const std::string& query : kQueries) {
+        const std::string url = std::string{kCatalog} + "?only=datasets&limit=" +
+                                std::to_string(datasets_per_query) +
+                                "&q=" + url_encode(query);
+        const fetch::Result catalog = fetch::get(url, net);
+        if (!catalog.ok) {
+            if (log) log("catalog '" + query + "' failed: " + catalog.error);
+            continue;
+        }
+        json::Value root;
+        try {
+            root = json::parse(catalog.body);
+        } catch (const Error&) {
+            continue;
+        }
+        const json::Value* results = root.find("results");
+        if (results == nullptr) continue;
+        std::size_t taken = 0;
+        for (const json::Value& entry : results->items()) {
+            if (taken >= datasets_per_query) break;
+            const json::Value* resource = entry.find("resource");
+            const json::Value* metadata = entry.find("metadata");
+            if (resource == nullptr || metadata == nullptr) continue;
+            const json::Value* id = resource->find("id");
+            const json::Value* domain = metadata->find("domain");
+            const json::Value* name = resource->find("name");
+            const json::Value* fields = resource->find("columns_field_name");
+            if (id == nullptr || domain == nullptr || name == nullptr || fields == nullptr) {
+                continue;
+            }
+            const std::string dataset_id = id->as_string();
+            const std::string dataset_domain = domain->as_string();
+            if (!plausible_domain(dataset_domain) || !plausible_dataset_id(dataset_id)) continue;
+            if (fields->items().size() < 4) continue;
+            if (!seen.insert(dataset_id).second) continue;
+
+            const json::Value* attribution = resource->find("attribution");
+            std::string jurisdiction =
+                attribution == nullptr ? std::string{} : attribution->as_string();
+            if (jurisdiction.empty()) jurisdiction = dataset_domain;
+
+            Discovered d;
+            d.id = "socrata_" + str::replace_all(dataset_id, "-", "_");
+            d.name = name->as_string();
+            d.url = "https://" + dataset_domain + "/resource/" + dataset_id + ".json?$limit=50";
+            d.jurisdiction = jurisdiction;
+            d.query = query;
+            out.push_back(std::move(d));
+            ++taken;
+        }
+        if (log) log("'" + query + "': " + std::to_string(taken) + " sources");
+    }
+    return out;
+}
+
 } // namespace dd::harvest

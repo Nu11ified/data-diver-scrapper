@@ -9,6 +9,7 @@ namespace dd::classify {
 namespace {
 
 struct Example {
+    std::string source;
     std::string label;
     features::Bag bag;
 };
@@ -28,7 +29,7 @@ std::vector<Example> load_corpus(const std::string& corpus_dir) {
             const doc::Model model = doc::build_auto("", body);
             // No url during training: corpus file names must not teach the
             // model anything.
-            examples.push_back(Example{label, features::extract(model, "")});
+            examples.push_back(Example{file, label, features::extract(model, "")});
         }
     }
     return examples;
@@ -45,7 +46,8 @@ std::vector<LooPrediction> leave_one_out(const std::vector<Example>& examples, d
         }
         const std::vector<model::Scored> scored = bayes.predict(examples[held].bag);
         out.push_back(LooPrediction{examples[held].label,
-                                    scored.empty() ? std::string{} : scored.front().label});
+                                    scored.empty() ? std::string{} : scored.front().label,
+                                    examples[held].source});
     }
     return out;
 }
