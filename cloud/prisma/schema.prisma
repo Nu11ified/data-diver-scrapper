@@ -1,0 +1,224 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "workerd"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  phone     String   @unique
+  createdAt DateTime @default(now())
+
+  credential   Credential?
+  criteria     Criteria?
+  evaluations  Evaluation[]
+  outreach     Outreach[]
+  messages     Message[]
+  decisionTrees DecisionTree[]
+
+  @@map("tenants")
+}
+
+/// Envelope-encrypted third-party credentials. Ciphertext and IV only; the
+/// data key is wrapped by the worker's master key and never stored in clear.
+model Credential {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @unique @db.Uuid
+  provider     String
+  ciphertext   Bytes
+  iv           Bytes
+  wrappedKey   Bytes
+  accountLabel String?
+  expiresAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("credentials")
+}
+
+model Criteria {
+  id                 String  @id @default(uuid()) @db.Uuid
+  tenantId           String  @unique @db.Uuid
+  minOwed            Decimal @db.Decimal(14, 2)
+  requireMultiSource Boolean @default(false)
+  minDebtToValue     Decimal @db.Decimal(6, 3) @default(0)
+  updatedAt          DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("criteria")
+}
+
+model Source {
+  id           String    @id
+  name         String
+  url          String
+  jurisdiction String
+  asOf         String?
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  runs   Run[]
+  events Event[]
+
+  @@index([jurisdiction])
+  @@map("sources")
+}
+
+/// One ingestion attempt. Every number is measured by the engine, including
+/// the newest record date, which is how a source that succeeds while serving
+/// stale rows is caught.
+model Run {
+  id               String   @id
+  sourceId         String
+  startedAt        DateTime
+  ok               Boolean
+  stage            String
+  error            String?
+  classification   String?
+  classConfidence  Float?
+  extractionRate   Float?
+  records          Int      @default(0)
+  fingerprint      String?
+  newestRecordDate String?
+  fetchMs          Int?
+  engineMs         Int?
+  mapping          Json?
+
+  source Source  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  events Event[]
+
+  @@index([sourceId, startedAt])
+  @@map("runs")
+}
+
+/// Content-hashed so re-ingestion is idempotent: the same fact observed twice
+/// is one row.
+model Event {
+  id          String   @id
+  propertyKey String
+  sourceId    String
+  runId       String
+  kind        String
+  eventDate   String?
+  recordedAt  DateTime
+  asOf        String?
+  amount      Decimal? @db.Decimal(16, 2)
+  confidence  Float
+  details     Json
+
+  source   Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  run      Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyKey], references: [key], onDelete: Cascade)
+
+  @@index([propertyKey, eventDate])
+  @@index([sourceId])
+  @@map("events")
+}
+
+/// The compiled view of one building: the engine's output, cached so the
+/// conversation reads rows instead of recompiling every county on each turn.
+model Property {
+  key            String   @id
+  jurisdiction   String
+  address        String?
+  owner          String?
+  parcelId       String?
+  lifecycleState String
+  owed           Decimal? @db.Decimal(16, 2)
+  assessed       Decimal? @db.Decimal(16, 2)
+  assessedPrior  Decimal? @db.Decimal(16, 2)
+  debtToValue    Float?
+  violations     Int      @default(0)
+  sourceCount    Int      @default(1)
+  mergedKeys     String[]
+  fields         Json
+  conflicts      Json
+  compiledAt     DateTime @updatedAt
+
+  events      Event[]
+  evaluations Evaluation[]
+  outreach    Outreach[]
+
+  @@index([jurisdiction, owed])
+  @@map("properties")
+}
+
+/// Versioned decision graph. The whole tree is one JSONB document because it
+/// is read and written as a unit; node-level rows would buy nothing until
+/// collaborative editing exists.
+model DecisionTree {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @db.Uuid
+  name          String
+  version       Int
+  status        String
+  configuration Json
+  createdAt     DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  evaluations Evaluation[]
+
+  @@unique([tenantId, name, version])
+  @@map("decision_trees")
+}
+
+/// Why a property matched, node by node, against the tree version that ran.
+/// Keeping the trace is what lets the conversation explain itself later.
+model Evaluation {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  propertyKey    String
+  decisionTreeId String?  @db.Uuid
+  treeVersion    Int?
+  outcome        String
+  trace          Json
+  evaluatedAt    DateTime @default(now())
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  property     Property      @relation(fields: [propertyKey], references: [key], onDelete: Cascade)
+  decisionTree DecisionTree? @relation(fields: [decisionTreeId], references: [id])
+
+  @@index([tenantId, evaluatedAt])
+  @@map("evaluations")
+}
+
+model Outreach {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  propertyKey String
+  draft       String
+  status      String
+  approvedAt  DateTime?
+  sentAt      DateTime?
+  simulated   Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyKey], references: [key], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@map("outreach")
+}
+
+/// Durable transcript. The Durable Object holds the live window; this is the
+/// audit trail, and it is what compaction summarizes from.
+model Message {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  role      String
+  body      String
+  at        DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, at])
+  @@map("messages")
+}
