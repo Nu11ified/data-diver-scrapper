@@ -55,9 +55,11 @@ interface CountyRecord {
   readonly signals: {
     readonly delinquent_amount?: number;
     readonly assessed_value?: number;
+    readonly assessed_value_previous?: number;
     readonly debt_to_value?: number;
     readonly code_violations?: number;
   };
+  readonly conflicts?: readonly unknown[];
   readonly events: ReadonlyArray<{ readonly source: string }>;
 }
 
@@ -260,15 +262,55 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }));
       });
 
-    const countyMatches = (county: string) =>
+    const persist = (jurisdiction: string, records: readonly CountyRecord[]) =>
+      Effect.promise(async () => {
+        const prisma = db();
+        for (const record of records) {
+          const sourceIds = new Set(record.events.map((e) => e.source));
+          const key = record.keys[0];
+          if (key === undefined) continue;
+          const row = {
+            jurisdiction,
+            address: record.fields.address?.value ?? null,
+            owner: record.fields.owner?.value ?? null,
+            parcelId: record.fields.parcel_id?.value ?? null,
+            lifecycleState: record.lifecycle_state,
+            owed: record.signals.delinquent_amount ?? null,
+            assessed: record.signals.assessed_value ?? null,
+            assessedPrior: record.signals.assessed_value_previous ?? null,
+            debtToValue: record.signals.debt_to_value ?? null,
+            violations: record.signals.code_violations ?? 0,
+            sourceCount: sourceIds.size,
+            mergedKeys: [...record.keys],
+            fields: JSON.parse(JSON.stringify(record.fields)) as object,
+            conflicts: JSON.parse(JSON.stringify(record.conflicts ?? [])) as object,
+          };
+          await prisma.property.upsert({
+            where: { key },
+            create: { key, ...row },
+            update: row,
+          });
+        }
+      });
+
+    const compileCountyPayload = (county: string) =>
       Effect.gen(function* () {
         const events = yield* loadCountyEvents(county);
-        if (events.length === 0) return [] as readonly PropertyMatch[];
+        if (events.length === 0) return null;
         const payload = yield* Effect.promise(() =>
           compileCounty(schemaJson, events, {}, county),
         );
         const parsed = JSON.parse(payload) as { readonly records: readonly CountyRecord[] };
-        return parsed.records
+        const jurisdiction = events[0]?.property_key.split("|")[0] ?? county;
+        yield* persist(jurisdiction, parsed.records);
+        return { payload, records: parsed.records };
+      });
+
+    const countyMatches = (county: string) =>
+      Effect.gen(function* () {
+        const compiled = yield* compileCountyPayload(county);
+        if (compiled === null) return [] as readonly PropertyMatch[];
+        return compiled.records
           .map((record): PropertyMatch => {
             const sourceIds = new Set(record.events.map((e) => e.source));
             return {
@@ -330,15 +372,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
         const countyMatch = /^\/county\/([a-z0-9_]+)$/.exec(url.pathname);
         if (countyMatch !== null) {
-          const county = countyMatch[1] ?? "";
-          const events = yield* loadCountyEvents(county);
-          if (events.length === 0) {
+          const compiled = yield* compileCountyPayload(countyMatch[1] ?? "");
+          if (compiled === null) {
             return json({ ok: false, error: "no events; run the sources first" }, 404);
           }
-          const payload = yield* Effect.promise(() =>
-            compileCounty(schemaJson, events, {}, county),
-          );
-          return HttpServerResponse.text(payload, {
+          return HttpServerResponse.text(compiled.payload, {
             headers: { "content-type": "application/json" },
           });
         }
