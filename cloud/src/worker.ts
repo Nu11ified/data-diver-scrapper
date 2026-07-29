@@ -12,6 +12,15 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { Bucket } from "./resources.ts";
 import { crawl } from "./crawl.ts";
 import { makeLimiter } from "./politeness.ts";
+import {
+  RECORD_CAP,
+  appTokenHeaders,
+  fetchPaginated,
+  fetchSingle,
+  isSocrataUrl,
+  type FetchResult,
+  type PageFetch,
+} from "./pagination.ts";
 import { makeClient, type Db } from "./db.ts";
 import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
@@ -67,6 +76,7 @@ interface RunOutcome {
   readonly extractionRate?: number;
   readonly events?: number;
   readonly fetchMs?: number;
+  readonly truncated?: boolean;
 }
 
 interface Probe {
@@ -115,6 +125,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       SENDBLUE_SECRET_KEY: Config.redacted("SENDBLUE_SECRET_KEY"),
       CREDENTIAL_MASTER_KEY: Config.redacted("CREDENTIAL_MASTER_KEY"),
       PUBLIC_ORIGIN: Config.redacted("PUBLIC_ORIGIN"),
+      SOCRATA_APP_TOKEN: Config.redacted("SOCRATA_APP_TOKEN").pipe(
+        Config.withDefault(Redacted.make("")),
+      ),
     },
   },
   Effect.gen(function* () {
@@ -126,6 +139,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const sendblueKey = yield* Config.redacted("SENDBLUE_API_KEY");
     const sendblueSecret = yield* Config.redacted("SENDBLUE_SECRET_KEY");
+    const socrataAppToken = Redacted.value(
+      yield* Config.redacted("SOCRATA_APP_TOKEN").pipe(Config.withDefault(Redacted.make(""))),
+    );
     const sender: Sender =
       Redacted.value(sendblueKey) === ""
         ? simulated((line) => console.log(line))
@@ -365,7 +381,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               ? `✓ ${outcome.sourceId}: ${outcome.records ?? 0} records, ` +
                 `${Math.round((outcome.extractionRate ?? 0) * 100)}% extraction ` +
                 `(classified ${outcome.classification ?? "unknown"})` +
-                (crawledFrom === undefined ? "" : ` at ${crawledFrom}`)
+                (crawledFrom === undefined ? "" : ` at ${crawledFrom}`) +
+                (outcome.truncated === true
+                  ? ` [capped at ${RECORD_CAP}; the source has more records than this run pulled]`
+                  : "")
               : `✗ ${outcome.sourceId}: failed at ${outcome.stage}` +
                 `${outcome.error !== undefined ? ` - ${outcome.error}` : ""}`,
           );
@@ -462,36 +481,55 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
         const fetchStart = Date.now();
-        const permitted = yield* Effect.promise(() => limiter.take(source.url));
-        if (!permitted) {
-          return {
-            sourceId: source.id,
-            ok: false,
-            stage: "fetch",
-            error: "host request budget spent; try again shortly",
-          } satisfies RunOutcome;
-        }
-        const response = yield* Effect.tryPromise({
+        const requestHeaders: Record<string, string> = {
+          "user-agent": "DataDiver/0.1 (public-record research)",
+          ...source.headers,
+          ...appTokenHeaders(source.url, socrataAppToken),
+        };
+        const method: "GET" | "POST" = source.method ?? "GET";
+        const requestBody = method === "POST" ? source.body : undefined;
+        const fetchPage = (pageUrl: string): Promise<PageFetch> =>
+          fetch(pageUrl, {
+            method,
+            headers: requestHeaders,
+            ...(requestBody === undefined ? {} : { body: requestBody }),
+          }).then(async (response) => ({
+            ok: response.ok,
+            status: response.status,
+            contentType: response.headers.get("content-type") ?? "",
+            body: await response.text(),
+          }));
+
+        const fetched: FetchResult = yield* Effect.tryPromise({
           try: () =>
-            fetch(source.url, {
-              headers: { "user-agent": "DataDiver/0.1 (public-record research)" },
-            }),
+            isSocrataUrl(source.url)
+              ? fetchPaginated(source.url, limiter, fetchPage)
+              : fetchSingle(source.url, limiter, fetchPage),
           catch: (cause): Error =>
             cause instanceof Error ? cause : new Error(String(cause)),
-        }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
-        if (response instanceof Error || !response.ok) {
+        }).pipe(
+          Effect.catch(
+            (cause: Error): Effect.Effect<FetchResult> =>
+              Effect.succeed({
+                ok: false,
+                body: "",
+                contentType: "",
+                truncated: false,
+                pages: 0,
+                error: cause.message,
+              }),
+          ),
+        );
+        if (!fetched.ok) {
           return {
             sourceId: source.id,
             ok: false,
             stage: "fetch",
-            error:
-              response instanceof Error
-                ? response.message
-                : `http status ${response.status}`,
+            error: fetched.error ?? "fetch failed",
           } satisfies RunOutcome;
         }
-        const body: string = yield* Effect.promise(() => response.text());
-        const contentType = response.headers.get("content-type") ?? "";
+        const body = fetched.body;
+        const contentType = fetched.contentType;
         const fetchMs = Date.now() - fetchStart;
 
         const processed = yield* Effect.tryPromise({
@@ -534,6 +572,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 url: source.url,
                 jurisdiction: source.jurisdiction,
                 asOf: source.as_of ?? null,
+                headers: source.headers ?? undefined,
+                method: source.method ?? null,
+                body: source.body ?? null,
               },
               update: { name: source.name, url: source.url },
             });
@@ -555,6 +596,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 fingerprint: processed.fingerprint,
                 newestRecordDate: processed.newest_record_date,
                 fetchMs,
+                truncated: fetched.truncated,
                 mapping: JSON.parse(JSON.stringify(processed.mapping)) as object,
               },
             });
@@ -630,6 +672,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           extractionRate: processed.extraction_rate,
           events: processed.events.length,
           fetchMs,
+          ...(fetched.truncated ? { truncated: true } : {}),
         } satisfies RunOutcome;
       });
 
@@ -993,6 +1036,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                     url: source.url,
                     jurisdiction: source.jurisdiction,
                     asOf: source.as_of ?? null,
+                    headers: source.headers ?? undefined,
+                    method: source.method ?? null,
+                    body: source.body ?? null,
                   })),
                   skipDuplicates: true,
                 });

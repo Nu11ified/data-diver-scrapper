@@ -9,19 +9,69 @@ describe("configFromRow", () => {
     name: "Norfolk Delinquent Taxes",
     url: "https://data.norfolk.gov/resource/7qie-z5gv.json",
     jurisdiction: "city_of_norfolk_va",
+    asOf: null,
+    headers: null,
+    method: null,
+    body: null,
   };
 
   test("a row the database returns is a runnable source", () => {
     expect(configFromRow({ ...row, asOf: "2026-06-30" })).toEqual({
-      ...row,
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      jurisdiction: row.jurisdiction,
       as_of: "2026-06-30",
     });
   });
 
   test("an unset as_of is absent rather than null or empty", () => {
-    expect(configFromRow({ ...row, asOf: null })).toEqual(row);
-    expect(configFromRow({ ...row, asOf: "" })).toEqual(row);
+    const base = {
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      jurisdiction: row.jurisdiction,
+    };
+    expect(configFromRow({ ...row, asOf: null })).toEqual(base);
+    expect(configFromRow({ ...row, asOf: "" })).toEqual(base);
     expect("as_of" in configFromRow({ ...row, asOf: null })).toBe(false);
+  });
+
+  test("headers, method and body round-trip from the row when a source needs them", () => {
+    const withRequestShape = configFromRow({
+      ...row,
+      headers: { "X-Api-Key": "secret", "X-Ignored": 7 },
+      method: "POST",
+      body: '{"query":"select * from parcels"}',
+    });
+    expect(withRequestShape.headers).toEqual({ "X-Api-Key": "secret" });
+    expect(withRequestShape.method).toBe("POST");
+    expect(withRequestShape.body).toBe('{"query":"select * from parcels"}');
+  });
+
+  test("a GET source with no headers or body carries none of those keys", () => {
+    const plain = configFromRow(row);
+    expect("headers" in plain).toBe(false);
+    expect("method" in plain).toBe(false);
+    expect("body" in plain).toBe(false);
+  });
+
+  test("a method other than POST collapses to the GET default", () => {
+    expect(configFromRow({ ...row, method: "DELETE" })).toEqual({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      jurisdiction: row.jurisdiction,
+    });
+  });
+
+  test("empty headers and blank body are absent, not empty", () => {
+    expect(configFromRow({ ...row, headers: {}, body: "" })).toEqual({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      jurisdiction: row.jurisdiction,
+    });
   });
 });
 
@@ -41,6 +91,39 @@ describe("parseSeed", () => {
 
   test("carries as_of through when the seed states one", () => {
     expect(parseSeed([{ ...good, as_of: "2026-01-15" }]).sources[0]?.as_of).toBe("2026-01-15");
+  });
+
+  test("carries headers, method and body through for a source that needs auth", () => {
+    const parsed = parseSeed([
+      { ...good, headers: { "X-Api-Key": "secret" }, method: "post", body: "q=1" },
+    ]);
+    expect(parsed.rejected).toEqual([]);
+    expect(parsed.sources[0]?.headers).toEqual({ "X-Api-Key": "secret" });
+    expect(parsed.sources[0]?.method).toBe("POST");
+    expect(parsed.sources[0]?.body).toBe("q=1");
+  });
+
+  test("a plain GET source carries none of the request-shape keys", () => {
+    const source = parseSeed([good]).sources[0];
+    expect(source).toBeDefined();
+    expect("headers" in (source ?? {})).toBe(false);
+    expect("method" in (source ?? {})).toBe(false);
+    expect("body" in (source ?? {})).toBe(false);
+  });
+
+  test("rejects headers that are not an object of strings", () => {
+    expect(parseSeed([{ ...good, headers: "not-an-object" }]).rejected).toEqual([
+      "cook_tax_sale: headers must be an object of strings",
+    ]);
+    expect(parseSeed([{ ...good, headers: { key: 7 } }]).rejected).toEqual([
+      "cook_tax_sale: headers must be an object of strings",
+    ]);
+  });
+
+  test("rejects a method that is neither GET nor POST", () => {
+    expect(parseSeed([{ ...good, method: "PUT" }]).rejected).toEqual([
+      "cook_tax_sale: method must be GET or POST",
+    ]);
   });
 
   test("refuses entries it cannot run and says why", () => {

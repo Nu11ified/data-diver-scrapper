@@ -62,6 +62,9 @@ model Source {
   url          String
   jurisdiction String
   asOf         String?
+  headers      Json?
+  method       String?
+  body         String?
   enabled      Boolean   @default(true)
   createdAt    DateTime  @default(now())
 
@@ -90,6 +93,7 @@ model Run {
   newestRecordDate String?
   fetchMs          Int?
   engineMs         Int?
+  truncated        Boolean  @default(false)
   mapping          Json?
 
   source Source  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
