@@ -44,7 +44,7 @@
  {
   "id": "norfolk_assessments",
   "name": "Norfolk VA Property Assessments FY25",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,legal_description,acreage,property_use,current_total_value as total_assessed_value&$order=transfer_date DESC&$limit=50",
+  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$order=current_total_value DESC&$limit=50",
   "jurisdiction": "City of Norfolk VA"
  },
  {
@@ -92,7 +92,7 @@
  {
   "id": "norfolk_parcel_assessments",
   "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
-  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$where=parcel_id in({parcels})&$limit=200",
+  "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=200",
   "jurisdiction": "City of Norfolk VA"
  }
 ]

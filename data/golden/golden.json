@@ -196,14 +196,28 @@
         "owner": [
           "owner"
         ],
+        "address": [
+          "address"
+        ],
+        "zip": [
+          "zip"
+        ],
+        "assessed_value": [
+          "assessed_value"
+        ],
         "legal_description": [
           "legal_description"
         ],
         "property_use": [
           "property_use"
         ],
-        "assessed_value": [
-          "total_assessed_value"
+        "sale_price": [
+          "consideration",
+          ""
+        ],
+        "buyer": [
+          "grantee",
+          ""
         ]
       }
     },
@@ -389,6 +403,41 @@
         ],
         "status": [
           "STATUS"
+        ]
+      }
+    },
+    {
+      "id": "norfolk_parcel_assessments",
+      "classification": "assessor_roll",
+      "fields": {
+        "parcel_id": [
+          "parcel_id"
+        ],
+        "owner": [
+          "owner"
+        ],
+        "address": [
+          "address"
+        ],
+        "zip": [
+          "zip"
+        ],
+        "assessed_value": [
+          "assessed_value"
+        ],
+        "legal_description": [
+          "legal_description"
+        ],
+        "property_use": [
+          "property_use"
+        ],
+        "sale_price": [
+          "consideration",
+          ""
+        ],
+        "buyer": [
+          "grantee",
+          ""
         ]
       }
     }

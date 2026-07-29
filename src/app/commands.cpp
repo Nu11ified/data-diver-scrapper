@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <istream>
 #include <map>
+#include <set>
 #include <optional>
 
 namespace dd::cli {
@@ -128,6 +129,72 @@ void counties(store::Store& store) {
                                        "everything").c_str());
 }
 
+namespace {
+
+std::string fmt_money(double v) {
+    char raw[32];
+    std::snprintf(raw, sizeof(raw), "%.0f", v);
+    std::string digits{raw};
+    std::string out;
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+        if (i != 0 && (digits.size() - i) % 3 == 0) out.push_back(',');
+        out.push_back(digits[i]);
+    }
+    return "$" + out;
+}
+
+std::string clip(std::string s, std::size_t n) {
+    if (s.size() > n) s = s.substr(0, n - 1) + "…";
+    return s;
+}
+
+// Everything the county table shows for one property, measured from its
+// chronologically ordered events.
+struct PropertyRow {
+    std::string parcel, owner, address, last_event;
+    events::State state = events::State::Normal;
+    double due = 0.0;
+    double assessed = 0.0;
+    std::size_t violations = 0;
+    std::size_t sources = 0;
+    std::size_t events = 0;
+};
+
+PropertyRow build_row(const schema::Registry& registry,
+                      std::vector<events::PropertyEvent> evs) {
+    std::stable_sort(evs.begin(), evs.end(),
+                     [](const events::PropertyEvent& a, const events::PropertyEvent& b) {
+                         return a.event_date < b.event_date;
+                     });
+    PropertyRow row;
+    row.state = events::reduce(evs).state;
+    row.parcel = first_role_value(registry, evs, "parcel");
+    row.owner = first_role_value(registry, evs, "owner");
+    row.address = first_role_value(registry, evs, "address");
+    std::set<std::string> sources;
+    for (const events::PropertyEvent& e : evs) {
+        sources.insert(e.source_id);
+        switch (e.kind) {
+        case events::Kind::TaxDelinquency: row.due = e.amount; break;
+        case events::Kind::CodeViolation: ++row.violations; break;
+        default: break;
+        }
+        const auto assessed = e.details.find("assessed_value");
+        if (assessed != e.details.end()) {
+            const std::optional<double> parsed = schema::parse_money(assessed->second);
+            if (parsed.has_value() && *parsed > 0.0) row.assessed = *parsed;
+        }
+    }
+    row.sources = sources.size();
+    row.events = evs.size();
+    const events::PropertyEvent& last = evs.back();
+    row.last_event = std::string{events::kind_name(last.kind)};
+    if (!last.event_date.empty()) row.last_event += " " + last.event_date;
+    return row;
+}
+
+} // namespace
+
 void county_properties(store::Store& store, const schema::Registry& registry,
                        const std::string& county) {
     const std::string wanted = str::slug(county);
@@ -142,35 +209,39 @@ void county_properties(store::Store& store, const schema::Registry& registry,
         return;
     }
 
-    section("Properties");
-    std::vector<std::vector<std::string>> rows;
+    std::vector<PropertyRow> rows;
     for (const std::string& key : keys) {
-        std::vector<events::PropertyEvent> evs = store.events_for(key);
-        std::stable_sort(evs.begin(), evs.end(),
-                         [](const events::PropertyEvent& a, const events::PropertyEvent& b) {
-                             return a.event_date < b.event_date;
-                         });
-        const events::Lifecycle life = events::reduce(evs);
-        std::string amount;
-        for (auto it = evs.rbegin(); it != evs.rend(); ++it) {
-            if (it->amount > 0.0) {
-                char buffer[32];
-                std::snprintf(buffer, sizeof(buffer), "%.2f", it->amount);
-                amount = buffer;
-                break;
-            }
-        }
-        rows.push_back({first_role_value(registry, evs, "parcel"),
-                        first_role_value(registry, evs, "owner"),
-                        first_role_value(registry, evs, "address"),
-                        stamp(std::string{events::state_name(life.state)}), amount,
-                        std::to_string(evs.size()), evs.back().event_date});
+        rows.push_back(build_row(registry, store.events_for(key)));
     }
-    render::table({"parcel", "owner", "address", "state", "amount", "events", "last event"},
-                  rows);
+    // Lead order: money owed first, then violation pressure, then value.
+    std::stable_sort(rows.begin(), rows.end(), [](const PropertyRow& a, const PropertyRow& b) {
+        if (a.due != b.due) return a.due > b.due;
+        if (a.violations != b.violations) return a.violations > b.violations;
+        return a.assessed > b.assessed;
+    });
+
+    section("Properties");
+    std::vector<std::vector<std::string>> table;
+    for (const PropertyRow& r : rows) {
+        std::string ratio;
+        if (r.due > 0.0 && r.assessed > 0.0) {
+            char buffer[16];
+            std::snprintf(buffer, sizeof(buffer), "%.1fx", r.due / r.assessed);
+            ratio = buffer;
+        }
+        table.push_back({r.parcel, clip(r.owner, 26), clip(r.address, 26),
+                         stamp(std::string{events::state_name(r.state)}),
+                         r.due > 0.0 ? fmt_money(r.due) : "",
+                         r.assessed > 0.0 ? fmt_money(r.assessed) : "", ratio,
+                         r.violations > 0 ? std::to_string(r.violations) : "",
+                         std::to_string(r.sources), r.last_event});
+    }
+    render::table({"parcel", "owner", "address", "lifecycle", "owed", "assessed", "debt/val",
+                   "viol", "src", "last event"},
+                  table);
     std::printf("  %s\n",
-                paint("dim", std::to_string(keys.size()) + " properties, filled from the "
-                             "schema's identity and role fields").c_str());
+                paint("dim", std::to_string(keys.size()) + " properties, most distressed "
+                             "first; every cell traces to an ingested event").c_str());
 }
 
 void show_mapping(store::Store& store, pipeline::Pipeline& pipeline,
