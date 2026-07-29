@@ -95,7 +95,7 @@ export const buildInstructions = (context: ScoutContext): string => {
     .map((turn) => `${turn.role}: ${turn.text.split("\n")[0] ?? ""}`)
     .join("\n");
   return [
-    `You are Goliath Scout, the SMS assistant of Data Diver, a county public-record`,
+    `You are Data Diver, an SMS assistant over a county public-record`,
     `ingestion engine that finds distressed properties. You manage the user's`,
     `acquisition criteria, which are a decision tree evaluated against measured`,
     `property signals. You never invent properties, signals or numbers: every fact`,

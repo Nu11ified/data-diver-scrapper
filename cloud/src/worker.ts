@@ -1134,7 +1134,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (wants === "help" || wants === "status") {
             const reply =
               preflight.codexAccount === ""
-                ? `Goliath Scout. You are not signed in yet, so text /connect to link ` +
+                ? `Data Diver. You are not signed in yet, so text /connect to link ` +
                   `your ChatGPT account. After that just talk to me normally.\n\n` +
                   `/connect  /reset  /delete  /help`
                 : `Signed in as ${preflight.codexAccount}. Just talk to me normally - ` +
@@ -1297,8 +1297,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             const link = masterKeyB64 === "" ? "" : yield* mintConnectUrl;
             const reply =
               link === ""
-                ? `Goliath Scout is not configured to sign users in on this deployment.`
-                : `Hi - I am Goliath Scout. I find distressed properties in county ` +
+                ? `Data Diver is not configured to sign users in on this deployment.`
+                : `Hi - I am Data Diver. I find distressed properties in county ` +
                   `records and text you the ones worth a call.\n\n` +
                   `Sign in with ChatGPT to start:\n${link}\n\n` +
                   `Then just talk to me normally. Single-use link, 15 minutes.`;
@@ -1522,7 +1522,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             return json({ ok: false, error: stored.message }, 500);
           }
           return HttpServerResponse.text(
-            `<!doctype html><meta charset="utf-8"><title>Goliath Scout</title>` +
+            `<!doctype html><meta charset="utf-8"><title>Data Diver</title>` +
               `<body style="font-family:system-ui;max-width:32rem;margin:4rem auto">` +
               `<h1>Codex connected</h1><p>${identity.email !== "" ? identity.email : identity.accountId} ` +
               `is now linked to ${connectState.phone}. Tokens are stored encrypted. ` +
@@ -1577,7 +1577,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             json(
               {
                 ok: false,
-                error: "the scout hit an unexpected error; text again in a moment",
+                error: "Data Diver hit an unexpected error; text again in a moment",
                 detail: Cause.pretty(cause).slice(0, 400),
               },
               500,

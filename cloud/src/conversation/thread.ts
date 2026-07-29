@@ -737,7 +737,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           if (input.connectUrl !== undefined && input.connectUrl !== "") {
             return yield* respond(
               text,
-              `Open this link to connect your ChatGPT account to Goliath Scout:\n` +
+              `Open this link to connect your ChatGPT account to Data Diver:\n` +
                 `${input.connectUrl}\n\n` +
                 `It is single-use and expires in 15 minutes. Your tokens are ` +
                 `stored encrypted; reply CRITERIA any time to check the connection.`,
@@ -768,7 +768,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         const qualified = qualifiedOf(evaluateAll());
         return yield* respond(
           text,
-          `Goliath Scout here. The county scan found ${qualified.length} properties ` +
+          `Data Diver here. The county scan found ${qualified.length} properties ` +
             `matching your criteria.\n\n` +
             `Commands: REVIEW, CRITERIA, CONNECT, MEMORY, a property number, APPROVE, REJECT.`,
           pending,
