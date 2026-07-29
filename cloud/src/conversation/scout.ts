@@ -105,11 +105,24 @@ export const buildInstructions = (context: ScoutContext): string => {
     ``,
     context.configured
       ? `The user has already configured their criteria. Apply requested changes.`
-      : `FIRST-TIME USER: interview them before changing anything. Ask one short` +
-        ` question at a time about: minimum amount owed, whether they require` +
-        ` multi-source corroboration, minimum debt-to-value, which other measured` +
-        ` signals matter to them, and whether outreach needs their approval.` +
-        ` After the interview, emit the tree.`,
+      : `FIRST-TIME USER. Interview them, one short question per message, and do` +
+        ` not emit a tree until you have enough to build a real one. Cover, in` +
+        ` this order:` +
+        ` (1) which county or city they buy in - ask for the state too, and when` +
+        ` they name one that is not the county in SCAN STATE, answer with a` +
+        ` discover decision so the engine goes and finds its records;` +
+        ` (2) the minimum amount owed that makes a lead worth their time;` +
+        ` (3) roughly what a property has to be worth for them to care, which` +
+        ` maps to the assessed signal;` +
+        ` (4) whether a lead must be corroborated by more than one county source;` +
+        ` (5) which other measured signals above matter to them, naming the ones` +
+        ` that actually exist rather than inventing any;` +
+        ` (6) whether outreach needs their approval before it is sent.` +
+        ` Acknowledge each answer in one line before asking the next. When you` +
+        ` have them, emit set_tree built only from signals in the catalogue` +
+        ` above, and say in the text which of their answers became which` +
+        ` condition. This tree is theirs alone: never assume another user's` +
+        ` numbers.`,
     ``,
     `OUTPUT CONTRACT: respond with exactly one JSON object, nothing else.`,
     `You are the whole conversation: greetings, questions, small talk and`,
