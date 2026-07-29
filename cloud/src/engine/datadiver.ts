@@ -68,9 +68,8 @@ let modulePromise: Promise<EmscriptenModule> | undefined;
 const engine = (): Promise<EmscriptenModule> => {
   modulePromise ??= createModule({
     instantiateWasm: (imports, onSuccess) => {
-      const instance = new WebAssembly.Instance(wasmModule, imports);
-      onSuccess(instance, wasmModule);
-      return instance.exports;
+      onSuccess(new WebAssembly.Instance(wasmModule, imports), wasmModule);
+      return {};
     },
   }).catch((cause: unknown) => {
     modulePromise = undefined;

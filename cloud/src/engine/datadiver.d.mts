@@ -14,7 +14,7 @@ export interface ModuleOptions {
   instantiateWasm?(
     imports: WebAssembly.Imports,
     onSuccess: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
-  ): WebAssembly.Exports;
+  ): Record<string, never>;
 }
 
 declare const createModule: (options?: ModuleOptions) => Promise<EmscriptenModule>;

@@ -92,7 +92,6 @@ if(EMSCRIPTEN)
   target_link_options(datadiver_wasm PRIVATE
     -sMODULARIZE=1
     -sEXPORT_ES6=1
-    -sWASM_ASYNC_COMPILATION=0
     -sENVIRONMENT=web,worker
     -sALLOW_MEMORY_GROWTH=1
     -sFILESYSTEM=0
