@@ -188,6 +188,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           configured: snap.configured,
           summary: snap.summary,
           recentTurns: snap.recentTurns,
+          county: snap.county,
           candidateCount: candidates.length,
           qualifiedCount,
           extraSignals,
@@ -216,6 +217,54 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           ),
         );
         const decision = parseScoutDecision(raw);
+        if (decision.kind === "discover") {
+          const jurisdiction = decision.jurisdiction
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, "_");
+          const runId = `run_${Date.now().toString(36)}`;
+          const vetted = decision.candidates.slice(0, 4);
+          const results = yield* Effect.all(
+            vetted.map((candidate) =>
+              candidate.url.startsWith("https://")
+                ? runSource(
+                    {
+                      id: candidate.id.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+                      name: candidate.name,
+                      url: candidate.url,
+                      jurisdiction,
+                    },
+                    runId,
+                  )
+                : Effect.succeed({
+                    sourceId: candidate.id,
+                    ok: false,
+                    stage: "fetch",
+                    error: "only https urls are validated",
+                  } satisfies RunOutcome),
+            ),
+            { concurrency: 2 },
+          );
+          const admitted = results.filter((r) => r.ok && (r.records ?? 0) > 0);
+          const lines = results.map((r) =>
+            r.ok
+              ? `✓ ${r.sourceId}: ${r.records ?? 0} records, ` +
+                `${Math.round((r.extractionRate ?? 0) * 100)}% extraction ` +
+                `(classified ${r.classification ?? "unknown"})`
+              : `✗ ${r.sourceId}: failed at ${r.stage}${r.error !== undefined ? ` - ${r.error}` : ""}`,
+          );
+          const verdictText =
+            admitted.length > 0
+              ? `\n\nNow scanning ${jurisdiction}. Reply REVIEW to see matches.`
+              : `\n\nNo candidate survived engine validation; nothing was added.`;
+          return yield* thread.applyScout({
+            userText: text,
+            reply:
+              `${decision.text}\n\n` +
+              `Validated ${results.length} candidate source(s):\n${lines.join("\n")}` +
+              verdictText,
+            ...(admitted.length > 0 ? { county: jurisdiction } : {}),
+          });
+        }
         if (decision.kind === "set_tree") {
           const problems = validateGraph(decision.graph, [
             ...Object.keys(SIGNAL_CATALOG),
@@ -416,10 +465,30 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         } satisfies RunOutcome;
       });
 
+    const allSources = Effect.gen(function* () {
+      const rows = yield* Effect.promise(() =>
+        db().source.findMany({ where: { enabled: true } }),
+      );
+      const byId = new Map<string, SourceConfig>(sources.map((s) => [s.id, s]));
+      for (const row of rows) {
+        if (!byId.has(row.id)) {
+          byId.set(row.id, {
+            id: row.id,
+            name: row.name,
+            url: row.url,
+            jurisdiction: row.jurisdiction,
+            ...(row.asOf === null ? {} : { as_of: row.asOf }),
+          });
+        }
+      }
+      return [...byId.values()];
+    });
+
     const runAll = Effect.gen(function* () {
       const runId = `run_${Date.now().toString(36)}`;
+      const merged = yield* allSources;
       return yield* Effect.all(
-        sources.map((source) => runSource(source, runId)),
+        merged.map((source) => runSource(source, runId)),
         { concurrency: 6 },
       );
     });
@@ -557,7 +626,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
         const runMatch = /^\/run\/([a-z0-9_]+)$/.exec(url.pathname);
         if (runMatch !== null && request.method === "POST") {
-          const source = sources.find((s) => s.id === runMatch[1]);
+          const merged = yield* allSources;
+          const source = merged.find((s) => s.id === runMatch[1]);
           if (source === undefined) return json({ ok: false, error: "unknown source" }, 404);
           const outcome = yield* runSource(source, `run_${Date.now().toString(36)}`);
           return json(outcome, outcome.ok ? 200 : 502);
@@ -609,9 +679,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
 
           const lower = text.trim().toLowerCase();
+          const county = (yield* threads.getByName(phone).snapshot()).county;
           let input: HandleMessageInput = {
             text,
-            candidates: yield* countyMatches("norfolk"),
+            candidates: yield* countyMatches(county),
             codexAccount: preflight.codexAccount,
           };
           if ((lower === "connect" || lower === "connect codex") && masterKeyB64 !== "") {

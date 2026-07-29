@@ -173,12 +173,14 @@ export interface ThreadSnapshot {
   readonly summary: string;
   readonly recentTurns: readonly Turn[];
   readonly configured: boolean;
+  readonly county: string;
 }
 
 export interface ApplyScoutInput {
   readonly userText: string;
   readonly reply: string;
   readonly graph?: Graph;
+  readonly county?: string;
 }
 
 export interface AttachDraftInput {
@@ -550,11 +552,13 @@ export const ConversationThreadLive = ConversationThread.make<never>(
             const loaded = yield* loadTree;
             const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
             const summary = (yield* state.storage.get<string>("summary")) ?? "";
+            const county = (yield* state.storage.get<string>("county")) ?? "norfolk";
             return {
               tree: loaded.tree,
               summary,
               recentTurns: turns.slice(-8),
               configured: loaded.tree.version > 1,
+              county,
             };
           }),
 
@@ -613,6 +617,9 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               tree = { name: tree.name, version: tree.version + 1, graph: input.graph };
               yield* state.storage.put("tree", tree);
               changedTree = tree;
+            }
+            if (input.county !== undefined && input.county !== "") {
+              yield* state.storage.put("county", input.county);
             }
             const turns = (yield* state.storage.get<readonly Turn[]>("turns")) ?? [];
             const summary = (yield* state.storage.get<string>("summary")) ?? "";

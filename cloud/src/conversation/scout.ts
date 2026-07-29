@@ -3,12 +3,25 @@ import * as Schema from "effect/Schema";
 
 import { Graph, SIGNAL_CATALOG, type TreeDoc } from "../decision/graph.ts";
 
+export const SourceCandidate = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  url: Schema.String,
+});
+export type SourceCandidate = (typeof SourceCandidate)["Type"];
+
 export const ScoutDecision = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("reply"), text: Schema.String }),
   Schema.Struct({
     kind: Schema.Literal("set_tree"),
     text: Schema.String,
     graph: Graph,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("discover"),
+    text: Schema.String,
+    jurisdiction: Schema.String,
+    candidates: Schema.Array(SourceCandidate),
   }),
 ]);
 export type ScoutDecision = (typeof ScoutDecision)["Type"];
@@ -38,6 +51,7 @@ export interface ScoutContext {
   readonly configured: boolean;
   readonly summary: string;
   readonly recentTurns: ReadonlyArray<{ readonly role: string; readonly text: string }>;
+  readonly county: string;
   readonly candidateCount: number;
   readonly qualifiedCount: number;
   readonly extraSignals: readonly string[];
@@ -68,8 +82,8 @@ export const buildInstructions = (context: ScoutContext): string => {
     `CURRENT DECISION TREE (version ${context.tree.version}):`,
     JSON.stringify(context.tree.graph),
     ``,
-    `SCAN STATE: ${context.candidateCount} properties compiled from county records,`,
-    `${context.qualifiedCount} currently match the tree.`,
+    `SCAN STATE: county "${context.county}"; ${context.candidateCount} properties`,
+    `compiled from county records, ${context.qualifiedCount} currently match the tree.`,
     ``,
     `CONVERSATION SUMMARY: ${context.summary === "" ? "(none)" : context.summary}`,
     `RECENT TURNS:`,
@@ -91,6 +105,16 @@ export const buildInstructions = (context: ScoutContext): string => {
     `{"kind":"approval","id","prompt","next"}, or {"kind":"action","id","action":"match|discard"}.`,
     `Every path must end in an action. Route failed conditions to a discard action.`,
     `Keep an approval node before match unless the user explicitly waives approval.`,
+    `When the user asks to scan, add or switch to a different county, respond`,
+    `{"kind":"discover","text":"<tell the user validation is starting>",`,
+    `"jurisdiction":"<snake_case county id ending in the two-letter state, e.g.`,
+    `chesterfield_county_va>","candidates":[{"id":"<jurisdiction>_<kind>","name":"...",`,
+    `"url":"https://..."}]} with up to 4 candidate machine-readable public-record`,
+    `endpoints (CSV or JSON exports: Socrata resource exports, ArcGIS query URLs,`,
+    `open-data portal downloads) covering tax delinquency, assessments or code`,
+    `enforcement for that county. Suggest only URLs you have genuine reason to`,
+    `believe exist; every candidate is fetched and classified by the engine and`,
+    `only sources that really extract records are admitted.`,
     `Keep replies under 500 characters: this is SMS.`,
   ].join("\n");
 };

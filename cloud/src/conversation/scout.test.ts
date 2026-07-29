@@ -49,6 +49,27 @@ describe("parseScoutDecision", () => {
     expect(decision).toEqual({ kind: "reply", text: "hi" });
   });
 
+  test("reads a discover decision with candidate sources", () => {
+    const decision = parseScoutDecision(
+      JSON.stringify({
+        kind: "discover",
+        text: "Validating Chesterfield sources now.",
+        jurisdiction: "chesterfield_county_va",
+        candidates: [
+          {
+            id: "chesterfield_county_va_tax",
+            name: "Chesterfield delinquent taxes",
+            url: "https://data.chesterfield.gov/resource/abcd-1234.csv",
+          },
+        ],
+      }),
+    );
+    expect(decision.kind).toBe("discover");
+    if (decision.kind !== "discover") throw new Error("unreachable");
+    expect(decision.jurisdiction).toBe("chesterfield_county_va");
+    expect(decision.candidates).toHaveLength(1);
+  });
+
   test("non-contract output becomes a plain reply", () => {
     const decision = parseScoutDecision("I think you should raise the floor.");
     expect(decision).toEqual({ kind: "reply", text: "I think you should raise the floor." });
@@ -69,6 +90,7 @@ describe("buildInstructions", () => {
       configured: true,
       summary: "",
       recentTurns: [],
+      county: "norfolk",
       candidateCount: 12,
       qualifiedCount: 3,
       extraSignals: ["utility_shutoffs"],
@@ -76,7 +98,7 @@ describe("buildInstructions", () => {
     expect(text).toContain("owed:");
     expect(text).toContain("utility_shutoffs");
     expect(text).toContain(`"entry":"owed_floor"`);
-    expect(text).toContain("12 properties compiled");
+    expect(text).toContain(`county "norfolk"; 12 properties`);
     expect(text).toContain("3 currently match");
     expect(text).not.toContain("FIRST-TIME USER");
   });
@@ -87,6 +109,7 @@ describe("buildInstructions", () => {
       configured: false,
       summary: "",
       recentTurns: [],
+      county: "norfolk",
       candidateCount: 0,
       qualifiedCount: 0,
       extraSignals: [],
