@@ -92,7 +92,7 @@ if(EMSCRIPTEN)
   target_link_options(datadiver_wasm PRIVATE
     -sMODULARIZE=1
     -sEXPORT_ES6=1
-    -sENVIRONMENT=web,worker,node
+    -sENVIRONMENT=web,worker
     -sALLOW_MEMORY_GROWTH=1
     -sFILESYSTEM=0
     -sEXPORTED_FUNCTIONS=_dd_version,_dd_process_document,_dd_compile_county,_dd_free,_malloc,_free

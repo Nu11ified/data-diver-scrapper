@@ -1,10 +1,19 @@
-// The scraping service: TypeScript owns the network, the Data Diver WASM
-// engine owns parsing, classification, matching and event building. The cron
-// sweeps every source; the fetch API serves on-demand runs and compiled
-// county payloads. Bodies and results land in R2 until the database slice;
-// nothing here fabricates a result, and a failed source reports its stage.
+// The scraping and conversation service. TypeScript owns the network and
+// storage, the Data Diver WASM engine owns parsing, classification, matching
+// and event building, and one Durable Object per phone number owns each
+// conversation. Failures report their stage; nothing fabricates a result.
 
-import type { WorkerEnv } from "../alchemy.run.ts";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Effect from "effect/Effect";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+
+import { Bucket } from "./resources.ts";
+import {
+  ConversationThread,
+  ConversationThreadLive,
+  type PropertyMatch,
+} from "./conversation/thread.ts";
 import {
   EngineError,
   processDocument,
@@ -36,7 +45,21 @@ interface RunOutcome {
   readonly extractionRate?: number;
   readonly events?: number;
   readonly fetchMs?: number;
-  readonly engineMs?: number;
+}
+
+interface CountyRecord {
+  readonly keys: readonly string[];
+  readonly lifecycle_state: string;
+  readonly fields: Readonly<
+    Record<string, { readonly value: string; readonly source: string }>
+  >;
+  readonly signals: {
+    readonly delinquent_amount?: number;
+    readonly assessed_value?: number;
+    readonly debt_to_value?: number;
+    readonly code_violations?: number;
+  };
+  readonly events: ReadonlyArray<{ readonly source: string }>;
 }
 
 const sources: readonly SourceConfig[] = sourcesConfig;
@@ -44,191 +67,243 @@ const schemaJson = JSON.stringify(schema);
 const classifierJson = JSON.stringify(classifier);
 const columnModelJson = JSON.stringify(columnModel);
 
-const json = (value: unknown, status = 200): Response =>
-  new Response(JSON.stringify(value, null, 1), {
+const json = (value: unknown, status = 200): HttpServerResponse.HttpServerResponse =>
+  HttpServerResponse.text(JSON.stringify(value, null, 1), {
     status,
     headers: { "content-type": "application/json" },
   });
 
-const runSource = async (
-  source: SourceConfig,
-  env: WorkerEnv,
-  runId: string,
-): Promise<RunOutcome> => {
-  const fetchStart = Date.now();
-  let response: Response;
-  try {
-    response = await fetch(source.url, {
-      headers: { "user-agent": "DataDiver/0.1 (public-record research)" },
-    });
-  } catch (cause) {
-    return {
-      sourceId: source.id,
-      ok: false,
-      stage: "fetch",
-      error: cause instanceof Error ? cause.message : String(cause),
-    };
-  }
-  if (!response.ok) {
-    return {
-      sourceId: source.id,
-      ok: false,
-      stage: "fetch",
-      error: `http status ${response.status}`,
-    };
-  }
-  const body = await response.text();
-  const contentType = response.headers.get("content-type") ?? "";
-  const fetchMs = Date.now() - fetchStart;
+export default class Scraper extends Cloudflare.Worker<Scraper>()(
+  "Scraper",
+  { main: import.meta.url },
+  Effect.gen(function* () {
+    const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
+    const threads = yield* ConversationThread;
 
-  const engineStart = Date.now();
-  let processed: ProcessedDocument;
-  try {
-    processed = await processDocument({
-      schemaJson,
-      classifierJson,
-      columnModelJson,
-      contentType,
-      body,
-      sourceId: source.id,
-      jurisdiction: source.jurisdiction,
-      asOf: source.as_of ?? "",
-      runId,
-      nowIso: new Date().toISOString(),
-    });
-  } catch (cause) {
-    return {
-      sourceId: source.id,
-      ok: false,
-      stage: "engine",
-      error: cause instanceof EngineError ? cause.message : String(cause),
-      fetchMs,
-    };
-  }
-  const engineMs = Date.now() - engineStart;
+    const runSource = (source: SourceConfig, runId: string) =>
+      Effect.gen(function* () {
+        const fetchStart = Date.now();
+        const response = yield* Effect.tryPromise({
+          try: () =>
+            fetch(source.url, {
+              headers: { "user-agent": "DataDiver/0.1 (public-record research)" },
+            }),
+          catch: (cause): Error =>
+            cause instanceof Error ? cause : new Error(String(cause)),
+        }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+        if (response instanceof Error || !response.ok) {
+          return {
+            sourceId: source.id,
+            ok: false,
+            stage: "fetch",
+            error:
+              response instanceof Error
+                ? response.message
+                : `http status ${response.status}`,
+          } satisfies RunOutcome;
+        }
+        const body: string = yield* Effect.promise(() => response.text());
+        const contentType = response.headers.get("content-type") ?? "";
+        const fetchMs = Date.now() - fetchStart;
 
-  try {
-    await env.bucket.put(`bodies/${source.id}/${runId}`, body, {
-      httpMetadata: { contentType: contentType || "application/octet-stream" },
+        const processed = yield* Effect.tryPromise({
+          try: (): Promise<ProcessedDocument> =>
+            processDocument({
+              schemaJson,
+              classifierJson,
+              columnModelJson,
+              contentType,
+              body,
+              sourceId: source.id,
+              jurisdiction: source.jurisdiction,
+              asOf: source.as_of ?? "",
+              runId,
+              nowIso: new Date().toISOString(),
+            }),
+          catch: (cause) =>
+            new EngineError(cause instanceof Error ? cause.message : String(cause)),
+        }).pipe(Effect.catch((cause: EngineError) => Effect.succeed(cause)));
+        if (processed instanceof EngineError) {
+          return {
+            sourceId: source.id,
+            ok: false,
+            stage: "engine",
+            error: processed.message,
+            fetchMs,
+          } satisfies RunOutcome;
+        }
+
+        yield* bucket.put(`bodies/${source.id}/${runId}`, body);
+        yield* bucket.put(
+          `events/${source.id}/latest.json`,
+          JSON.stringify(processed.events),
+        );
+        yield* bucket.put(
+          `runs/${source.id}/${runId}.json`,
+          JSON.stringify({
+            runId,
+            sourceId: source.id,
+            startedAt: new Date(fetchStart).toISOString(),
+            fetchMs,
+            classification: processed.classification,
+            classConfidence: processed.class_confidence,
+            extractionRate: processed.extraction_rate,
+            records: processed.records,
+            fingerprint: processed.fingerprint,
+            newestRecordDate: processed.newest_record_date,
+            mapping: processed.mapping,
+          }),
+        );
+
+        return {
+          sourceId: source.id,
+          ok: true,
+          stage: "done",
+          classification: processed.classification,
+          records: processed.records,
+          extractionRate: processed.extraction_rate,
+          events: processed.events.length,
+          fetchMs,
+        } satisfies RunOutcome;
+      });
+
+    const runAll = Effect.gen(function* () {
+      const runId = `run_${Date.now().toString(36)}`;
+      return yield* Effect.all(
+        sources.map((source) => runSource(source, runId)),
+        { concurrency: 6 },
+      );
     });
-    await env.bucket.put(
-      `events/${source.id}/${runId}.json`,
-      JSON.stringify(processed.events),
-      { httpMetadata: { contentType: "application/json" } },
-    );
-    await env.bucket.put(
-      `runs/${source.id}/${runId}.json`,
-      JSON.stringify({
-        runId,
-        sourceId: source.id,
-        startedAt: new Date(fetchStart).toISOString(),
-        fetchMs,
-        engineMs,
-        classification: processed.classification,
-        classConfidence: processed.class_confidence,
-        extractionRate: processed.extraction_rate,
-        records: processed.records,
-        fingerprint: processed.fingerprint,
-        newestRecordDate: processed.newest_record_date,
-        mapping: processed.mapping,
+
+    const loadCountyEvents = (county: string) =>
+      Effect.gen(function* () {
+        const events: PropertyEvent[] = [];
+        const seen = new Set<string>();
+        for (const source of sources) {
+          const object = yield* bucket.get(`events/${source.id}/latest.json`);
+          if (object === null) continue;
+          const text = yield* object.text();
+          const parsed = JSON.parse(text) as readonly PropertyEvent[];
+          for (const event of parsed) {
+            if (seen.has(event.id)) continue;
+            seen.add(event.id);
+            if (event.property_key.split("|")[0]?.includes(county)) events.push(event);
+          }
+        }
+        return events as readonly PropertyEvent[];
+      });
+
+    const countyMatches = (county: string) =>
+      Effect.gen(function* () {
+        const events = yield* loadCountyEvents(county);
+        if (events.length === 0) return [] as readonly PropertyMatch[];
+        const payload = yield* Effect.promise(() =>
+          compileCounty(schemaJson, events, {}, county),
+        );
+        const parsed = JSON.parse(payload) as { readonly records: readonly CountyRecord[] };
+        return parsed.records
+          .map((record): PropertyMatch => {
+            const sourceIds = new Set(record.events.map((e) => e.source));
+            return {
+              propertyKey: record.keys[0] ?? "",
+              address: record.fields.address?.value ?? "",
+              owner: record.fields.owner?.value ?? "",
+              lifecycleState: record.lifecycle_state,
+              owed: record.signals.delinquent_amount ?? 0,
+              assessed: record.signals.assessed_value ?? 0,
+              debtToValue: record.signals.debt_to_value ?? 0,
+              violations: record.signals.code_violations ?? 0,
+              sources: sourceIds.size,
+            };
+          })
+          .filter((match) => match.address !== "");
+      });
+
+    yield* Cloudflare.Workers.cron("0 * * * *", () =>
+      Effect.gen(function* () {
+        const outcomes = yield* runAll;
+        const failed = outcomes.filter((o) => !o.ok);
+        yield* Effect.log(
+          `cron sweep: ${outcomes.length - failed.length}/${outcomes.length} ok` +
+            (failed.length > 0
+              ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
+              : ""),
+        );
       }),
-      { httpMetadata: { contentType: "application/json" } },
     );
-  } catch (cause) {
+
+    const handleFetch = Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const url = new URL(request.url, "http://worker");
+
+        if (url.pathname === "/health") {
+          const version = yield* Effect.promise(() => engineVersion());
+          return json({ ok: true, ...version, sources: sources.length });
+        }
+
+        if (url.pathname === "/run" && request.method === "POST") {
+          const outcomes = yield* runAll;
+          return json({ ok: outcomes.every((o) => o.ok), outcomes });
+        }
+
+        const runMatch = /^\/run\/([a-z0-9_]+)$/.exec(url.pathname);
+        if (runMatch !== null && request.method === "POST") {
+          const source = sources.find((s) => s.id === runMatch[1]);
+          if (source === undefined) return json({ ok: false, error: "unknown source" }, 404);
+          const outcome = yield* runSource(source, `run_${Date.now().toString(36)}`);
+          return json(outcome, outcome.ok ? 200 : 502);
+        }
+
+        const countyMatch = /^\/county\/([a-z0-9_]+)$/.exec(url.pathname);
+        if (countyMatch !== null) {
+          const county = countyMatch[1] ?? "";
+          const events = yield* loadCountyEvents(county);
+          if (events.length === 0) {
+            return json({ ok: false, error: "no events; run the sources first" }, 404);
+          }
+          const payload = yield* Effect.promise(() =>
+            compileCounty(schemaJson, events, {}, county),
+          );
+          return HttpServerResponse.text(payload, {
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        // Inbound message: the SendBlue webhook shape carries from_number and
+        // content; the simulator posts the same shape. Tenancy is the phone
+        // number: each number routes to its own Durable Object, always the
+        // same one, so the thread is permanent.
+        if (url.pathname === "/sms" && request.method === "POST") {
+          const bodyText = yield* request.text;
+          const parsed = JSON.parse(bodyText) as {
+            readonly from_number?: string;
+            readonly content?: string;
+          };
+          const phone = (parsed.from_number ?? "").replace(/[^+0-9]/g, "");
+          const text = parsed.content ?? "";
+          if (phone === "" || text === "") {
+            return json({ ok: false, error: "from_number and content are required" }, 400);
+          }
+          const candidates = yield* countyMatches("norfolk");
+          const thread = threads.getByName(phone);
+          const reply = yield* thread.handleMessage({ text, candidates });
+          return json({ ok: true, phone, reply });
+        }
+
+        return json({ ok: false, error: "not found" }, 404);
+      });
+
     return {
-      sourceId: source.id,
-      ok: false,
-      stage: "store",
-      error: cause instanceof Error ? cause.message : String(cause),
-      fetchMs,
-      engineMs,
+      // Storage failures become explicit 500s; nothing escapes untyped.
+      fetch: handleFetch.pipe(
+        Effect.catchTag("R2Error", (cause) =>
+          Effect.succeed(json({ ok: false, error: cause.message }, 500)),
+        ),
+      ),
     };
-  }
-
-  return {
-    sourceId: source.id,
-    ok: true,
-    stage: "done",
-    classification: processed.classification,
-    records: processed.records,
-    extractionRate: processed.extraction_rate,
-    events: processed.events.length,
-    fetchMs,
-    engineMs,
-  };
-};
-
-const runAll = async (env: WorkerEnv): Promise<readonly RunOutcome[]> => {
-  const runId = `run_${Date.now().toString(36)}`;
-  return Promise.all(sources.map((source) => runSource(source, env, runId)));
-};
-
-const loadCountyEvents = async (
-  env: WorkerEnv,
-  county: string,
-): Promise<readonly PropertyEvent[]> => {
-  const events: PropertyEvent[] = [];
-  const seen = new Set<string>();
-  for (const source of sources) {
-    const listing = await env.bucket.list({ prefix: `events/${source.id}/` });
-    const newest = listing.objects.at(-1);
-    if (newest === undefined) continue;
-    const object = await env.bucket.get(newest.key);
-    if (object === null) continue;
-    const parsed = JSON.parse(await object.text()) as readonly PropertyEvent[];
-    for (const event of parsed) {
-      if (seen.has(event.id)) continue;
-      seen.add(event.id);
-      if (event.property_key.split("|")[0]?.includes(county)) events.push(event);
-    }
-  }
-  return events;
-};
-
-export default {
-  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/health") {
-      const version = await engineVersion();
-      return json({ ok: true, ...version, sources: sources.length });
-    }
-
-    if (url.pathname === "/run" && request.method === "POST") {
-      const outcomes = await runAll(env);
-      return json({ ok: outcomes.every((o) => o.ok), outcomes });
-    }
-
-    const runMatch = /^\/run\/([a-z0-9_]+)$/.exec(url.pathname);
-    if (runMatch !== null && request.method === "POST") {
-      const source = sources.find((s) => s.id === runMatch[1]);
-      if (source === undefined) return json({ ok: false, error: "unknown source" }, 404);
-      const outcome = await runSource(source, env, `run_${Date.now().toString(36)}`);
-      return json(outcome, outcome.ok ? 200 : 502);
-    }
-
-    const countyMatch = /^\/county\/([a-z0-9_]+)$/.exec(url.pathname);
-    if (countyMatch !== null) {
-      const county = countyMatch[1] ?? "";
-      const events = await loadCountyEvents(env, county);
-      if (events.length === 0) {
-        return json({ ok: false, error: "no events for county; run the sources first" }, 404);
-      }
-      const payload = await compileCounty(schemaJson, events, {}, county);
-      return new Response(payload, { headers: { "content-type": "application/json" } });
-    }
-
-    return json({ ok: false, error: "not found" }, 404);
-  },
-
-  async scheduled(_controller: unknown, env: WorkerEnv): Promise<void> {
-    const outcomes = await runAll(env);
-    const failed = outcomes.filter((o) => !o.ok);
-    console.log(
-      `cron sweep: ${outcomes.length - failed.length}/${outcomes.length} sources ok` +
-        (failed.length > 0
-          ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
-          : ""),
-    );
-  },
-};
+  }).pipe(
+    Effect.provide(ConversationThreadLive),
+    Effect.provide(Cloudflare.Workers.CronEventSourceLive),
+    Effect.provide(Cloudflare.R2.ReadWriteBucketBinding),
+  ),
+) {}
