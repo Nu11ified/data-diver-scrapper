@@ -1,5 +1,6 @@
 export interface Message {
   readonly to: string;
+  readonly from: string;
   readonly body: string;
 }
 
@@ -32,7 +33,11 @@ export const sendblue = (apiKey: string, apiSecret: string): Sender => ({
         "sb-api-secret-key": apiSecret,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ number: message.to, content: message.body }),
+      body: JSON.stringify({
+        number: message.to,
+        content: message.body,
+        ...(message.from === "" ? {} : { from_number: message.from }),
+      }),
     });
     if (!response.ok) {
       throw new SendError(`sendblue returned ${response.status}: ${await response.text()}`);

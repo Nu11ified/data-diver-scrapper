@@ -650,9 +650,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const bodyText = yield* request.text;
           const parsed = JSON.parse(bodyText) as {
             readonly from_number?: string;
+            readonly number?: string;
             readonly content?: string;
           };
           const phone = (parsed.from_number ?? "").replace(/[^+0-9]/g, "");
+          // Sendblue's inbound webhook carries our own number as `number`;
+          // replies on this plan must name it as from_number.
+          const ourNumber = (parsed.number ?? "").replace(/[^+0-9]/g, "");
           const text = parsed.content ?? "";
           if (phone === "" || text === "") {
             return json({ ok: false, error: "from_number and content are required" }, 400);
@@ -809,7 +813,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                   })),
                 });
               }
-              await sender.send({ to: phone, body: outcome.reply });
+              await sender.send({ to: phone, from: ourNumber, body: outcome.reply });
             },
             catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),
           }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
