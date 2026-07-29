@@ -15,6 +15,7 @@ import {
   type TraceStep,
   type TreeDoc,
 } from "../decision/graph.ts";
+import { calibratedStates, estimate, holdoutError, isCalibrated } from "../valuation.ts";
 import {
   classifyOwner,
   formatInZone,
@@ -42,6 +43,41 @@ export interface PropertyMatch {
 export const templateDraft = (match: PropertyMatch): string =>
   `Hi ${match.owner.split(",")[0] ?? "there"}, I'm reaching out about the ` +
   `property at ${match.address}. Would you be open to discussing an offer?`;
+
+/// What the property is worth, or an honest refusal. The model only holds for
+/// states whose assessment ratio it learned; elsewhere it would be
+/// extrapolating across assessment law, which failed its own holdout.
+export const worthSummary = (match: PropertyMatch): string => {
+  const state = (match.propertyKey.split("|")[0] ?? "").slice(-2).toUpperCase();
+  if (!isCalibrated(state)) {
+    return match.assessed > 0
+      ? `Assessed at ${money(match.assessed)} by the county. No estimate: ` +
+          `${state || "this state"} is not one of the states this model was ` +
+          `calibrated on (${calibratedStates().join(", ")}).`
+      : "No assessed value on record, so no estimate.";
+  }
+  const valued = estimate({
+    state,
+    assessed: match.assessed,
+    improvementValue: match.signals.improvement_value ?? 0,
+    landValue: match.signals.land_value ?? 0,
+    sqft: match.signals.living_area ?? match.signals.building_area ?? 0,
+    yearBuilt: match.signals.year_built ?? 0,
+    landArea: match.signals.land_area ?? 0,
+    use: match.lifecycleState,
+    year: new Date().getUTCFullYear(),
+  });
+  if (valued === undefined) {
+    return "No assessed value on record, so no estimate.";
+  }
+  return (
+    `Estimated worth: ${money(valued.estimate)} ` +
+    `(${money(valued.low)}-${money(valued.high)}), against ` +
+    `${money(match.assessed)} assessed.\n` +
+    `That band is this model's measured error: ${(holdoutError() * 100).toFixed(0)}% median, ` +
+    `on sales in jurisdictions it never trained on.`
+  );
+};
 
 export const contactSummary = (match: PropertyMatch): string => {
   const lines = [
@@ -372,6 +408,7 @@ export const ConversationThreadLive = ConversationThread.make<never>(
               const explanation =
                 `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
                 `${contactSummary(match)}\n\n` +
+                `${worthSummary(match)}\n\n` +
                 `Why it matched (criteria v${tree.version}):\n${explainTrace(evaluated.trace)}`;
               const codexConnected =
                 input.codexAccount !== undefined && input.codexAccount !== "";

@@ -1,0 +1,38 @@
+[
+ {
+  "state": "VA",
+  "assessed": 239800,
+  "improvementValue": 161300,
+  "landValue": 78500,
+  "sqft": 1528,
+  "yearBuilt": 1942,
+  "landArea": 7692,
+  "use": "residential",
+  "year": 2026,
+  "expected": 214043.9243629197
+ },
+ {
+  "state": "CT",
+  "assessed": 181800,
+  "improvementValue": 0,
+  "landValue": 0,
+  "sqft": 0,
+  "yearBuilt": 0,
+  "landArea": 0,
+  "use": "commercial",
+  "year": 2025,
+  "expected": 311601.0769164181
+ },
+ {
+  "state": "MD",
+  "assessed": 468033,
+  "improvementValue": 0,
+  "landValue": 544500,
+  "sqft": 0,
+  "yearBuilt": 0,
+  "landArea": 298700,
+  "use": "vacant",
+  "year": 2024,
+  "expected": 440433.87388194347
+ }
+]

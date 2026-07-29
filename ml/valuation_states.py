@@ -97,6 +97,20 @@ def load_md(path: Path) -> list[Sale]:
     return out
 
 
+def load_va(path: Path) -> list[Sale]:
+    """Norfolk. The demo runs here, so the state has to be calibrated or the
+    scout cannot honestly quote a number for it."""
+    from valuation import load_sales
+    out = []
+    for s in load_sales(path):
+        if s.date < "2022-01-01":
+            continue
+        out.append(Sale("VA", "Norfolk", s.price, s.assessed, s.date, group_use(s.use),
+                        s.living_sqft, s.year_built, s.acreage * 43560.0,
+                        s.improvement_value, s.land_value))
+    return out
+
+
 def featurize(sales: list[Sale], ratios: dict[str, float]) -> np.ndarray:
     rows = []
     for s in sales:
@@ -212,7 +226,8 @@ def run(train_sales, test_sales, label: str, epochs: int, lr: float, batch: int,
     print(f"    within 20%: {within(y_test, pred, .20):.1%} (bar {within(y_test, calibrated, .20):.1%})")
     verdict = "beats" if score < bar else "loses to"
     print(f"  verdict: {verdict} the bar by {abs(bar - score):.1%}")
-    return {"label": label, "train": len(train_sales), "test": len(test_sales),
+    return {"model": model, "mean": mean, "std": std, "ratios": ratios,
+            "label": label, "train": len(train_sales), "test": len(test_sales),
             "raw_mdape": raw_mdape, "calibrated_mdape": cal_mdape, "model_mdape": score,
             "within_10": within(y_test, pred, .10), "bar_within_10": within(y_test, calibrated, .10),
             "beats": bool(score < bar), "ratios": ratios}
@@ -222,6 +237,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ct", type=Path, default=HERE / "ct_raw.json")
     ap.add_argument("--md", type=Path, default=HERE / "md_raw.json")
+    ap.add_argument("--va", type=Path, default=HERE / "sales_raw.json")
+    ap.add_argument("--weights", type=Path, default=HERE / "valuation_export.json")
     ap.add_argument("--report", type=Path, default=HERE / "valuation_states_report.json")
     ap.add_argument("--epochs", type=int, default=25)
     ap.add_argument("--batch", type=int, default=1024)
@@ -235,6 +252,8 @@ def main() -> int:
         sales += load_ct(args.ct)
     if args.md.exists():
         sales += load_md(args.md)
+    if args.va.exists():
+        sales += load_va(args.va)
     if not sales:
         raise SystemExit("no state files found")
 
@@ -262,9 +281,27 @@ def main() -> int:
         results.append(run(train, test, f"held-out state: {state}",
                            args.epochs, args.lr, args.batch, args.seed))
 
+    # The jurisdiction-holdout run is the one that beat its bar, so it is the
+    # one exported. Cross-state transfer failed, and the export records which
+    # states were calibrated so the caller can refuse the rest.
+    first = results[0]
+    m = first["model"]
+    args.weights.write_text(json.dumps({
+        "kind": "valuation_mlp",
+        "state_ratios": {k: float(v) for k, v in first["ratios"].items()},
+        "use_groups": USE_GROUPS,
+        "mean": [float(x) for x in first["mean"]],
+        "std": [float(x) for x in first["std"]],
+        "holdout_mdape": first["model_mdape"],
+        "bar_mdape": first["calibrated_mdape"],
+        "layers": [{"w": m.net[i].weight.T.tolist(), "b": m.net[i].bias.tolist()}
+                   for i in (0, 3, 5)],
+    }))
+    print(f"exported weights for states {sorted(first['ratios'])} -> {args.weights}")
     args.report.write_text(json.dumps(
         {"sales": len(sales), "jurisdictions": len(jurisdictions), "by_state": by_state,
-         "experiments": [{k: v for k, v in r.items() if k != "ratios"} for r in results]},
+         "experiments": [{k: v for k, v in r.items() if k not in ("ratios", "model", "mean", "std")}
+                         for r in results]},
         indent=2))
     print(f"\nwrote {args.report}")
     return 0 if all(r["beats"] for r in results) else 1
