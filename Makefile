@@ -17,6 +17,6 @@ renderer:
 	cd tools && npm install
 
 run-with-renderer: build renderer
-	DD_RENDERER="npx --prefix tools tsx tools/render.ts" ./build/datadiver
+	DD_RENDERER="npm --prefix tools exec --silent tsx tools/render.ts" ./build/datadiver
 
 .PHONY: all build test run renderer run-with-renderer
