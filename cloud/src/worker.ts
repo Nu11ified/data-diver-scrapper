@@ -8,6 +8,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import { Bucket } from "./resources.ts";
 import { makeClient, type Db } from "./db.ts";
+import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
   ConversationThread,
   ConversationThreadLive,
@@ -78,7 +79,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
   "Scraper",
   {
     main: import.meta.url,
-    env: { DATABASE_URL: Config.redacted("DATABASE_URL") },
+    env: {
+      DATABASE_URL: Config.redacted("DATABASE_URL"),
+      SENDBLUE_API_KEY: Config.redacted("SENDBLUE_API_KEY"),
+      SENDBLUE_SECRET_KEY: Config.redacted("SENDBLUE_SECRET_KEY"),
+    },
   },
   Effect.gen(function* () {
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
@@ -86,6 +91,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
     let client: Db | undefined;
     const db = (): Db => (client ??= makeClient(Redacted.value(databaseUrl)));
+
+    const sendblueKey = yield* Config.redacted("SENDBLUE_API_KEY");
+    const sendblueSecret = yield* Config.redacted("SENDBLUE_SECRET_KEY");
+    const sender: Sender =
+      Redacted.value(sendblueKey) === ""
+        ? simulated((line) => console.log(line))
+        : sendblue(Redacted.value(sendblueKey), Redacted.value(sendblueSecret));
 
     const runSource = (source: SourceConfig, runId: string) =>
       Effect.gen(function* () {
@@ -395,7 +407,33 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const candidates = yield* countyMatches("norfolk");
           const thread = threads.getByName(phone);
           const reply = yield* thread.handleMessage({ text, candidates });
-          return json({ ok: true, phone, reply });
+
+          const delivery = yield* Effect.tryPromise({
+            try: async () => {
+              const prisma = db();
+              const tenant = await prisma.tenant.upsert({
+                where: { phone },
+                create: { phone },
+                update: {},
+              });
+              await prisma.message.createMany({
+                data: [
+                  { tenantId: tenant.id, role: "user", body: text },
+                  { tenantId: tenant.id, role: "scout", body: reply },
+                ],
+              });
+              await sender.send({ to: phone, body: reply });
+            },
+            catch: (cause): Error => (cause instanceof Error ? cause : new Error(String(cause))),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+
+          return json({
+            ok: !(delivery instanceof Error),
+            phone,
+            reply,
+            transport: sender.name,
+            ...(delivery instanceof Error ? { error: delivery.message } : {}),
+          });
         }
 
         return json({ ok: false, error: "not found" }, 404);
