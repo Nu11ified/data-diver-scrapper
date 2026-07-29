@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dd/engine/schema.hpp"
+
 #include <map>
 #include <string>
 #include <string_view>
@@ -72,6 +74,25 @@ struct Lifecycle {
     State state = State::Normal;
     std::vector<Transition> transitions;
 };
+
+// Everything about the run that events need; a plain value so event building
+// stays pure and callable from any host, including the WASM build where no
+// store exists.
+struct EventContext {
+    std::string jurisdiction;
+    std::string source_id;
+    std::string as_of;
+    std::string run_id;
+    std::string recorded_at;
+};
+
+// Builds property events from the canonical records of one extraction. Field
+// roles from the schema decide identity, dates and amounts.
+std::vector<PropertyEvent> build_events(const schema::Registry& registry,
+                                        const EventContext& context,
+                                        const std::string& classification,
+                                        double class_confidence,
+                                        const schema::ExtractionResult& extraction);
 
 // Deterministic reducer: orders events by (event_date, recorded_at, id) and
 // folds them into a lifecycle. Distress events advance the state when their

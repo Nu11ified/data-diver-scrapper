@@ -23,59 +23,17 @@ std::string new_run_id(const std::string& source_id) {
                                   std::to_string(metrics::cpu_time_ms())));
 }
 
-std::string pick(const std::map<std::string, std::string>& values, const char* key) {
-    const auto it = values.find(key);
-    return it == values.end() ? std::string{} : it->second;
-}
-
-// The first non-empty value among the fields carrying `role`, in schema
-// order.
-std::string pick_role(const schema::Registry& registry,
-                      const std::map<std::string, std::string>& values,
-                      std::string_view role) {
-    for (const schema::FieldDef* field : registry.with_role(role)) {
-        const std::string value = pick(values, field->name.c_str());
-        if (!value.empty()) return value;
-    }
-    return {};
-}
-
-// Builds property events from the canonical records of one run. Field roles
-// from the schema file decide what identifies the property, what dates the
-// event and what its amount is; the canonical names themselves are free.
 std::vector<events::PropertyEvent> to_events(const schema::Registry& registry,
                                              const store::Source& source,
                                              const store::RunRecord& run,
                                              const std::string& classification,
                                              double class_confidence,
                                              const schema::ExtractionResult& extraction) {
-    std::vector<events::PropertyEvent> out;
-    for (const schema::CanonicalRecord& record : extraction.records) {
-        const std::string parcel = pick_role(registry, record.values, "parcel");
-        const std::string address = pick_role(registry, record.values, "address");
-        const std::string key = entity::property_key(source.jurisdiction, parcel, address);
-        if (key.empty()) continue; // unresolvable: no identity evidence
-
-        events::PropertyEvent e;
-        e.property_key = key;
-        e.kind = events::kind_from_source_label(classification,
-                                                pick_role(registry, record.values, "status"));
-        e.event_date = pick_role(registry, record.values, "event_date");
-        if (e.event_date.empty()) {
-            e.event_date = pick_role(registry, record.values, "fallback_date");
-        }
-        e.recorded_at = run.started_at;
-        e.source_id = source.id;
-        e.as_of = source.as_of;
-        e.run_id = run.id;
-        e.confidence = class_confidence;
-        const std::string amount = pick_role(registry, record.values, "amount");
-        if (!amount.empty()) e.amount = std::atof(amount.c_str());
-        e.details = record.values;
-        e.id = events::PropertyEvent::compute_id(e);
-        out.push_back(std::move(e));
-    }
-    return out;
+    return events::build_events(
+        registry,
+        events::EventContext{source.jurisdiction, source.id, source.as_of, run.id,
+                             run.started_at},
+        classification, class_confidence, extraction);
 }
 
 // The full extraction picture for one source, kept for the schema view: the
@@ -310,6 +268,12 @@ std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Sou
         const int workers = std::min<int>(
             static_cast<int>(wave.size()),
             threads > 0 ? threads : std::max(2, std::min(8, hardware)));
+        // Hosts without threads (a WASM runtime reports one core) take the
+        // inline path; no std::thread is ever constructed there.
+        if (workers <= 1) {
+            for (const std::size_t i : wave) out[i] = run_source(sources[i]);
+            return;
+        }
         std::atomic<std::size_t> next{0};
         std::vector<std::thread> pool;
         pool.reserve(static_cast<std::size_t>(workers));

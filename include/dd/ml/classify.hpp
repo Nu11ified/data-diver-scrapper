@@ -43,6 +43,9 @@ public:
                                         double alpha = 1.0);
 
     static Classifier load(const std::string& model_path);
+    // The same model from its serialized text, for hosts without a
+    // filesystem.
+    static Classifier from_json(const std::string& text);
     void save(const std::string& model_path) const;
 
     Prediction classify(const doc::Model& model, const std::string& url) const;

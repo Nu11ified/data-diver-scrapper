@@ -154,6 +154,10 @@ Result fetch_rendered(const std::string& url, const Options& options) {
         r.error = "render+ url contains characters the renderer command cannot take";
         return r;
     }
+#if defined(__EMSCRIPTEN__)
+    r.error = "render+ is unavailable in the WASM build; the host fetches and renders";
+    return r;
+#else
     const char* renderer = std::getenv("DD_RENDERER");
     if (renderer == nullptr || renderer[0] == '\0') {
         r.error = "set DD_RENDERER to a command that prints rendered HTML for a url "
@@ -187,6 +191,7 @@ Result fetch_rendered(const std::string& url, const Options& options) {
         r.ok = true;
     }
     return r;
+#endif
 }
 
 Result get(const std::string& url, const Options& options) {
@@ -223,8 +228,12 @@ std::string_view mode_name(Mode m) {
 }
 
 bool renderer_available() {
+#if defined(__EMSCRIPTEN__)
+    return false;
+#else
     const char* renderer = std::getenv("DD_RENDERER");
     return renderer != nullptr && renderer[0] != '\0';
+#endif
 }
 
 bool likely_script_rendered(const std::string& content_type, const std::string& body) {

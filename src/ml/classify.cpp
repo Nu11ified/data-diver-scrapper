@@ -100,7 +100,11 @@ void Classifier::save(const std::string& model_path) const {
 }
 
 Classifier Classifier::load(const std::string& model_path) {
-    const json::Value root = json::parse(fileio::read_file(model_path));
+    return from_json(fileio::read_file(model_path));
+}
+
+Classifier Classifier::from_json(const std::string& text) {
+    const json::Value root = json::parse(text);
     const json::Value* inner = root.find("model");
     if (inner == nullptr) throw Error("classify: model file missing 'model'");
     Classifier out;

@@ -1,5 +1,7 @@
 #include "dd/engine/events.hpp"
 
+#include "dd/engine/entity.hpp"
+
 #include "dd/core/core.hpp"
 #include "dd/core/json.hpp"
 
@@ -163,6 +165,54 @@ Lifecycle reduce(std::vector<PropertyEvent> events) {
 
         out.state = reset ? State::Normal : proposed;
         out.transitions.push_back(Transition{out.state, e.id, e.event_date});
+    }
+    return out;
+}
+
+namespace {
+
+std::string pick_role(const schema::Registry& registry,
+                      const std::map<std::string, std::string>& values,
+                      std::string_view role) {
+    for (const schema::FieldDef* field : registry.with_role(role)) {
+        const auto it = values.find(field->name);
+        if (it != values.end() && !it->second.empty()) return it->second;
+    }
+    return {};
+}
+
+} // namespace
+
+std::vector<PropertyEvent> build_events(const schema::Registry& registry,
+                                        const EventContext& context,
+                                        const std::string& classification,
+                                        double class_confidence,
+                                        const schema::ExtractionResult& extraction) {
+    std::vector<PropertyEvent> out;
+    for (const schema::CanonicalRecord& record : extraction.records) {
+        const std::string parcel = pick_role(registry, record.values, "parcel");
+        const std::string address = pick_role(registry, record.values, "address");
+        const std::string key = entity::property_key(context.jurisdiction, parcel, address);
+        if (key.empty()) continue; // unresolvable: no identity evidence
+
+        PropertyEvent e;
+        e.property_key = key;
+        e.kind = kind_from_source_label(classification,
+                                        pick_role(registry, record.values, "status"));
+        e.event_date = pick_role(registry, record.values, "event_date");
+        if (e.event_date.empty()) {
+            e.event_date = pick_role(registry, record.values, "fallback_date");
+        }
+        e.recorded_at = context.recorded_at;
+        e.source_id = context.source_id;
+        e.as_of = context.as_of;
+        e.run_id = context.run_id;
+        e.confidence = class_confidence;
+        const std::string amount = pick_role(registry, record.values, "amount");
+        if (!amount.empty()) e.amount = std::atof(amount.c_str());
+        e.details = record.values;
+        e.id = PropertyEvent::compute_id(e);
+        out.push_back(std::move(e));
     }
     return out;
 }

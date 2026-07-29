@@ -545,24 +545,27 @@ TrainReport ColumnModel::train(const std::vector<Example>& train_set,
             std::vector<std::vector<double>> grads(
                 static_cast<std::size_t>(threads), std::vector<double>(params_.size(), 0.0));
             std::vector<double> losses(static_cast<std::size_t>(threads), 0.0);
-            std::vector<std::thread> pool;
-            for (int t = 0; t < threads; ++t) {
-                pool.emplace_back([&, t] {
-                    Trace trace;
-                    for (std::size_t i = start + static_cast<std::size_t>(t); i < end;
-                         i += static_cast<std::size_t>(threads)) {
-                        const Example& e = train_set[order[i]];
-                        const std::vector<int> ids =
-                            tokenize(e.name, e.values, static_cast<std::size_t>(hyper_.seq_len));
-                        net.run(params_.data(), ids, &trace);
-                        const int target = class_index.at(e.label);
-                        losses[static_cast<std::size_t>(t)] += cross_entropy(trace.logits, target);
-                        net.backprop(params_.data(), trace, target,
-                                     grads[static_cast<std::size_t>(t)].data());
-                    }
-                });
+            const auto worker = [&](int t) {
+                Trace trace;
+                for (std::size_t i = start + static_cast<std::size_t>(t); i < end;
+                     i += static_cast<std::size_t>(threads)) {
+                    const Example& e = train_set[order[i]];
+                    const std::vector<int> ids =
+                        tokenize(e.name, e.values, static_cast<std::size_t>(hyper_.seq_len));
+                    net.run(params_.data(), ids, &trace);
+                    const int target = class_index.at(e.label);
+                    losses[static_cast<std::size_t>(t)] += cross_entropy(trace.logits, target);
+                    net.backprop(params_.data(), trace, target,
+                                 grads[static_cast<std::size_t>(t)].data());
+                }
+            };
+            if (threads <= 1) {
+                worker(0);
+            } else {
+                std::vector<std::thread> pool;
+                for (int t = 0; t < threads; ++t) pool.emplace_back(worker, t);
+                for (std::thread& th : pool) th.join();
             }
-            for (std::thread& th : pool) th.join();
             for (int t = 1; t < threads; ++t) {
                 for (std::size_t i = 0; i < params_.size(); ++i) grads[0][i] += grads[t][i];
             }

@@ -65,6 +65,42 @@ add_executable(datadiver src/app/main.cpp src/app/commands.cpp src/app/render.cp
 target_link_libraries(datadiver PRIVATE dd_engine)
 target_compile_options(datadiver PRIVATE -Wall -Wextra -Wpedantic)
 
+# The WASM boundary for the Cloudflare Worker: the compute half of the engine
+# (parse, ml, schema, events, compile) with the host owning network and
+# storage. Build with: emcmake cmake -S . -B build-wasm && cmake --build build-wasm
+if(EMSCRIPTEN)
+  add_executable(datadiver_wasm
+    wasm/api.cpp
+    src/core/core.cpp
+    src/core/json.cpp
+    src/parse/html.cpp
+    src/parse/query.cpp
+    src/parse/csv.cpp
+    src/parse/pdf.cpp
+    src/parse/document.cpp
+    src/ml/features.cpp
+    src/ml/model.cpp
+    src/ml/classify.cpp
+    src/ml/columns.cpp
+    src/engine/schema.cpp
+    src/engine/entity.cpp
+    src/engine/events.cpp
+    src/engine/compile.cpp
+  )
+  target_include_directories(datadiver_wasm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(datadiver_wasm PRIVATE -Wall -Wextra -Wpedantic -O2)
+  target_link_options(datadiver_wasm PRIVATE
+    -sMODULARIZE=1
+    -sEXPORT_ES6=1
+    -sENVIRONMENT=web,worker,node
+    -sALLOW_MEMORY_GROWTH=1
+    -sFILESYSTEM=0
+    -sEXPORTED_FUNCTIONS=_dd_version,_dd_process_document,_dd_compile_county,_dd_free,_malloc,_free
+    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,stringToNewUTF8,UTF8ToString
+  )
+  set_target_properties(datadiver_wasm PROPERTIES OUTPUT_NAME "datadiver" SUFFIX ".mjs")
+endif()
+
 enable_testing()
 add_executable(dd_tests tests/tests.cpp)
 target_link_libraries(dd_tests PRIVATE dd_engine)

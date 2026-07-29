@@ -6,3 +6,6 @@ var/
 compile_commands.json
 .cache/
 .playwright-mcp/
+cloud/node_modules/
+tools/node_modules/
+build-wasm/

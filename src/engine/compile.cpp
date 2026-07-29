@@ -1,6 +1,7 @@
 #include "dd/engine/compile.hpp"
 
 #include "dd/core/core.hpp"
+#include "dd/core/json.hpp"
 #include "dd/engine/entity.hpp"
 
 #include <algorithm>
@@ -159,8 +160,19 @@ std::map<std::string, std::map<std::string, double>> source_trust(store::Store& 
 
 std::vector<Property> county(store::Store& store, const schema::Registry& registry,
                              const std::string& county) {
+    std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
+    for (const std::string& key : store.property_keys()) {
+        events_by_key[key] = store.events_for(key);
+    }
+    return county_from_events(registry, events_by_key, source_trust(store), county);
+}
+
+std::vector<Property> county_from_events(
+    const schema::Registry& registry,
+    const std::map<std::string, std::vector<events::PropertyEvent>>& all_events,
+    const std::map<std::string, std::map<std::string, double>>& trust,
+    const std::string& county) {
     const std::string wanted = str::slug(county);
-    const std::map<std::string, std::map<std::string, double>> trust = source_trust(store);
 
     // Group store keys: one building may appear under a treasurer account, an
     // assessor parcel and a complaint id at once, so keys join on the parts
@@ -169,10 +181,10 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
     std::map<std::string, std::vector<std::string>> groups;
     std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
     std::map<std::string, entity::Address> address_by_key;
-    for (const std::string& key : store.property_keys()) {
+    for (const auto& [key, all_evs] : all_events) {
         const std::string slug = key.substr(0, key.find('|'));
         if (slug != wanted && !str::contains(slug, wanted)) continue;
-        std::vector<events::PropertyEvent> evs = store.events_for(key);
+        std::vector<events::PropertyEvent> evs = all_evs;
         const entity::Address address = entity::parse_address(first_address(evs));
         const std::string join = entity::address_join_key(address);
         groups[join.empty() ? key : slug + "|a:" + join].push_back(key);
@@ -263,6 +275,99 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
         return a.assessed > b.assessed;
     });
     return out;
+}
+
+std::string render_county_json(const std::string& county,
+                               const std::vector<Property>& properties) {
+    std::size_t without_address = 0;
+    for (const Property& p : properties) {
+        if (!p.locates_a_building) ++without_address;
+    }
+
+    json::Writer w;
+    w.begin_object();
+    w.field("county", county);
+    w.field("generated_at", timeutil::iso_now());
+    w.field("properties", static_cast<std::int64_t>(properties.size() - without_address));
+    w.field("hidden_unlocatable", static_cast<std::int64_t>(without_address));
+    w.key("records");
+    w.begin_array();
+    for (const Property& p : properties) {
+        if (!p.locates_a_building) continue;
+        w.begin_object();
+        w.key("keys");
+        w.begin_array();
+        for (const std::string& key : p.keys) w.string_value(key);
+        w.end_array();
+        w.field("lifecycle_state", std::string{events::state_name(p.state)});
+
+        w.key("fields");
+        w.begin_object();
+        for (const auto& [field, resolved] : p.fields) {
+            w.key(field);
+            w.begin_object();
+            w.field("value", resolved.value);
+            w.field("source", resolved.source_id);
+            w.field("confidence", resolved.confidence);
+            if (!resolved.as_of.empty()) w.field("edition", resolved.as_of);
+            if (!resolved.event_date.empty()) w.field("as_of", resolved.event_date);
+            w.end_object();
+        }
+        w.end_object();
+
+        if (!p.conflicts.empty()) {
+            w.key("conflicts");
+            w.begin_array();
+            for (const Conflict& c : p.conflicts) {
+                w.begin_object();
+                w.field("field", c.field);
+                w.field("kept", c.kept_value);
+                w.field("kept_source", c.kept_source);
+                w.field("kept_confidence", c.kept_confidence);
+                w.field("dropped", c.dropped_value);
+                w.field("dropped_source", c.dropped_source);
+                w.field("dropped_confidence", c.dropped_confidence);
+                w.end_object();
+            }
+            w.end_array();
+        }
+
+        w.key("signals");
+        w.begin_object();
+        if (p.due > 0.0) w.field("delinquent_amount", p.due);
+        if (p.violations > 0) {
+            w.field("code_violations", static_cast<std::int64_t>(p.violations));
+        }
+        if (!p.auction_date.empty()) w.field("auction_date", p.auction_date);
+        if (p.assessed > 0.0) w.field("assessed_value", p.assessed);
+        if (p.due > 0.0 && p.assessed > 0.0) w.field("debt_to_value", p.due / p.assessed);
+        if (p.assessed_previous > 0.0) {
+            w.field("assessed_value_previous", p.assessed_previous);
+            if (p.assessed > 0.0) {
+                w.field("assessed_value_change",
+                        (p.assessed - p.assessed_previous) / p.assessed_previous);
+            }
+        }
+        w.end_object();
+
+        w.key("events");
+        w.begin_array();
+        for (const events::PropertyEvent& e : p.events) {
+            w.begin_object();
+            w.field("kind", std::string{events::kind_name(e.kind)});
+            if (!e.event_date.empty()) w.field("date", e.event_date);
+            w.field("source", e.source_id);
+            if (!e.as_of.empty()) w.field("edition", e.as_of);
+            if (e.amount > 0.0) w.field("amount", e.amount);
+            w.field("confidence", e.confidence);
+            w.end_object();
+        }
+        w.end_array();
+        w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+    return w.take();
 }
 
 } // namespace dd::compile

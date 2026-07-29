@@ -75,4 +75,18 @@ std::map<std::string, std::map<std::string, double>> source_trust(store::Store& 
 std::vector<Property> county(store::Store& store, const schema::Registry& registry,
                              const std::string& county);
 
+// The same compilation as a pure function over already-loaded events, for
+// hosts that keep events somewhere other than the file store (the WASM
+// build's events live in the caller's database). Keys are store property
+// keys; trust maps source id to per-field mapping confidence.
+std::vector<Property> county_from_events(
+    const schema::Registry& registry,
+    const std::map<std::string, std::vector<events::PropertyEvent>>& events_by_key,
+    const std::map<std::string, std::map<std::string, double>>& trust,
+    const std::string& county);
+
+// Renders compiled properties as the canonical county payload an API serves.
+std::string render_county_json(const std::string& county,
+                               const std::vector<Property>& properties);
+
 } // namespace dd::compile
