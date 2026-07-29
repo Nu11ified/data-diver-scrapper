@@ -527,9 +527,19 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             }
             dd::pipeline::Pipeline& pipeline = state.ensure();
             if (parts[1] == "all") {
+                std::vector<dd::store::Source> enabled;
                 for (const dd::store::Source& s : state.store->sources()) {
-                    if (s.enabled) print_run(pipeline.run_source(s));
+                    if (s.enabled) enabled.push_back(s);
                 }
+                const dd::Stopwatch watch;
+                const std::vector<dd::store::RunRecord> runs = pipeline.run_sources(enabled);
+                for (const dd::store::RunRecord& run : runs) print_run(run);
+                double serial_ms = 0.0;
+                for (const dd::store::RunRecord& run : runs) serial_ms += run.total_ms;
+                std::printf("  %s\n",
+                            paint("dim", std::to_string(runs.size()) + " sources in " +
+                                             fmt_ms(watch.elapsed_ms()) + " wall clock, " +
+                                             fmt_ms(serial_ms) + " of work").c_str());
             } else {
                 try {
                     print_run(pipeline.run_source_id(parts[1]));
@@ -769,9 +779,11 @@ int main(int argc, char** argv) {
             }
             bool any_failed = false;
             if (args.flags.count("all") != 0) {
+                std::vector<dd::store::Source> enabled;
                 for (const dd::store::Source& s : store.sources()) {
-                    if (!s.enabled) continue;
-                    const dd::store::RunRecord run = pipeline.run_source(s);
+                    if (s.enabled) enabled.push_back(s);
+                }
+                for (const dd::store::RunRecord& run : pipeline.run_sources(enabled)) {
                     print_run(run);
                     if (!run.ok) any_failed = true;
                 }

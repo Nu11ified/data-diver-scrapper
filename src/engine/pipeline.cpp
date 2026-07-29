@@ -1,5 +1,8 @@
 #include "dd/engine/pipeline.hpp"
 
+#include <atomic>
+#include <thread>
+
 #include "dd/core/core.hpp"
 #include "dd/parse/document.hpp"
 #include "dd/engine/entity.hpp"
@@ -187,6 +190,42 @@ std::string expand_url_template(const store::Source& source, const store::Store&
                     "the jurisdiction's primary sources first");
     }
     return source.url.substr(0, at) + str::join(parcels, ",") + source.url.substr(at + 9);
+}
+
+std::vector<store::RunRecord> Pipeline::run_sources(const std::vector<store::Source>& sources,
+                                                    int threads) {
+    std::vector<store::RunRecord> out(sources.size());
+    if (sources.empty()) return out;
+
+    // Enrichment sources query the parcels the others discover, so they run
+    // in a second wave. Everything inside a wave is concurrent.
+    std::vector<std::size_t> primary;
+    std::vector<std::size_t> enrichment;
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        (str::contains(sources[i].url, "{parcels}") ? enrichment : primary).push_back(i);
+    }
+
+    const int hardware = static_cast<int>(std::thread::hardware_concurrency());
+    const auto run_wave = [&](const std::vector<std::size_t>& wave) {
+        if (wave.empty()) return;
+        const int workers = std::min<int>(
+            static_cast<int>(wave.size()),
+            threads > 0 ? threads : std::max(2, std::min(8, hardware)));
+        std::atomic<std::size_t> next{0};
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(workers));
+        for (int w = 0; w < workers; ++w) {
+            pool.emplace_back([&] {
+                for (std::size_t at = next++; at < wave.size(); at = next++) {
+                    out[wave[at]] = run_source(sources[wave[at]]);
+                }
+            });
+        }
+        for (std::thread& t : pool) t.join();
+    };
+    run_wave(primary);
+    run_wave(enrichment);
+    return out;
 }
 
 store::RunRecord Pipeline::run_source(const store::Source& source) {

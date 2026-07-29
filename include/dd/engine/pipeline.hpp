@@ -29,6 +29,13 @@ public:
 
     store::RunRecord run_source(const store::Source& source);
 
+    // Ingests many sources concurrently: the network dominates a run, so
+    // fetches overlap. Results come back in the order given. `threads` of 0
+    // picks a bound from the hardware. Callers must not mutate the models
+    // while this runs.
+    std::vector<store::RunRecord> run_sources(const std::vector<store::Source>& sources,
+                                              int threads = 0);
+
     // Convenience: run by id. Throws dd::Error for an unknown source.
     store::RunRecord run_source_id(const std::string& source_id);
 
