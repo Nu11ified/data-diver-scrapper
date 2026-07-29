@@ -54,6 +54,7 @@ std::string RunRecord::serialize() const {
     w.field("class_confidence", class_confidence);
     w.field("records_extracted", records_extracted);
     w.field("events_new", events_new);
+    w.field("newest_record_date", newest_record_date);
     w.field("extraction_rate", extraction_rate);
     w.field("mapping_confidence", mapping_confidence);
     w.field("baseline_rate", baseline_rate);
@@ -179,6 +180,7 @@ void Store::load() {
             s.added_at = get_string(entry, "added_at");
             s.enabled = get_bool(entry, "enabled", true);
             s.seed_from = get_string(entry, "seed_from");
+            s.as_of = get_string(entry, "as_of");
             if (!s.id.empty() && !s.url.empty()) sources_.push_back(std::move(s));
         }
     }
@@ -249,6 +251,7 @@ void Store::persist_sources_locked() {
         w.field("added_at", s.added_at);
         w.field("enabled", s.enabled);
         w.field("seed_from", s.seed_from);
+        w.field("as_of", s.as_of);
         w.end_object();
     }
     w.end_array();
@@ -269,6 +272,7 @@ void Store::seed(const std::string& seeds_path) {
         s.url = get_string(entry, "url");
         s.jurisdiction = get_string(entry, "jurisdiction");
         s.seed_from = get_string(entry, "seed_from");
+        s.as_of = get_string(entry, "as_of");
         s.added_at = timeutil::iso_now();
         if (s.id.empty() || s.url.empty()) continue;
         const bool present = std::any_of(sources_.begin(), sources_.end(),

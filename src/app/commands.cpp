@@ -160,6 +160,15 @@ void county_properties(store::Store& store, const schema::Registry& registry,
             ++hidden;
             continue;
         }
+        std::string change;
+        if (p.assessed > 0.0 && p.assessed_previous > 0.0) {
+            const double delta = (p.assessed - p.assessed_previous) / p.assessed_previous;
+            if (std::abs(delta) >= 0.005) {
+                char buffer[16];
+                std::snprintf(buffer, sizeof(buffer), "%+.0f%%", delta * 100.0);
+                change = buffer;
+            }
+        }
         std::string ratio;
         if (p.due > 0.0 && p.assessed > 0.0) {
             char buffer[16];
@@ -177,12 +186,12 @@ void county_properties(store::Store& store, const schema::Registry& registry,
         table.push_back({parcel, clip(field_or(p, "owner"), 26), clip(address, 26),
                          stamp(std::string{events::state_name(p.state)}),
                          p.due > 0.0 ? fmt_money(p.due) : "",
-                         p.assessed > 0.0 ? fmt_money(p.assessed) : "", ratio,
+                         p.assessed > 0.0 ? fmt_money(p.assessed) : "", change, ratio,
                          p.violations > 0 ? std::to_string(p.violations) : "",
                          std::to_string(sources.size()), last_event});
     }
-    render::table({"parcel", "owner", "address", "lifecycle", "owed", "assessed", "debt/val",
-                   "viol", "src", "last event"},
+    render::table({"parcel", "owner", "address", "lifecycle", "owed", "assessed", "yoy",
+                   "debt/val", "viol", "src", "last event"},
                   table);
     std::string note = std::to_string(table.size()) + " properties, most distressed first; " +
                        std::to_string(cross_source) + " corroborated by more than one source";
@@ -586,6 +595,61 @@ int export_county(store::Store& store, const schema::Registry& registry,
     std::printf("  %s wrote %zu bytes to %s\n", stamp("ok").c_str(), payload.size(),
                 out_path.c_str());
     return 0;
+}
+
+int freshness(store::Store& store, double stale_hours) {
+    section("Freshness");
+    const std::string now = timeutil::iso_now();
+    std::vector<std::vector<std::string>> rows;
+    std::size_t stale = 0;
+    std::size_t live = 0;
+    for (const store::Source& s : store.sources()) {
+        const std::vector<store::RunRecord> last = store.runs(1, s.id);
+        if (last.empty()) {
+            rows.push_back({s.id, "never run", "", "", stamp("pending")});
+            continue;
+        }
+        const store::RunRecord& run = last.front();
+        const double fetch_age = timeutil::hours_between(run.started_at, now);
+        const double record_age = run.newest_record_date.empty()
+                                      ? -1.0
+                                      : timeutil::hours_between(run.newest_record_date, now);
+        char fetched[32];
+        std::snprintf(fetched, sizeof(fetched), "%.1f h ago", fetch_age);
+        std::string record_col = run.newest_record_date;
+        std::string age_col;
+        std::string verdict;
+        if (!run.ok) {
+            verdict = stamp("failed");
+        } else if (run.newest_record_date.empty()) {
+            verdict = stamp("unchanged");
+            age_col = "undated";
+        } else if (record_age < 0.0) {
+            verdict = stamp("ok");  // scheduled ahead of now, as permits are
+            age_col = "future";
+            ++live;
+        } else {
+            char age[32];
+            std::snprintf(age, sizeof(age), "%.0f h", record_age);
+            age_col = age;
+            if (record_age > stale_hours) {
+                verdict = stamp("review");
+                ++stale;
+            } else {
+                verdict = stamp("ok");
+                ++live;
+            }
+        }
+        rows.push_back({s.id, fetched, record_col, age_col, verdict});
+    }
+    render::table({"source", "last fetched", "newest record", "record age", ""}, rows);
+    char note[160];
+    std::snprintf(note, sizeof(note),
+                  "%zu sources current within %.0f h, %zu behind it; a fetch that succeeds "
+                  "with old rows is the failure this catches",
+                  live, stale_hours, stale);
+    std::printf("  %s\n", paint("dim", note).c_str());
+    return stale > 0 ? 1 : 0;
 }
 
 int catalog(store::Store& store, std::size_t datasets_per_query, bool add) {

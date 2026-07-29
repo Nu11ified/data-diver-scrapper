@@ -49,6 +49,11 @@ namespace timeutil {
 std::string iso_now();
 std::int64_t unix_now();
 std::string iso_from_unix(std::int64_t t);
+
+// Hours between two timestamps. Accepts a bare date ("2026-07-27"), which
+// counts from midnight, as well as a full ISO stamp. Returns -1 when either
+// side cannot be read as a date.
+double hours_between(std::string_view earlier, std::string_view later);
 } // namespace timeutil
 
 class Stopwatch {

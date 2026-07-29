@@ -78,6 +78,7 @@ std::string PropertyEvent::serialize() const {
     w.field("event_date", event_date);
     w.field("recorded_at", recorded_at);
     w.field("source_id", source_id);
+    w.field("as_of", as_of);
     w.field("run_id", run_id);
     w.field("amount", amount);
     w.field("confidence", confidence);
@@ -101,6 +102,7 @@ PropertyEvent PropertyEvent::deserialize(const std::string& text) {
     e.event_date = get("event_date");
     e.recorded_at = get("recorded_at");
     e.source_id = get("source_id");
+    e.as_of = get("as_of");
     e.run_id = get("run_id");
     const json::Value* amount = root.find("amount");
     if (amount != nullptr) e.amount = amount->as_number();

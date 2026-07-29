@@ -473,6 +473,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  harvest [N]            build the column corpus from live portals\n"
                         "  harvest docs [N]       grow the document corpus with real datasets\n"
                         "  catalog [add] [N]      discover county sources nationwide\n"
+                        "  fresh [HOURS]          how current each source's records are\n"
                         "  train columns [EPOCHS] train the column transformer, validate by domain\n"
                         "  export COUNTY [FILE]   the compiled county as canonical JSON\n"
                         "  bench                  score against the hand-verified answer key\n"
@@ -600,6 +601,17 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             state.ensure();
             dd::cli::export_county(*state.store, state.pipeline->registry(), parts[1],
                                    parts.size() == 3 ? parts[2] : "");
+            continue;
+        }
+        if (command == "fresh") {
+            std::optional<double> hours{48.0};
+            if (parts.size() == 2) hours = parse_positive_double(parts[1], 100000.0);
+            if (parts.size() > 2 || !hours.has_value()) {
+                std::printf("  usage: fresh [STALE_AFTER_HOURS]\n");
+                continue;
+            }
+            state.ensure();
+            dd::cli::freshness(*state.store, *hours);
             continue;
         }
         if (command == "catalog") {

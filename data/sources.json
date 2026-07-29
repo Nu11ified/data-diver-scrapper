@@ -45,7 +45,8 @@
   "id": "norfolk_assessments",
   "name": "Norfolk VA Property Assessments FY25",
   "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$order=current_total_value DESC&$limit=50",
-  "jurisdiction": "City of Norfolk VA"
+  "jurisdiction": "City of Norfolk VA",
+  "as_of": "2025"
  },
  {
   "id": "norfolk_violations",
@@ -117,12 +118,21 @@
   "id": "norfolk_parcel_assessments",
   "name": "Norfolk VA Assessments (enrichment: tracked parcels)",
   "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=200",
-  "jurisdiction": "City of Norfolk VA"
+  "jurisdiction": "City of Norfolk VA",
+  "as_of": "2025"
  },
  {
   "id": "norfolk_street_assessments",
   "name": "Norfolk VA Assessments (enrichment: tracked addresses)",
   "url": "https://data.norfolk.gov/resource/g7sg-tivf.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=upper(property_street_name) in({streets}) AND property_street_number in({numbers})&$limit=2000",
-  "jurisdiction": "City of Norfolk VA"
+  "jurisdiction": "City of Norfolk VA",
+  "as_of": "2025"
+ },
+ {
+  "id": "norfolk_prior_year_assessments",
+  "name": "Norfolk VA Assessments FY24 (enrichment: tracked parcels)",
+  "url": "https://data.norfolk.gov/resource/9gmp-9x4c.json?$select=parcel_id,owner,current_total_value AS assessed_value,legal_description,property_use,property_street_number || ' ' || property_street_name || ' ' || property_street_type AS address,property_zip AS zip,consideration,grantee&$where=parcel_id in({parcels})&$limit=400",
+  "jurisdiction": "City of Norfolk VA",
+  "as_of": "2024"
  }
 ]

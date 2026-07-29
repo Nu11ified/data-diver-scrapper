@@ -22,7 +22,16 @@ struct ResolvedField {
     std::string value;
     std::string source_id;
     std::string event_date;
+    std::string as_of;        // edition of the source the value came from
     double confidence = 0.0;  // the source's measured mapping confidence
+};
+
+// One field observed in one edition, kept so a value can be compared with
+// what an earlier edition said about the same property.
+struct Observation {
+    std::string as_of;
+    std::string value;
+    std::string source_id;
 };
 
 struct Conflict {
@@ -43,10 +52,15 @@ struct Property {
     std::vector<events::PropertyEvent> events;  // chronological
     events::State state = events::State::Normal;
     std::map<std::string, ResolvedField> fields;
+    // Every distinct edition that reported a field, newest first. A single
+    // roll leaves one entry; successive rolls make year over year deltas
+    // computable without losing the current value.
+    std::map<std::string, std::vector<Observation>> history;
     std::vector<Conflict> conflicts;
     // Signals measured from the event history.
     double due = 0.0;
     double assessed = 0.0;
+    double assessed_previous = 0.0;  // the same field one edition earlier
     std::size_t violations = 0;
     std::string auction_date;
 };

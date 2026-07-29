@@ -38,6 +38,8 @@ county norfolk       # properties ranked by distress, merged across id spaces,
 export norfolk       # the compiled county as canonical JSON with per-field
                      # source + as-of provenance: the payload an API would serve
 
+fresh                # how current each source's records are, not just whether
+                     # the fetch succeeded
 bench                # score vs the hand-verified answer key:
                      # 15/16 classification, 0.95 mapping F1, ~7 ms/document
 catalog              # discover county sources nationwide (140 datasets across
@@ -95,6 +97,28 @@ business-license schema.
   columns` validates on held-out portals - 87% on portals the model never
   saw. Its verdict only counts in the matcher when decisive (argmax >= 0.7)
   and never bypasses the weak-validator floor.
+
+## Freshness and editions
+
+A fetch that succeeds with month-old rows is the failure that matters, so
+the engine measures two ages: when a source was last fetched, and how recent
+the newest record it returned is. `fresh` reports both and flags sources
+behind the threshold, which is how you learn that a county quietly stopped
+publishing rather than discovering it in the output weeks later.
+
+Once the mapping knows which column carries the event date, the next fetch
+asks for that column in descending order, so refetches return the newest
+records instead of an arbitrary page. The source teaches the engine the name
+of its date column and the engine then uses it: Cincinnati went from
+returning 2023 records to 50 hour old ones on the run after its mapping was
+learned.
+
+Some sources are editions rather than feeds. Every row in an assessment roll
+is equally current, so no record date can tell this year's roll from last
+year's. Sources therefore carry an `as_of` edition, the compile layer prefers
+the newest edition of a field while keeping the earlier one, and the
+difference becomes a signal: `assessed_value_change` in the export and a
+year over year column in the county view.
 
 ## How matching works
 

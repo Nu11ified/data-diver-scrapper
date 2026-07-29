@@ -42,6 +42,7 @@ std::string county_json(store::Store& store, const schema::Registry& registry,
             w.field("value", resolved.value);
             w.field("source", resolved.source_id);
             w.field("confidence", resolved.confidence);
+            if (!resolved.as_of.empty()) w.field("edition", resolved.as_of);
             if (!resolved.event_date.empty()) w.field("as_of", resolved.event_date);
             w.end_object();
         }
@@ -73,6 +74,13 @@ std::string county_json(store::Store& store, const schema::Registry& registry,
         if (!p.auction_date.empty()) w.field("auction_date", p.auction_date);
         if (p.assessed > 0.0) w.field("assessed_value", p.assessed);
         if (p.due > 0.0 && p.assessed > 0.0) w.field("debt_to_value", p.due / p.assessed);
+        if (p.assessed_previous > 0.0) {
+            w.field("assessed_value_previous", p.assessed_previous);
+            if (p.assessed > 0.0) {
+                w.field("assessed_value_change",
+                        (p.assessed - p.assessed_previous) / p.assessed_previous);
+            }
+        }
         w.end_object();
 
         w.key("events");

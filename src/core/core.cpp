@@ -229,6 +229,34 @@ std::string iso_from_unix(std::int64_t t) {
 
 std::string iso_now() { return iso_from_unix(unix_now()); }
 
+namespace {
+
+std::optional<std::int64_t> epoch_seconds(std::string_view stamp) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
+    const std::string text{stamp};
+    if (std::sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s) < 3) {
+        if (std::sscanf(text.c_str(), "%4d-%2d-%2d", &y, &mo, &d) != 3) return std::nullopt;
+    }
+    if (y < 1900 || mo < 1 || mo > 12 || d < 1 || d > 31) return std::nullopt;
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min = mi;
+    tm.tm_sec = s;
+    return static_cast<std::int64_t>(timegm(&tm));
+}
+
+} // namespace
+
+double hours_between(std::string_view earlier, std::string_view later) {
+    const std::optional<std::int64_t> a = epoch_seconds(earlier);
+    const std::optional<std::int64_t> b = epoch_seconds(later);
+    if (!a.has_value() || !b.has_value()) return -1.0;
+    return static_cast<double>(*b - *a) / 3600.0;
+}
+
 } // namespace timeutil
 
 double Stopwatch::elapsed_ms() const {

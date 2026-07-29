@@ -19,6 +19,12 @@ struct Source {
     std::string jurisdiction;
     std::string added_at;
     bool enabled = true;
+    // Which edition of the world this source describes, as an ISO date or a
+    // year. An assessor publishes one roll per fiscal year and every row in
+    // it is equally current, so recency cannot be read off the record dates.
+    // Empty means the source is a live feed whose records carry their own
+    // dates.
+    std::string as_of;
     // When set, the file at `url` is created from this path if missing. Lets
     // shipped demo sources live under var/ where their bytes can change the
     // way a county site's bytes change.
@@ -85,6 +91,10 @@ struct RunRecord {
 
     std::int64_t records_extracted = 0;
     std::int64_t events_new = 0;
+    // The most recent date any record in this fetch carried. A source that
+    // answers instantly with month old rows is stale even though the fetch
+    // succeeded, and only this distinguishes the two.
+    std::string newest_record_date;
     double extraction_rate = 0.0;
     double mapping_confidence = 0.0;
     double baseline_rate = 0.0;

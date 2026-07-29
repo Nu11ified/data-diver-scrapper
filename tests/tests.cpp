@@ -2169,6 +2169,53 @@ TEST(pipeline_runs_sources_concurrently_without_losing_records) {
     }
 }
 
+TEST(core_hours_between_reads_dates_and_stamps) {
+    CHECK_NEAR(dd::timeutil::hours_between("2026-07-27T00:00:00Z", "2026-07-29T00:00:00Z"),
+               48.0, 1e-6);
+    CHECK_NEAR(dd::timeutil::hours_between("2026-07-27", "2026-07-27T06:00:00Z"), 6.0, 1e-6);
+    CHECK(dd::timeutil::hours_between("2026-08-11", "2026-07-29") < 0.0);  // scheduled ahead
+    CHECK(dd::timeutil::hours_between("not a date", "2026-07-29") < 0.0);
+}
+
+TEST(compile_prefers_the_current_edition_and_keeps_the_previous) {
+    const std::string root = fresh_dir("compile_vintage");
+    dd::store::Store store{root};
+    dd::store::Source current = store.add_source("Roll FY25", "https://a/25", "Testville VA");
+    dd::store::Source prior = store.add_source("Roll FY24", "https://a/24", "Testville VA");
+
+    auto assessment = [&](const std::string& source_id, const std::string& as_of,
+                          const std::string& value, const std::string& date) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", "P1", "10 Oak ST");
+        e.kind = dd::events::Kind::AssessmentRecorded;
+        e.event_date = date;
+        e.recorded_at = date + "T00:00:00Z";
+        e.source_id = source_id;
+        e.as_of = as_of;
+        e.confidence = 0.9;
+        e.details["address"] = "10 Oak ST";
+        e.details["assessed_value"] = value;
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    // The older roll carries the later sale date, so record dates alone would
+    // pick the wrong value. The edition decides instead.
+    store.add_events({assessment(current.id, "2025", "615400", "2020-01-01"),
+                      assessment(prior.id, "2024", "611700", "2024-06-01")});
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    CHECK_EQ(properties.size(), std::size_t{1});
+    const dd::compile::Property& p = properties.front();
+    CHECK_EQ(p.fields.at("assessed_value").value, "615400");
+    CHECK_EQ(p.fields.at("assessed_value").as_of, "2025");
+    CHECK_NEAR(p.assessed, 615400.0, 1e-9);
+    // The earlier edition survives, which is what makes the change knowable.
+    CHECK_NEAR(p.assessed_previous, 611700.0, 1e-9);
+    CHECK_EQ(p.history.at("assessed_value").size(), std::size_t{2});
+    CHECK_EQ(p.history.at("assessed_value").front().as_of, "2025");
+}
+
 TEST(schema_registry_rejects_bad_files) {
     CHECK_THROWS(dd::schema::Registry::from_json("{}"));
     CHECK_THROWS(dd::schema::Registry::from_json(R"({"fields": []})"));

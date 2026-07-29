@@ -49,6 +49,10 @@ struct PropertyEvent {
     std::string recorded_at;  // when this engine saw it
     std::string source_id;
     std::string run_id;
+    // The edition of the source this event came from; empty for live feeds.
+    // Two assessment rolls describe the same property at different times and
+    // only this tells them apart, because both carry the same sale date.
+    std::string as_of;
     double amount = 0.0;      // due/bid/price when the record carried one
     double confidence = 0.0;  // classifier confidence for the source document
     std::map<std::string, std::string> details; // canonical field values

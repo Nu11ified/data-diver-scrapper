@@ -58,6 +58,11 @@ int export_county(store::Store& store, const schema::Registry& registry,
 // portal and adds the new ones as sources, reporting jurisdiction coverage.
 int catalog(store::Store& store, std::size_t datasets_per_query, bool add);
 
+// Freshness: how long ago each source was fetched and how recent the records
+// it returned are. `stale_hours` marks sources whose newest record is older
+// than that, which is the failure a successful fetch hides.
+int freshness(store::Store& store, double stale_hours);
+
 // The validity benchmark: scores the engine's classification and mapping on
 // every golden source against the hand-verified answer key, from cached
 // bytes.

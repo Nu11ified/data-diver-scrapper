@@ -54,9 +54,32 @@ void resolve_fields(const schema::Registry& registry,
                 const auto field_it = source_it->second.find(field.name);
                 if (field_it != source_it->second.end()) confidence = field_it->second;
             }
-            const bool wins =
-                !found || confidence > best.confidence ||
-                (confidence == best.confidence && e.event_date >= best.event_date);
+
+            // Record what this edition says before deciding the current
+            // value, so an older roll stays available for comparison.
+            std::vector<Observation>& seen = property->history[field.name];
+            const bool already = std::any_of(
+                seen.begin(), seen.end(), [&](const Observation& o) {
+                    return o.as_of == e.as_of && o.source_id == e.source_id;
+                });
+            if (!already) seen.push_back(Observation{e.as_of, it->second, e.source_id});
+
+            // Editions of the same dated series are ordered by edition: every
+            // row in an assessment roll is equally current, so no per record
+            // date can tell this year's roll from last year's. A live feed
+            // carries no edition and is never ranked against a roll that way,
+            // so those comparisons fall through to measured trust, then
+            // recency.
+            const bool both_dated = !e.as_of.empty() && !best.as_of.empty();
+            bool wins;
+            if (!found) {
+                wins = true;
+            } else if (both_dated && e.as_of != best.as_of) {
+                wins = e.as_of > best.as_of;
+            } else {
+                wins = confidence > best.confidence ||
+                       (confidence == best.confidence && e.event_date >= best.event_date);
+            }
             if (found && !same_value(field, it->second, best.value)) {
                 Conflict c;
                 c.field = field.name;
@@ -78,11 +101,17 @@ void resolve_fields(const schema::Registry& registry,
                 property->conflicts.push_back(std::move(c));
             }
             if (wins) {
-                best = ResolvedField{it->second, e.source_id, e.event_date, confidence};
+                best = ResolvedField{it->second, e.source_id, e.event_date, e.as_of, confidence};
                 found = true;
             }
         }
         if (found) property->fields[field.name] = std::move(best);
+    }
+    for (auto& [field, seen] : property->history) {
+        std::stable_sort(seen.begin(), seen.end(),
+                         [](const Observation& a, const Observation& b) {
+                             return a.as_of > b.as_of;
+                         });
     }
 }
 
@@ -99,6 +128,18 @@ void measure_signals(Property* property) {
     if (assessed != property->fields.end()) {
         const std::optional<double> parsed = schema::parse_money(assessed->second.value);
         if (parsed.has_value() && *parsed > 0.0) property->assessed = *parsed;
+    }
+    // The same field one edition earlier, which makes the change measurable.
+    const auto seen = property->history.find("assessed_value");
+    if (seen != property->history.end()) {
+        for (const Observation& o : seen->second) {
+            if (o.as_of == assessed->second.as_of) continue;
+            const std::optional<double> parsed = schema::parse_money(o.value);
+            if (parsed.has_value() && *parsed > 0.0) {
+                property->assessed_previous = *parsed;
+                break;
+            }
+        }
     }
 }
 

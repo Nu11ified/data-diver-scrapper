@@ -66,6 +66,7 @@ std::vector<events::PropertyEvent> to_events(const schema::Registry& registry,
         }
         e.recorded_at = run.started_at;
         e.source_id = source.id;
+        e.as_of = source.as_of;
         e.run_id = run.id;
         e.confidence = class_confidence;
         const std::string amount = pick_role(registry, record.values, "amount");
@@ -253,6 +254,25 @@ std::vector<std::string> tracked_numbers(const store::Source& source, store::Sto
 
 } // namespace
 
+// Once the mapping knows which column carries the event date, the fetch can
+// ask for that column in descending order, so a refetch returns the newest
+// records rather than an arbitrary page of them. The source teaches the
+// engine what its date column is called; the engine then uses it.
+std::string order_by_learned_date(std::string url, const schema::Registry& registry,
+                                  const store::SourceState& state) {
+    if (!state.has_mapping || !str::contains(url, "/resource/")) return url;
+    if (str::contains(url, "$order")) return url;
+    const std::vector<const schema::FieldDef*> dated = registry.with_role("event_date");
+    for (const schema::FieldDef* field : dated) {
+        const schema::FieldMapping* mapped = state.mapping.find(field->name);
+        if (mapped == nullptr || mapped->source_label.empty()) continue;
+        if (str::contains(mapped->source_label, " ")) continue; // not a query column
+        return url + (str::contains(url, "?") ? "&" : "?") + "$order=" +
+               mapped->source_label + " DESC";
+    }
+    return url;
+}
+
 std::string expand_url_template(const store::Source& source, store::Store& store) {
     std::string url = source.url;
     const auto substitute = [&](const std::string& token,
@@ -319,7 +339,8 @@ store::RunRecord Pipeline::run_source(const store::Source& source) {
     // ------------------------------------------------------------ fetch ----
     std::string url;
     try {
-        url = expand_url_template(source, store_);
+        url = order_by_learned_date(expand_url_template(source, store_), registry_,
+                                    store_.source_state(source.id));
     } catch (const Error& e) {
         run.ok = false;
         run.stage = "fetch";
@@ -529,6 +550,9 @@ store::RunRecord Pipeline::ingest(const store::Source& source, store::RunRecord 
                           " of " + std::to_string(before) + " records that match tracked "
                           "properties");
         }
+    }
+    for (const events::PropertyEvent& e : batch) {
+        if (e.event_date > run.newest_record_date) run.newest_record_date = e.event_date;
     }
     run.events_new = static_cast<std::int64_t>(store_.add_events(batch));
     store_.save_latest_records(source.id,
