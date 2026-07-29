@@ -180,6 +180,24 @@ key per credential, wrapped with AES-KW under a worker-held master key —
 before they reach the credentials table. `GET /connect/status` proves a
 stored credential is alive by refreshing it and re-sealing the result.
 
+With an account connected the scout gains a Codex brain: free-text
+messages carry the measured signal catalog, the live tree and real scan
+counts into the model, which answers under a strict JSON contract — a
+reply, a validated tree proposal, or a county discovery request.
+First-time users get an interview that builds their tree. Asking for a
+new county makes the model propose candidate record endpoints, each of
+which must survive the real fetch-classify-extract pipeline before it is
+admitted to the hourly sweep; the reply reports what each candidate
+actually measured.
+
+Approving outreach schedules a simulated send rather than pretending one
+happened: the owner name classifies as business or person, the send lands
+in business hours or after-work/weekend windows in the county's timezone,
+and the outreach row records audience and scheduledFor. Contact details
+shown for a property — mailing address, phone, email — come only from
+extracted county columns, and every outreach reply states that no real
+message leaves the system.
+
 ## How matching works
 
 Each source label is scored against each schema field: name evidence
