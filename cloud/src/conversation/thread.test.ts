@@ -398,3 +398,85 @@ describe("approve_tree pending", () => {
     expect(outcome.tree?.version).toBe(baseline.version + 1);
   });
 });
+
+describe("guided onboarding", () => {
+  const answer = (
+    thread: ReturnType<typeof makeThread>,
+    text: string,
+  ) =>
+    run(
+      thread.handleMessage({
+        text,
+        candidates: CANDIDATES,
+        codexAccount: "buyer@example.com",
+      }),
+    );
+
+  test("introduces the product before asking for the buyer's market", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+
+    const outcome = await answer(thread, "Hi, what can we do?");
+
+    expect(outcome.reply).toContain("county tax, assessment, code and court records");
+    expect(outcome.reply).toContain("decision tree built only for you");
+    expect(outcome.reply).toContain("run nothing until you approve it");
+    expect(outcome.reply).toContain("1/6");
+    expect(outcome.reply).toContain("county or city and state");
+  });
+
+  test("builds a tenant-specific graph and activates it only after approval", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+
+    await answer(thread, "start");
+    expect((await answer(thread, "Norfolk, VA")).reply).toContain("2/6");
+    expect((await answer(thread, "$25k")).reply).toContain("3/6");
+    expect((await answer(thread, "$150k")).reply).toContain("4/6");
+    expect((await answer(thread, "multiple sources")).reply).toContain("5/6");
+    expect((await answer(thread, "ANY")).reply).toContain("6/6");
+    const proposal = await answer(thread, "yes");
+
+    expect(proposal.reply).toContain("private lead rule for Norfolk, VA");
+    expect(proposal.reply).toContain("owed ≥ $25,000");
+    expect(proposal.reply).toContain("assessed ≥ $150,000");
+    expect(proposal.reply).toContain("2+ independent sources");
+    expect(proposal.reply).toContain("proposal, not yet applied");
+    expect((await storedTree(storage)).version).toBe(1);
+
+    const pending = await run(storage.get<Pending>("pending"));
+    expect(pending?.kind).toBe("approve_tree");
+    if (pending?.kind !== "approve_tree") throw new Error("tree proposal not stored");
+    expect(
+      pending.graph.nodes
+        .filter((node) => node.kind === "condition")
+        .map((node) => [node.field, node.op, node.value]),
+    ).toEqual([
+      ["owed", "gte", 25_000],
+      ["assessed", "gte", 150_000],
+      ["sources", "gte", 2],
+    ]);
+    expect(pending.graph.nodes.some((node) => node.kind === "approval")).toBe(true);
+
+    const approved = await answer(thread, "approve");
+    const snapshot = await run(thread.snapshot());
+
+    expect(approved.reply).toContain("decision tree v2 is active");
+    expect(approved.evaluations).toHaveLength(CANDIDATES.length);
+    expect(snapshot.configured).toBe(true);
+    expect(snapshot.county).toBe("Norfolk, VA");
+    expect(snapshot.tree.version).toBe(2);
+  });
+
+  test("keeps the same question when an answer cannot form a rule", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+
+    await answer(thread, "start");
+    const invalid = await answer(thread, "somewhere around Virginia");
+    const valid = await answer(thread, "Norfolk, VA");
+
+    expect(invalid.reply).toContain("two-letter state");
+    expect(valid.reply).toContain("2/6");
+  });
+});

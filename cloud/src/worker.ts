@@ -157,8 +157,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
     const threads = yield* ConversationThread;
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
-    let client: Db | undefined;
-    const db = (): Db => (client ??= makeClient(Redacted.value(databaseUrl)));
+    const db = (): Db => makeClient(Redacted.value(databaseUrl));
 
     const sendblueKey = yield* Config.redacted("SENDBLUE_API_KEY");
     const sendblueSecret = yield* Config.redacted("SENDBLUE_SECRET_KEY");
@@ -1498,13 +1497,16 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             if (wiped instanceof Error) {
               return json({ ok: false, phone, error: wiped.message }, 500);
             }
-            yield* threads.getByName(phone).forget();
+            const thread = threads.getByName(phone);
+            yield* thread.forget();
+            const onboarding = yield* thread.handleMessage({
+              text,
+              candidates: [],
+              codexAccount: preflight.codexAccount || "reset",
+            });
             const reply =
-              `Account reset. ${wiped} stored rows removed: criteria, decision trees, ` +
-              `evaluations, outreach and transcript, plus this thread's memory.\n` +
-              `Your Codex connection was kept so you do not have to link again ` +
-              `(text DELETE ACCOUNT to remove that too).\n\n` +
-              `Say anything to start over.`;
+              `Reset complete. Your prior criteria, results and conversation were ` +
+              `removed; your ChatGPT connection was kept.\n\n${onboarding.reply}`;
             yield* Effect.tryPromise({
               try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
               catch: (cause): Error =>
@@ -1543,8 +1545,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             }).pipe(Effect.catch(() => Effect.void));
             return json({ ok: true, phone, reply, deleted: true });
           }
-          const county = (yield* threads.getByName(phone).snapshot()).county;
-          if (!(yield* countyIsWarm(county))) {
+          const thread = threads.getByName(phone);
+          const snapshot = yield* thread.snapshot();
+          const county = snapshot.county;
+          if (snapshot.configured && !(yield* countyIsWarm(county))) {
             const warming = yield* ensureCountyWarm(county);
             const reply =
               warming.state === "error"
@@ -1587,7 +1591,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             input = { ...input, connectUrl: `${origin}/connect/${token}` };
           }
 
-          const thread = threads.getByName(phone);
           // Signing in is not optional: the model is the conversation, so
           // without it there is nothing to answer with except a link.
           if (preflight.codexAccount === "") {
@@ -1612,7 +1615,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           yield* showTyping;
           let scoutError = "";
           let scouted: HandleOutcome | undefined;
-          {
+          if (snapshot.configured) {
             scouted = yield* scoutTurn(preflight.tenantId, phone, text, input.candidates).pipe(
               Effect.map((o): HandleOutcome | undefined => o),
               Effect.catch((cause) => {
