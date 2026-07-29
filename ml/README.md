@@ -37,25 +37,41 @@ Labeling functions vote or abstain, and a label model weights them by how often
 they agree with the consensus. Cascading them, which is what the C++ did, throws
 away the abstentions that make a source's reliability estimable.
 
-| function | coverage | note |
-|---|---|---|
-| `lexicon_exact` | 32% | name is exactly a known synonym |
-| `lexicon_token` | 15% | every synonym token appears in the name |
-| `validator_unique` | 0% | values fit exactly one strict field |
-| `validator_veto` | 2% | no field can hold these values, so `none` |
-| `llm` | 82% | an LLM pass, independent of the lexicon |
+Measured by `audit.py` over 7,183 columns from 111 portals:
 
-`validator_unique` covering nothing is a real result, not a bug: `parcel_id` and
-`case_number` are both ids, `amount_due` and `sale_price` are both money, so the
-values are ambiguous and it refuses rather than guessing.
+| function | coverage | agrees | weight | note |
+|---|---|---|---|---|
+| `lexicon_exact` | 15.8% | 96.2% | 6.91 | name is exactly a known synonym |
+| `lexicon_token` | 8.3% | 94.3% | 6.91 | every synonym token appears in the name |
+| `validator_unique` | 0.3% | 94.4% | 0.45 | values fit exactly one strict field |
+| `validator_veto` | 1.7% | 95.8% | 2.29 | no field can hold these values, so `none` |
+| `llm` | 82.7% | 85.0% | 3.49 | an LLM pass, independent of the lexicon |
+
+Agreement is against the on-disk labels, which are themselves lexicon-derived,
+so the two lexicon functions are flattered and the LLM's 85% is understated by
+exactly the amount the lexicon is wrong.
+
+`validator_unique` covering almost nothing is a real result, not a bug:
+`parcel_id` and `case_number` are both ids, `amount_due` and `sale_price` are
+both money, so the values are ambiguous and it refuses rather than guessing.
 
 The LLM voter is what makes the rest identifiable. Without it every function is
 a view of the same synonym list, they agree by construction, and cleanlab finds
 nothing because there is no disagreement to find. With it:
 
-- label-model coverage rose from **34% to 100%** of the corpus
-- cleanlab flagged **40 of 403 labels (9.9%)** as wrong, nearly all false
-  `none`s on abbreviated names
+- label-model coverage is **85.2%** of the corpus (6,120 of 7,183); it agrees
+  with the on-disk label on 87.6% of what it covers
+- cleanlab flags **749 of 7,183 labels (10.4%)** as suspect, overwhelmingly
+  false `none`s on abbreviated names — `Taxable_Value`, `Imps_Value`,
+  `Agriculture Equipment AV` all read `none` on disk and `assessed_value` to the
+  label model. It also catches the lexicon firing wrongly: a column named
+  `State` holding US state codes was labeled `status` because "state" is a
+  `status` synonym, and the label model returns it to `none`.
+
+The flags are not uniformly right. Where a dataset has nothing to do with
+property records the LLM still reaches for the nearest field — `Most Serious
+Crime` in a prison-admissions table becomes `description` — so a flag is
+evidence to review, not a correction to apply blindly.
 
 ## Running it
 
@@ -71,10 +87,48 @@ python3 -m venv .venv && .venv/bin/pip install torch numpy cleanlab
 engine disagrees with torch. Macro-F1 excludes `none`: it is roughly two thirds
 of the holdout, and overall accuracy lets six classes score zero behind it.
 
+## How the holdout is kept honest
+
+Two things used to leak, and both flattered the reported score:
+
+- **The epoch was chosen on the holdout it then reported.** Consulting the
+  holdout once per epoch and publishing its maximum reports a selected best
+  case, not an estimate of unseen performance. The epoch is now chosen on a
+  validation slice of portals carved out of the *training* half; the holdout
+  portals are scored once, after the weights are frozen.
+- **The label model was fitted over the whole corpus.** The holdout's own vote
+  patterns shaped the weights that then produced the holdout's targets, which
+  makes the evaluation transductive. It is now fitted on the training portals
+  and applied to the held-out ones without refitting.
+
+Neither fix makes the model better. Both make the number smaller and mean what
+it claims to mean.
+
 ## What the numbers currently say
 
-The honest reading is that the corpus is too small, not that the model is good.
-2,039 columns across 75 portals, held out by portal, leaves most classes with
-one to six examples in the holdout — macro-F1 on that has error bars wide enough
-to swallow the difference between runs. Growing the corpus is the next lever,
-and `harvest` now merges rather than replacing so it accumulates.
+The corpus is now 7,183 columns across 111 portals, up from 2,039 across 75, and
+5,938 of them (82.7%) carry an LLM vote. The label model covers 6,120; the
+remaining 1,063 are columns no function would vote on, and they are dropped from
+training rather than taught as `none`.
+
+The latest run, under the honest split:
+
+```
+3610 fit / 664 validation / 1846 holdout columns, 75 vs 14 vs 21 portals, 23 classes
+epoch 43 chosen on validation (macro-F1 0.611); holdout macro-F1 0.494, 56.3% on the 469 field-bearing columns
+macro-F1 0.494 below the 0.50 gate: not exported
+```
+
+The 0.611 and the 0.494 are the whole point. The first is a maximum over 60
+epochs on the split the epoch was chosen from; the second is what those same
+frozen weights score on portals nothing ever consulted. The old code reported a
+number of the first kind and called it the holdout score. The 0.117 gap is a
+measurement of what selecting on the reported set is worth here, and it is
+wider than most of the run-to-run differences the gate is asked to adjudicate.
+
+So the bigger corpus did not buy a shippable model, and this run exports
+nothing. The engine bench is unchanged at classification 15/16, mapping F1 91%.
+The classes that still fail are the ones with almost no support — `buyer`,
+`defendant` and `plaintiff` have three, one and one holdout examples between
+them — which is a sampling problem, not a capacity problem. More portals in the
+court and deed domains is the next lever, not more epochs.
