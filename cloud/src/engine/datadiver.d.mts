@@ -10,12 +10,5 @@ export interface EmscriptenModule {
   _free(pointer: number): void;
 }
 
-export interface ModuleOptions {
-  instantiateWasm?(
-    imports: WebAssembly.Imports,
-    onSuccess: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
-  ): Record<string, never>;
-}
-
-declare const createModule: (options?: ModuleOptions) => Promise<EmscriptenModule>;
+declare const createModule: () => Promise<EmscriptenModule>;
 export default createModule;
