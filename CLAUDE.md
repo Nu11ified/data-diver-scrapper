@@ -10,6 +10,9 @@ requirement, and it fits on one line. When in doubt, delete it.
 
 Reference the /docs/cpp-guide.md for how to write the CPP effectively
 
+Hard rule: commit messages contain only what changed and why. Never append
+Claude-Session links, Co-Authored-By trailers, or any other tool attribution.
+
 ## What this project is
 
 Data Diver is a C++ public-record ingestion engine. It classifies county source
