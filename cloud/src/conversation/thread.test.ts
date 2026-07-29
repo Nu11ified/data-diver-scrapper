@@ -3,6 +3,7 @@ import { RuntimeContext, type RuntimeContextInterface } from "alchemy";
 import * as Effect from "effect/Effect";
 
 import { DEFAULT_SPEC, compileSpec, type Graph, type TreeDoc } from "../decision/graph.ts";
+import type { ProfileUpdate } from "./profile.ts";
 import {
   makeThread,
   type Pending,
@@ -403,12 +404,16 @@ describe("guided onboarding", () => {
   const answer = (
     thread: ReturnType<typeof makeThread>,
     text: string,
+    onboardingUpdate?: ProfileUpdate,
+    onboardingLead?: string,
   ) =>
     run(
       thread.handleMessage({
         text,
         candidates: CANDIDATES,
         codexAccount: "buyer@example.com",
+        ...(onboardingUpdate === undefined ? {} : { onboardingUpdate }),
+        ...(onboardingLead === undefined ? {} : { onboardingLead }),
       }),
     );
 
@@ -421,6 +426,7 @@ describe("guided onboarding", () => {
     expect(outcome.reply).toContain("county tax, assessment, code and court records");
     expect(outcome.reply).toContain("decision tree built only for you");
     expect(outcome.reply).toContain("run nothing until you approve it");
+    expect(outcome.reply).toContain("stop and resume later");
     expect(outcome.reply).toContain("1/6");
     expect(outcome.reply).toContain("county or city and state");
   });
@@ -430,12 +436,26 @@ describe("guided onboarding", () => {
     const thread = makeThread(storage);
 
     await answer(thread, "start");
-    expect((await answer(thread, "Norfolk, VA")).reply).toContain("2/6");
-    expect((await answer(thread, "$25k")).reply).toContain("3/6");
-    expect((await answer(thread, "$150k")).reply).toContain("4/6");
-    expect((await answer(thread, "multiple sources")).reply).toContain("5/6");
-    expect((await answer(thread, "ANY")).reply).toContain("6/6");
-    const proposal = await answer(thread, "yes");
+    expect(
+      (await answer(thread, "Norfolk, VA", { county: "Norfolk, VA" })).reply,
+    ).toContain("2/6");
+    expect((await answer(thread, "$25k", { minOwed: 25_000 })).reply).toContain(
+      "3/6",
+    );
+    expect(
+      (await answer(thread, "$150k", { minAssessed: 150_000 })).reply,
+    ).toContain("4/6");
+    expect(
+      (
+        await answer(thread, "multiple sources", {
+          evidence: "multiple_sources",
+        })
+      ).reply,
+    ).toContain("5/6");
+    expect(
+      (await answer(thread, "ANY", { anyEventAge: true })).reply,
+    ).toContain("6/6");
+    const proposal = await answer(thread, "yes", { requireApproval: true });
 
     expect(proposal.reply).toContain("private lead rule for Norfolk, VA");
     expect(proposal.reply).toContain("owed ≥ $25,000");
@@ -468,15 +488,124 @@ describe("guided onboarding", () => {
     expect(snapshot.tree.version).toBe(2);
   });
 
-  test("keeps the same question when an answer cannot form a rule", async () => {
+  test("rejects an invalid normalized profile field without advancing", async () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
 
     await answer(thread, "start");
-    const invalid = await answer(thread, "somewhere around Virginia");
-    const valid = await answer(thread, "Norfolk, VA");
+    const invalid = await answer(thread, "somewhere around Virginia", {
+      county: "somewhere around Virginia",
+    });
+    const valid = await answer(thread, "Norfolk, VA", {
+      county: "Norfolk, VA",
+    });
 
+    expect(invalid.reply).toContain("could not safely store");
     expect(invalid.reply).toContain("two-letter state");
     expect(valid.reply).toContain("2/6");
+  });
+
+  test("stores model-chosen safe defaults without parsing the user's phrase", async () => {
+    const storage = memoryStorage();
+    let thread = makeThread(storage);
+
+    await answer(thread, "start");
+    await answer(thread, "Dallas, TX", { county: "Dallas, TX" });
+    await answer(thread, "$20k", { minOwed: 20_000 });
+    await answer(thread, "$80k", { minAssessed: 80_000 });
+
+    thread = makeThread(storage);
+    const evidence = await answer(
+      thread,
+      "whatever works",
+      { evidence: "multiple_sources" },
+      "I recommend corroboration by 2 independent county sources.",
+    );
+    const recency = await answer(
+      thread,
+      "you decide",
+      { anyEventAge: true },
+      "I will use any event age and let stronger evidence decide.",
+    );
+    const proposal = await answer(
+      thread,
+      "not sure",
+      { requireApproval: true },
+      "I kept approval on because nothing should contact an owner without your say-so.",
+    );
+
+    expect(evidence.reply).toContain("2 independent county sources");
+    expect(evidence.reply).toContain("5/6");
+    expect(recency.reply).toContain("use any event age");
+    expect(recency.reply).toContain("6/6");
+    expect(proposal.reply).toContain("your approval before outreach");
+    expect(proposal.reply).toContain(
+      "nothing should contact an owner without your say-so",
+    );
+
+    const pending = await run(storage.get<Pending>("pending"));
+    if (pending?.kind !== "approve_tree") throw new Error("tree proposal not stored");
+    expect(
+      pending.graph.nodes
+        .filter((node) => node.kind === "condition")
+        .map((node) => node.field),
+    ).toEqual(["owed", "assessed", "sources"]);
+    expect(pending.graph.nodes.some((node) => node.kind === "approval")).toBe(true);
+  });
+
+  test("a model-normalized zero removes numeric floors without inventing one", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+
+    await answer(thread, "start");
+    await answer(thread, "Dallas, TX", { county: "Dallas, TX" });
+    const owed = await answer(
+      thread,
+      "skip",
+      { minOwed: 0 },
+      "No recorded-debt floor.",
+    );
+    const assessed = await answer(
+      thread,
+      "whatever works",
+      { minAssessed: 0 },
+      "No assessed-value floor.",
+    );
+
+    expect(owed.reply).toContain("No recorded-debt floor");
+    expect(assessed.reply).toContain("No assessed-value floor");
+    expect(assessed.reply).toContain("4/6");
+  });
+
+  test("resumes a pre-Pi onboarding record at the same unanswered field", async () => {
+    const storage = memoryStorage();
+    await run(
+      storage.put("onboarding", {
+        step: "evidence",
+        county: "Dallas, TX",
+        minOwed: 20_000,
+        minAssessed: 80_000,
+      }),
+    );
+    const thread = makeThread(storage);
+    const before = await run(thread.snapshot());
+
+    expect(before.profile).toEqual({
+      county: "Dallas, TX",
+      minOwed: 20_000,
+      minAssessed: 80_000,
+    });
+
+    const outcome = await answer(
+      thread,
+      "Whatever works",
+      { evidence: "multiple_sources" },
+      "I recommend requiring two independent county sources.",
+    );
+
+    expect(outcome.reply).toContain("5/6");
+    expect((await run(thread.snapshot())).profile?.evidence).toBe(
+      "multiple_sources",
+    );
   });
 });

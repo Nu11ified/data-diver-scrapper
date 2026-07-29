@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { extractOutputText } from "../codex/client.ts";
 import { DEFAULT_SPEC, compileSpec } from "../decision/graph.ts";
-import { buildInstructions, parseScoutDecision } from "./scout.ts";
+import { buildInstructions } from "./scout.ts";
 
 describe("extractOutputText", () => {
   test("prefers the completed event over deltas", () => {
@@ -28,81 +28,6 @@ describe("extractOutputText", () => {
   });
 });
 
-describe("parseScoutDecision", () => {
-  test("reads a reply decision", () => {
-    const decision = parseScoutDecision(`{"kind":"reply","text":"What is your minimum owed?"}`);
-    expect(decision).toEqual({ kind: "reply", text: "What is your minimum owed?" });
-  });
-
-  test("reads a set_tree decision with a full graph", () => {
-    const graph = compileSpec(DEFAULT_SPEC, "acquisition", 1).graph;
-    const decision = parseScoutDecision(
-      JSON.stringify({ kind: "set_tree", text: "Done.", graph }),
-    );
-    expect(decision.kind).toBe("set_tree");
-    if (decision.kind !== "set_tree") throw new Error("unreachable");
-    expect(decision.graph.entry).toBe("owed_floor");
-  });
-
-  test("strips markdown fences", () => {
-    const decision = parseScoutDecision('```json\n{"kind":"reply","text":"hi"}\n```');
-    expect(decision).toEqual({ kind: "reply", text: "hi" });
-  });
-
-  test("reads a discover decision with candidate sources", () => {
-    const decision = parseScoutDecision(
-      JSON.stringify({
-        kind: "discover",
-        text: "Validating Chesterfield sources now.",
-        jurisdiction: "chesterfield_county_va",
-        candidates: [
-          {
-            id: "chesterfield_county_va_tax",
-            name: "Chesterfield delinquent taxes",
-            url: "https://data.chesterfield.gov/resource/abcd-1234.csv",
-          },
-        ],
-      }),
-    );
-    expect(decision.kind).toBe("discover");
-    if (decision.kind !== "discover") throw new Error("unreachable");
-    expect(decision.jurisdiction).toBe("chesterfield_county_va");
-    expect(decision.candidates).toHaveLength(1);
-  });
-
-  test("reads a temp_filter decision carrying a replacement graph", () => {
-    const graph = compileSpec({ ...DEFAULT_SPEC, minOwed: 5_000 }, "acquisition", 1).graph;
-    const decision = parseScoutDecision(
-      JSON.stringify({ kind: "temp_filter", text: "Just for now:", graph, limit: 2 }),
-    );
-    expect(decision.kind).toBe("temp_filter");
-    if (decision.kind !== "temp_filter") throw new Error("unreachable");
-    expect(decision.graph.entry).toBe("owed_floor");
-    expect(decision.limit).toBe(2);
-  });
-
-  test("reads both answers to the remember offer", () => {
-    const kept = parseScoutDecision(
-      `{"kind":"remember_filter","text":"Saved.","remember":true}`,
-    );
-    expect(kept).toEqual({ kind: "remember_filter", text: "Saved.", remember: true });
-    const dropped = parseScoutDecision(
-      `{"kind":"remember_filter","text":"Dropped.","remember":false}`,
-    );
-    expect(dropped).toEqual({ kind: "remember_filter", text: "Dropped.", remember: false });
-  });
-
-  test("non-contract output becomes a plain reply", () => {
-    const decision = parseScoutDecision("I think you should raise the floor.");
-    expect(decision).toEqual({ kind: "reply", text: "I think you should raise the floor." });
-  });
-
-  test("malformed graph falls back to plain reply", () => {
-    const decision = parseScoutDecision(`{"kind":"set_tree","text":"x","graph":{"entry":1}}`);
-    expect(decision.kind).toBe("reply");
-  });
-});
-
 describe("buildInstructions", () => {
   const tree = compileSpec(DEFAULT_SPEC, "acquisition", 1);
 
@@ -122,7 +47,7 @@ describe("buildInstructions", () => {
     expect(text).toContain(`"entry":"owed_floor"`);
     expect(text).toContain(`county "norfolk"; 12 properties`);
     expect(text).toContain("3 currently match");
-    expect(text).not.toContain("FIRST-TIME USER");
+    expect(text).not.toContain("The user is onboarding");
   });
 
   test("tells the model to keep provisional requests out of the saved tree", () => {
@@ -136,10 +61,10 @@ describe("buildInstructions", () => {
       qualifiedCount: 1,
       extraSignals: [],
     });
-    expect(text).toContain(`"kind":"temp_filter"`);
-    expect(text).toContain(`"kind":"remember_filter"`);
-    expect(text).toContain("Use set_tree only when the user clearly wants the change kept");
-    expect(text).toContain("for now");
+    expect(text).toContain("temporary_filter");
+    expect(text).toContain("remember_filter");
+    expect(text).toContain("post-onboarding saved criteria changes");
+    expect(text).toContain("request is provisional");
   });
 
   test("tells the model set_tree is a proposal requiring approval", () => {
@@ -153,7 +78,7 @@ describe("buildInstructions", () => {
       qualifiedCount: 1,
       extraSignals: [],
     });
-    expect(text).toContain("set_tree never applies immediately: it is a proposal.");
+    expect(text).toContain("A proposed tree never applies immediately");
     expect(text).toContain("reply APPROVE or REJECT");
   });
 
@@ -168,7 +93,8 @@ describe("buildInstructions", () => {
       qualifiedCount: 0,
       extraSignals: [],
     });
-    expect(text).toContain("FIRST-TIME USER");
-    expect(text).toContain("minimum amount owed");
+    expect(text).toContain("The user is onboarding");
+    expect(text).toContain("Use update_profile for every answer");
+    expect(text).toContain("Never reject an answer merely because");
   });
 });

@@ -34,7 +34,7 @@ import {
   type HandleOutcome,
   type PropertyMatch,
 } from "./conversation/thread.ts";
-import { buildInstructions, parseScoutDecision } from "./conversation/scout.ts";
+import { runPiScout } from "./conversation/pi.ts";
 import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
 import { CodexError, complete } from "./codex/client.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
@@ -293,9 +293,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           ...new Set(candidates.flatMap((candidate) => Object.keys(candidate.signals))),
         ];
         const qualifiedCount = candidates.filter(
-          (candidate) => evaluate(snap.tree.graph, subjectOf(candidate)).outcome === "match",
+          (candidate) =>
+            evaluate(snap.tree.graph, subjectOf(candidate)).outcome === "match",
         ).length;
-        const instructions = buildInstructions({
+        const context = {
           tree: snap.tree,
           configured: snap.configured,
           summary: snap.summary,
@@ -304,41 +305,44 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           candidateCount: candidates.length,
           qualifiedCount,
           extraSignals,
-        });
-        const raw = yield* complete({
-          accessToken: credential.accessToken,
-          accountId: credential.accountId,
-          instructions,
-          userText: text,
-        }).pipe(
-          Effect.catchTag("CodexError", (cause) =>
-            cause.status !== 401
-              ? Effect.fail(cause)
-              : Effect.gen(function* () {
-                  const forced = Option.getOrUndefined(
-                    yield* freshCredential(tenantId, true),
-                  );
-                  if (forced === undefined) return yield* Effect.fail(cause);
-                  return yield* complete({
-                    accessToken: forced.accessToken,
-                    accountId: forced.accountId,
-                    instructions,
-                    userText: text,
-                  });
-                }),
+          ...(snap.profile === undefined ? {} : { profile: snap.profile }),
+        };
+        const askPi = (accessToken: string) =>
+          Effect.tryPromise({
+            try: () =>
+              runPiScout({
+                accessToken,
+                sessionId: tenantId,
+                userText: text,
+                context,
+              }),
+            catch: (cause): CodexError =>
+              new CodexError({
+                message: cause instanceof Error ? cause.message : String(cause),
+                status: 0,
+              }),
+          });
+        const piResult = yield* askPi(credential.accessToken).pipe(
+          Effect.catchTag("CodexError", (firstError) =>
+            Effect.gen(function* () {
+              const forced = Option.getOrUndefined(
+                yield* freshCredential(tenantId, true),
+              );
+              if (forced === undefined) return yield* Effect.fail(firstError);
+              return yield* askPi(forced.accessToken);
+            }),
           ),
         );
-        const decision = parseScoutDecision(raw);
-        // The thread already implements listing, opening and approving, with
-        // the pending state and traces those need. The model chooses; this
-        // replays its choice through the same path a keyword used to take.
+        const decision = piResult.decision;
         const asInternal =
           decision.kind === "show_matches"
             ? "review"
             : decision.kind === "show_property"
               ? String(decision.index)
-              : decision.kind === "approve_outreach"
-                ? "approve"
+              : decision.kind === "resolve_pending"
+                ? decision.approved
+                  ? "approve"
+                  : "reject"
                 : "";
         if (asInternal !== "") {
           const acted = yield* thread.handleMessage({
@@ -351,6 +355,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             ...acted,
             reply: lead === "" ? acted.reply : `${lead}\n\n${acted.reply}`,
           };
+        }
+        if (decision.kind === "update_profile") {
+          return yield* thread.handleMessage({
+            text,
+            candidates,
+            codexAccount: credential.accountId,
+            onboardingUpdate: decision.update,
+            onboardingLead: decision.text,
+          });
         }
         if (decision.kind === "discover") {
           const jurisdiction = slugId(decision.jurisdiction);
@@ -1614,16 +1627,21 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           // longer, so it is raised again immediately before the slow call.
           yield* showTyping;
           let scoutError = "";
-          let scouted: HandleOutcome | undefined;
-          if (snapshot.configured) {
-            scouted = yield* scoutTurn(preflight.tenantId, phone, text, input.candidates).pipe(
-              Effect.map((o): HandleOutcome | undefined => o),
-              Effect.catch((cause) => {
-                scoutError = cause.message;
-                return Effect.succeed(undefined);
-              }),
-            );
-          }
+          const scouted =
+            !snapshot.configured && snapshot.profile === undefined
+              ? undefined
+              : yield* scoutTurn(
+                  preflight.tenantId,
+                  phone,
+                  text,
+                  input.candidates,
+                ).pipe(
+                  Effect.map((o): HandleOutcome | undefined => o),
+                  Effect.catch((cause) => {
+                    scoutError = cause.message;
+                    return Effect.succeed(undefined);
+                  }),
+                );
           let outcome = scouted ?? (yield* thread.handleMessage(input));
 
           const draftRequest = outcome.draftRequest;

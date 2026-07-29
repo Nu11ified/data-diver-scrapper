@@ -27,6 +27,11 @@ import {
   zoneFor,
   type Audience,
 } from "../outreach/schedule.ts";
+import {
+  type AcquisitionProfile,
+  type EvidencePolicy,
+  type ProfileUpdate,
+} from "./profile.ts";
 
 export interface PropertyMatch {
   readonly propertyKey: string;
@@ -153,7 +158,7 @@ export type Pending =
     }
   | { readonly kind: "approve_tree"; readonly graph: Graph };
 
-type OnboardingStep =
+type LegacyOnboardingStep =
   | "market"
   | "min_owed"
   | "min_assessed"
@@ -162,8 +167,8 @@ type OnboardingStep =
   | "approval"
   | "confirm";
 
-interface OnboardingState {
-  readonly step: OnboardingStep;
+interface LegacyOnboardingState {
+  readonly step: LegacyOnboardingStep;
   readonly county?: string;
   readonly minOwed?: number;
   readonly minAssessed?: number;
@@ -202,6 +207,8 @@ export interface HandleMessageInput {
   readonly candidates: readonly PropertyMatch[];
   readonly connectUrl?: string;
   readonly codexAccount?: string;
+  readonly onboardingUpdate?: ProfileUpdate;
+  readonly onboardingLead?: string;
 }
 
 export interface DraftRequest {
@@ -234,67 +241,11 @@ const SUMMARY_LIMIT = 2_400;
 const money = (value: number): string =>
   `$${Math.round(value).toLocaleString("en-US")}`;
 
-const parseMoney = (text: string): number | undefined => {
-  const lower = text.trim().toLowerCase();
-  if (/\b(any|none|no minimum|no min)\b/.test(lower)) return 0;
-  const match = lower.replace(/[$,]/g, "").match(/(\d+(?:\.\d+)?)\s*([km])?/);
-  if (match === null) return undefined;
-  const amount = Number.parseFloat(match[1] ?? "");
-  const multiplier = match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1;
-  const value = amount * multiplier;
-  return Number.isFinite(value) && value >= 0 ? value : undefined;
-};
-
-const parseMarket = (text: string): string | undefined => {
-  const match = text.trim().match(/^(.+?)(?:,\s*|\s+)([A-Za-z]{2})$/);
-  if (match === null) return undefined;
-  const place = (match[1] ?? "").trim();
-  const state = (match[2] ?? "").toUpperCase();
-  return place === "" ? undefined : `${place}, ${state}`;
-};
-
-const parseChoice = (text: string): boolean | undefined => {
-  const lower = text.trim().toLowerCase();
-  if (/^(y|yes|yeah|yep|sure|required|require it)\b/.test(lower)) return true;
-  if (/^(n|no|nope|not required|optional)\b/.test(lower)) return false;
-  return undefined;
-};
-
-const parseEvidence = (
-  text: string,
-): { readonly requireMultiSource: boolean; readonly requireViolation: boolean } | undefined => {
-  const lower = text.trim().toLowerCase();
-  if (/\b(both|all)\b/.test(lower)) {
-    return { requireMultiSource: true, requireViolation: true };
-  }
-  if (/\b(neither|none)\b/.test(lower)) {
-    return { requireMultiSource: false, requireViolation: false };
-  }
-  const requireMultiSource = /\b(multiple|multi|two|2|sources?)\b/.test(lower);
-  const requireViolation = /\b(violation|violations|code)\b/.test(lower);
-  return requireMultiSource || requireViolation
-    ? { requireMultiSource, requireViolation }
-    : undefined;
-};
-
-const parseRecency = (text: string): number | undefined | "invalid" => {
-  const lower = text.trim().toLowerCase();
-  if (/\b(any|none|no limit|doesn't matter|doesnt matter)\b/.test(lower)) {
-    return undefined;
-  }
-  const match = lower.match(/(\d+(?:\.\d+)?)\s*(day|days|month|months|year|years)?/);
-  if (match === null) return "invalid";
-  const amount = Number.parseFloat(match[1] ?? "");
-  const unit = match[2] ?? "days";
-  const days = unit.startsWith("month")
-    ? amount * 30
-    : unit.startsWith("year")
-      ? amount * 365
-      : amount;
-  return Number.isFinite(days) && days > 0 ? Math.round(days) : "invalid";
-};
-
-const onboardingGraph = (state: OnboardingState): Graph => {
+const onboardingGraph = (state: AcquisitionProfile): Graph => {
+  const requireMultiSource =
+    state.evidence === "multiple_sources" || state.evidence === "both";
+  const requireViolation =
+    state.evidence === "open_violation" || state.evidence === "both";
   const conditions = [
     {
       id: "owed_floor",
@@ -310,10 +261,10 @@ const onboardingGraph = (state: OnboardingState): Graph => {
           value: state.minAssessed,
         }]
       : []),
-    ...(state.requireMultiSource === true
+    ...(requireMultiSource
       ? [{ id: "multiple_sources", field: "sources", op: "gte" as const, value: 2 }]
       : []),
-    ...(state.requireViolation === true
+    ...(requireViolation
       ? [{ id: "open_violation", field: "violations", op: "gte" as const, value: 1 }]
       : []),
     ...(state.maxDaysSinceEvent !== undefined
@@ -402,6 +353,7 @@ export interface ThreadSnapshot {
   readonly recentTurns: readonly Turn[];
   readonly configured: boolean;
   readonly county: string;
+  readonly profile?: AcquisitionProfile;
 }
 
 export interface ApplyScoutInput {
@@ -475,6 +427,130 @@ export class ConversationThread extends Cloudflare.DurableObject<
 >()("ConversationThread") {}
 
 export const makeThread = (storage: ThreadStorage): ThreadShape => {
+  const profileOf = (
+    stored: AcquisitionProfile | LegacyOnboardingState | undefined,
+  ): AcquisitionProfile | undefined => {
+    if (stored === undefined) return undefined;
+    if (!("step" in stored)) return stored;
+    const evidence: EvidencePolicy | undefined =
+      stored.requireMultiSource === true && stored.requireViolation === true
+        ? "both"
+        : stored.requireMultiSource === true
+          ? "multiple_sources"
+          : stored.requireViolation === true
+            ? "open_violation"
+            : stored.step === "recent" ||
+                stored.step === "approval" ||
+                stored.step === "confirm"
+              ? "neither"
+              : undefined;
+    return {
+      ...(stored.county === undefined ? {} : { county: stored.county }),
+      ...(stored.minOwed === undefined ? {} : { minOwed: stored.minOwed }),
+      ...(stored.minAssessed === undefined
+        ? {}
+        : { minAssessed: stored.minAssessed }),
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(stored.maxDaysSinceEvent === undefined
+        ? {}
+        : { maxDaysSinceEvent: stored.maxDaysSinceEvent }),
+      ...(stored.step === "approval" || stored.step === "confirm"
+        ? { recencyAnswered: true }
+        : {}),
+      ...(stored.requireApproval === undefined
+        ? {}
+        : { requireApproval: stored.requireApproval }),
+    };
+  };
+
+  const nextOnboardingQuestion = (profile: AcquisitionProfile): string => {
+    if (profile.county === undefined) {
+      return "1/6 — What county or city and state do you buy in? Example: Norfolk, VA";
+    }
+    if (profile.minOwed === undefined) {
+      return (
+        "2/6 — What minimum recorded taxes or liens makes a property worth " +
+        "your time? Example: $20k, or tell me to choose."
+      );
+    }
+    if (profile.minAssessed === undefined) {
+      return (
+        "3/6 — What minimum county-assessed property value do you want? " +
+        "Example: $150k, no minimum, or ask me to choose."
+      );
+    }
+    if (profile.evidence === undefined) {
+      return (
+        "4/6 — Should a lead need multiple county sources, an open violation, " +
+        "both, neither, or would you like my recommendation?"
+      );
+    }
+    if (profile.recencyAnswered !== true) {
+      return (
+        "5/6 — How recent must the latest county event be? Example: 180 days, " +
+        "1 year, any age, or ask me to choose."
+      );
+    }
+    if (profile.requireApproval === undefined) {
+      return (
+        "6/6 — Must you approve every outreach message before anything is " +
+        "scheduled, or should I recommend the safer setting?"
+      );
+    }
+    return "";
+  };
+
+  const mergeProfile = (
+    current: AcquisitionProfile,
+    update: ProfileUpdate,
+  ): AcquisitionProfile | Error => {
+    let county = current.county;
+    if (update.county !== undefined) {
+      const match = update.county.trim().match(/^(.+?),\s*([A-Za-z]{2})$/);
+      if (match === null || (match[1] ?? "").trim() === "") {
+        return new Error("the market must include a city or county and two-letter state");
+      }
+      county = `${(match[1] ?? "").trim()}, ${(match[2] ?? "").toUpperCase()}`;
+    }
+    for (const value of [
+      update.minOwed,
+      update.minAssessed,
+      update.maxDaysSinceEvent,
+    ]) {
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+        return new Error("profile amounts and time windows must be non-negative numbers");
+      }
+    }
+    if (
+      update.maxDaysSinceEvent !== undefined &&
+      update.maxDaysSinceEvent < 1
+    ) {
+      return new Error("a recency window must be at least one day");
+    }
+    const maxDaysSinceEvent =
+      update.anyEventAge === true
+        ? undefined
+        : update.maxDaysSinceEvent ?? current.maxDaysSinceEvent;
+    const minOwed = update.minOwed ?? current.minOwed;
+    const minAssessed = update.minAssessed ?? current.minAssessed;
+    const evidence = update.evidence ?? current.evidence;
+    const requireApproval =
+      update.requireApproval ?? current.requireApproval;
+    return {
+      ...(county === undefined ? {} : { county }),
+      ...(minOwed === undefined ? {} : { minOwed }),
+      ...(minAssessed === undefined ? {} : { minAssessed }),
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(maxDaysSinceEvent === undefined ? {} : { maxDaysSinceEvent }),
+      ...(update.anyEventAge === true ||
+      update.maxDaysSinceEvent !== undefined ||
+      current.recencyAnswered === true
+        ? { recencyAnswered: true }
+        : {}),
+      ...(requireApproval === undefined ? {} : { requireApproval }),
+    };
+  };
+
   const record = (
     userText: string,
     reply: string,
@@ -527,9 +603,10 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       const reply =
         `Data Diver turns county tax, assessment, code and court records into ` +
         `property leads using a decision tree built only for you. I will ask six ` +
-        `short questions, show you the rule, and run nothing until you approve it.\n\n` +
+        `short questions, show you the rule, and run nothing until you approve it. ` +
+        `Say YOU DECIDE when you want my safest default, or stop and resume later.\n\n` +
         `1/6 — What county or city and state do you buy in? Example: Norfolk, VA`;
-      yield* storage.put("onboarding", { step: "market" } satisfies OnboardingState);
+      yield* storage.put("onboarding", {} satisfies AcquisitionProfile);
       yield* storage.put("pending", { kind: "idle" } satisfies Pending);
       yield* record(userText, reply, loaded.tree, turns, summary);
       return { reply, evaluations: [] } satisfies HandleOutcome;
@@ -839,161 +916,73 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           input.codexAccount !== undefined &&
           input.codexAccount !== ""
         ) {
-          const onboarding = yield* storage.get<OnboardingState>("onboarding");
-          if (onboarding === undefined) {
+          const stored = yield* storage.get<
+            AcquisitionProfile | LegacyOnboardingState
+          >("onboarding");
+          const current = profileOf(stored) ?? {};
+          if (stored === undefined && input.onboardingUpdate === undefined) {
             return yield* startOnboarding(text);
           }
-          if (onboarding.step === "market") {
-            const county = parseMarket(text);
-            if (county === undefined) {
-              return yield* respond(
-                text,
-                `Please include the county or city and its two-letter state. ` +
-                  `Example: Norfolk, VA`,
-                { kind: "idle" },
-              );
-            }
-            yield* storage.put("county", county);
-            yield* storage.put("onboarding", {
-              ...onboarding,
-              step: "min_owed",
-              county,
-            } satisfies OnboardingState);
+          if (input.onboardingUpdate === undefined) {
+            const question = nextOnboardingQuestion(current);
             return yield* respond(
               text,
-              `Got it: ${county}. I will use that market's public records.\n\n` +
-                `2/6 — What minimum recorded taxes or liens makes a property worth ` +
-                `your time? Example: $20k`,
+              question === ""
+                ? "Your decision tree is waiting for confirmation."
+                : question,
+              pending,
+            );
+          }
+          const merged = mergeProfile(current, input.onboardingUpdate);
+          if (merged instanceof Error) {
+            return yield* respond(
+              text,
+              `I could not safely store that answer: ${merged.message}. ` +
+                nextOnboardingQuestion(current),
               { kind: "idle" },
             );
           }
-          if (onboarding.step === "min_owed") {
-            const minOwed = parseMoney(text);
-            if (minOwed === undefined) {
-              return yield* respond(
-                text,
-                `Give me a dollar amount such as $20k, $75,000, or "no minimum."`,
-                { kind: "idle" },
-              );
-            }
-            yield* storage.put("onboarding", {
-              ...onboarding,
-              step: "min_assessed",
-              minOwed,
-            } satisfies OnboardingState);
+          yield* storage.put("onboarding", merged);
+          if (merged.county !== undefined) {
+            yield* storage.put("county", merged.county);
+          }
+          const nextQuestion = nextOnboardingQuestion(merged);
+          const lead = input.onboardingLead?.trim() ?? "";
+          if (nextQuestion !== "") {
             return yield* respond(
               text,
-              `Recorded debt floor: ${money(minOwed)}.\n\n` +
-                `3/6 — What minimum county-assessed property value do you want? ` +
-                `Example: $150k, or NONE`,
+              `${lead === "" ? "" : `${lead}\n\n`}${nextQuestion}`,
               { kind: "idle" },
             );
           }
-          if (onboarding.step === "min_assessed") {
-            const minAssessed = parseMoney(text);
-            if (minAssessed === undefined) {
-              return yield* respond(
-                text,
-                `Give me a value such as $150k, $300,000, or "none."`,
-                { kind: "idle" },
-              );
-            }
-            yield* storage.put("onboarding", {
-              ...onboarding,
-              step: "evidence",
-              minAssessed,
-            } satisfies OnboardingState);
-            return yield* respond(
-              text,
-              `Assessed-value floor: ${money(minAssessed)}.\n\n` +
-                `4/6 — What extra evidence must a lead have: MULTIPLE SOURCES, ` +
-                `an OPEN VIOLATION, BOTH, or NEITHER?`,
-              { kind: "idle" },
-            );
-          }
-          if (onboarding.step === "evidence") {
-            const evidence = parseEvidence(text);
-            if (evidence === undefined) {
-              return yield* respond(
-                text,
-                `Reply MULTIPLE SOURCES, OPEN VIOLATION, BOTH, or NEITHER.`,
-                { kind: "idle" },
-              );
-            }
-            yield* storage.put("onboarding", {
-              ...onboarding,
-              ...evidence,
-              step: "recent",
-            } satisfies OnboardingState);
-            return yield* respond(
-              text,
-              `Evidence rule saved.\n\n5/6 — How recent must the latest county event be? ` +
-                `Example: 180 days, 1 year, or ANY`,
-              { kind: "idle" },
-            );
-          }
-          if (onboarding.step === "recent") {
-            const maxDaysSinceEvent = parseRecency(text);
-            if (maxDaysSinceEvent === "invalid") {
-              return yield* respond(
-                text,
-                `Give me a window such as 90 days, 6 months, 1 year, or ANY.`,
-                { kind: "idle" },
-              );
-            }
-            yield* storage.put("onboarding", {
-              ...onboarding,
-              step: "approval",
-              ...(maxDaysSinceEvent === undefined ? {} : { maxDaysSinceEvent }),
-            } satisfies OnboardingState);
-            return yield* respond(
-              text,
-              `Recency rule saved.\n\n6/6 — Must you approve every outreach message ` +
-                `before anything is scheduled? YES or NO`,
-              { kind: "idle" },
-            );
-          }
-          if (onboarding.step === "approval") {
-            const requireApproval = parseChoice(text);
-            if (requireApproval === undefined) {
-              return yield* respond(
-                text,
-                `Reply YES to require your approval, or NO to let matching leads ` +
-                  `move directly to simulated scheduling.`,
-                { kind: "idle" },
-              );
-            }
-            const completed = {
-              ...onboarding,
-              step: "confirm" as const,
-              requireApproval,
-            };
-            yield* storage.put("onboarding", completed satisfies OnboardingState);
-            const graph = onboardingGraph(completed);
-            const evidence = [
-              completed.requireMultiSource === true ? "2+ independent sources" : "",
-              completed.requireViolation === true ? "an open violation" : "",
-            ].filter((value) => value !== "");
-            const summary =
-              `I built your private lead rule for ${completed.county}: ` +
-              `owed ≥ ${money(completed.minOwed ?? 0)}, assessed ≥ ` +
-              `${money(completed.minAssessed ?? 0)}, ` +
-              `${evidence.length === 0 ? "no extra evidence requirement" : evidence.join(" and ")}, ` +
-              `${completed.maxDaysSinceEvent === undefined ? "any event age" : `activity within ${completed.maxDaysSinceEvent} days`}, ` +
-              `${requireApproval ? "your approval before outreach" : "no outreach approval gate"}.`;
-            return yield* proposeTree({
-              userText: text,
-              lead: summary,
-              graph,
-              candidates: input.candidates,
-            });
-          }
-          return yield* respond(
-            text,
-            `Your decision tree is waiting for confirmation. Reply APPROVE to use ` +
-              `it or REJECT to discard it.`,
-            pending,
-          );
+          const graph = onboardingGraph(merged);
+          const evidence = [
+            merged.evidence === "multiple_sources" || merged.evidence === "both"
+              ? "2+ independent sources"
+              : "",
+            merged.evidence === "open_violation" || merged.evidence === "both"
+              ? "an open violation"
+              : "",
+          ].filter((value) => value !== "");
+          const rule =
+            `I built your private lead rule for ${merged.county}: owed ≥ ` +
+            `${money(merged.minOwed ?? 0)}, assessed ≥ ` +
+            `${money(merged.minAssessed ?? 0)}, ` +
+            `${evidence.length === 0
+              ? "no extra evidence requirement"
+              : evidence.join(" and ")}, ` +
+            `${merged.maxDaysSinceEvent === undefined
+              ? "any event age"
+              : `activity within ${merged.maxDaysSinceEvent} days`}, ` +
+            `${merged.requireApproval === true
+              ? "your approval before outreach"
+              : "no outreach approval gate"}.`;
+          return yield* proposeTree({
+            userText: text,
+            lead: `${lead === "" ? "" : `${lead}\n\n`}${rule}`,
+            graph,
+            candidates: input.candidates,
+          });
         }
 
         if (
@@ -1201,12 +1190,18 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
         const summary = (yield* storage.get<string>("summary")) ?? "";
         const county = (yield* storage.get<string>("county")) ?? "norfolk";
+        const profile = profileOf(
+          yield* storage.get<AcquisitionProfile | LegacyOnboardingState>(
+            "onboarding",
+          ),
+        );
         return {
           tree: loaded.tree,
           summary,
           recentTurns: turns.slice(-8),
           configured: loaded.tree.version > 1,
           county,
+          ...(profile === undefined ? {} : { profile }),
         };
       }),
 
