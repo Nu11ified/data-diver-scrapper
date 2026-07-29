@@ -233,7 +233,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const url = new URL(request.url, "http://worker");
 
         if (url.pathname === "/health") {
-          const version = yield* Effect.promise(() => engineVersion());
+          const version = yield* Effect.tryPromise({
+            try: () => engineVersion(),
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (version instanceof Error) {
+            return json({ ok: false, error: version.message }, 500);
+          }
           return json({ ok: true, ...version, sources: sources.length });
         }
 

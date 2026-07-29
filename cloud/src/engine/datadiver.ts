@@ -65,12 +65,41 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 let modulePromise: Promise<EmscriptenModule> | undefined;
 
-const engine = (): Promise<EmscriptenModule> => {
-  modulePromise ??= createModule({
+const startEngine = async (): Promise<EmscriptenModule> => {
+  if (!(wasmModule instanceof WebAssembly.Module)) {
+    throw new EngineError(
+      `wasm import is ${typeof wasmModule}, not a compiled module; check the bundler`,
+    );
+  }
+  let instantiationError: unknown;
+  const started = createModule({
     instantiateWasm: (imports, onSuccess) => {
-      onSuccess(new WebAssembly.Instance(wasmModule, imports), wasmModule);
+      try {
+        onSuccess(new WebAssembly.Instance(wasmModule, imports), wasmModule);
+      } catch (cause) {
+        instantiationError = cause;
+      }
       return {};
     },
+  });
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(
+        new EngineError(
+          instantiationError === undefined
+            ? "wasm runtime never signalled ready"
+            : `wasm instantiation failed: ${String(instantiationError)}`,
+        ),
+      );
+    }, 5_000);
+  });
+  return Promise.race([started, timeout]);
+};
+
+const engine = (): Promise<EmscriptenModule> => {
+  modulePromise ??= startEngine().catch((cause: unknown) => {
+    modulePromise = undefined;
+    throw cause;
   });
   return modulePromise;
 };
