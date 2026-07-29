@@ -1,0 +1,286 @@
+{
+  "comment": "The canonical schema: the labels the engine fills. Fields are configuration, not code. kind picks the validator (id, name, address, money, date, status, text); role ties a field to engine behaviour (parcel, address, owner, status, event_date, fallback_date, amount); identity fields let records resolve to properties. Synonyms are the dialect lexicon that label matching scores against. Field order is display order.",
+  "fields": [
+    {
+      "name": "parcel_id",
+      "kind": "id",
+      "role": "parcel",
+      "identity": true,
+      "synonyms": [
+        "parcel",
+        "parcel number",
+        "parcel id",
+        "apn",
+        "pin",
+        "property id",
+        "account number",
+        "tax account",
+        "account",
+        "parcel no",
+        "folio",
+        "tax id",
+        "instrument",
+        "property group"
+      ]
+    },
+    {
+      "name": "address",
+      "kind": "address",
+      "role": "address",
+      "identity": true,
+      "synonyms": [
+        "address",
+        "property address",
+        "situs address",
+        "situs",
+        "site address",
+        "location",
+        "street address",
+        "property location",
+        "full address",
+        "primary address"
+      ]
+    },
+    {
+      "name": "zip",
+      "kind": "id",
+      "synonyms": [
+        "zip",
+        "zip code",
+        "zipcode",
+        "postal code"
+      ]
+    },
+    {
+      "name": "owner",
+      "kind": "name",
+      "role": "owner",
+      "identity": true,
+      "synonyms": [
+        "owner",
+        "owner name",
+        "taxpayer",
+        "taxpayer name",
+        "property holder",
+        "owner of record",
+        "grantor",
+        "decedent",
+        "applicant",
+        "borrower"
+      ]
+    },
+    {
+      "name": "property_use",
+      "kind": "text",
+      "synonyms": [
+        "property use",
+        "use description",
+        "use desc",
+        "land use",
+        "property class",
+        "permit class",
+        "property type",
+        "building use"
+      ]
+    },
+    {
+      "name": "amount_due",
+      "kind": "money",
+      "role": "amount",
+      "synonyms": [
+        "amount due",
+        "amount owed",
+        "delinquent amount",
+        "balance",
+        "balance due",
+        "total due",
+        "taxes due",
+        "amount",
+        "judgment amount",
+        "fine",
+        "fine assessed",
+        "tax amount",
+        "tax due"
+      ]
+    },
+    {
+      "name": "assessed_value",
+      "kind": "money",
+      "role": "amount",
+      "synonyms": [
+        "assessed value",
+        "assessment",
+        "assessed total",
+        "total assessed value",
+        "market value",
+        "appraised value",
+        "land value",
+        "estate value"
+      ]
+    },
+    {
+      "name": "sale_price",
+      "kind": "money",
+      "role": "amount",
+      "synonyms": [
+        "sale price",
+        "consideration",
+        "opening bid",
+        "minimum bid",
+        "sold for",
+        "price",
+        "valuation",
+        "declared valuation",
+        "mortgage amount",
+        "sale amount",
+        "bid amount",
+        "amount paid",
+        "winning bid"
+      ]
+    },
+    {
+      "name": "event_date",
+      "kind": "date",
+      "role": "event_date",
+      "synonyms": [
+        "date",
+        "event date",
+        "filing date",
+        "filed",
+        "recorded",
+        "recording date",
+        "issued",
+        "issued date",
+        "opened",
+        "date of death",
+        "lis pendens",
+        "letters issued",
+        "created date",
+        "entered date",
+        "violation date",
+        "inspection date",
+        "case opened"
+      ]
+    },
+    {
+      "name": "auction_date",
+      "kind": "date",
+      "role": "fallback_date",
+      "synonyms": [
+        "auction date",
+        "sale date",
+        "auction",
+        "tax sale date",
+        "redemption deadline",
+        "compliance deadline",
+        "compliance date",
+        "deadline"
+      ]
+    },
+    {
+      "name": "case_number",
+      "kind": "id",
+      "synonyms": [
+        "case number",
+        "case no",
+        "case id",
+        "docket",
+        "docket number",
+        "document number",
+        "doc no",
+        "permit number",
+        "permit no",
+        "sale number",
+        "sale no",
+        "sale id",
+        "certificate number",
+        "citation number",
+        "file number",
+        "inspection number",
+        "complaint id",
+        "violation id",
+        "number key"
+      ]
+    },
+    {
+      "name": "status",
+      "kind": "status",
+      "role": "status",
+      "synonyms": [
+        "status",
+        "case status",
+        "disposition",
+        "stage",
+        "exemption",
+        "deed type",
+        "estate type",
+        "work class",
+        "violation status",
+        "inspection status",
+        "data status",
+        "status desc"
+      ]
+    },
+    {
+      "name": "plaintiff",
+      "kind": "name",
+      "synonyms": [
+        "plaintiff",
+        "petitioner",
+        "creditor",
+        "lender",
+        "mortgagee",
+        "beneficiary"
+      ]
+    },
+    {
+      "name": "defendant",
+      "kind": "name",
+      "synonyms": [
+        "defendant",
+        "respondent",
+        "debtor",
+        "mortgagor"
+      ]
+    },
+    {
+      "name": "buyer",
+      "kind": "name",
+      "synonyms": [
+        "buyer",
+        "buyer name",
+        "purchaser",
+        "winning bidder",
+        "grantee",
+        "successful bidder"
+      ]
+    },
+    {
+      "name": "legal_description",
+      "kind": "text",
+      "synonyms": [
+        "legal description",
+        "legal desc",
+        "subdivision"
+      ]
+    },
+    {
+      "name": "description",
+      "kind": "text",
+      "synonyms": [
+        "description",
+        "violation",
+        "violation description",
+        "violation type",
+        "scope of work",
+        "description of work",
+        "work",
+        "notes",
+        "remarks",
+        "ordinance",
+        "work desc",
+        "complaint description"
+      ]
+    }
+  ]
+}
