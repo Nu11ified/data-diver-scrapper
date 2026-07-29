@@ -127,8 +127,52 @@ measurement of what selecting on the reported set is worth here, and it is
 wider than most of the run-to-run differences the gate is asked to adjudicate.
 
 So the bigger corpus did not buy a shippable model, and this run exports
-nothing. The engine bench is unchanged at classification 15/16, mapping F1 91%.
-The classes that still fail are the ones with almost no support — `buyer`,
-`defendant` and `plaintiff` have three, one and one holdout examples between
-them — which is a sampling problem, not a capacity problem. More portals in the
-court and deed domains is the next lever, not more epochs.
+nothing. The classes that still fail are the ones with almost no support —
+`buyer`, `defendant` and `plaintiff` have three, one and one holdout examples
+between them — which is a sampling problem, not a capacity problem. More portals
+in the court and deed domains is the next lever, not more epochs.
+
+## The architecture sweep, and why nothing shipped
+
+Nine architectures, each scored on the holdout once and then benched end to end
+against `data/golden/golden.json`. Parity is `check_parity` over 40 holdout
+columns; the shipped baseline is the model already in `data/model/`.
+
+| tag | d_model/layers/ffn | holdout macro-F1 | gzipped | parity delta | bench |
+|---|---|---|---|---|---|
+| *shipped* | 48/2/96 | — | 445 KB | — | **15/16, P 86% R 98% F1 91%** |
+| A | 48/2/96 | 0.494 | 436 KB | 2.92e-08 | 15/16, P 85% R 97% F1 90% |
+| B | 32/2/64 | 0.422 | 215 KB | 2.91e-08 | 15/16, P 83% R 98% F1 90% |
+| C | 64/2/128 | **0.503** | 732 KB | 2.96e-08 | 15/16, P 85% R 98% F1 91% |
+| D | 48/3/96 | 0.466 | 612 KB | 2.91e-08 | 15/16, P 85% R 98% F1 91% |
+| E | 48/2/192 | 0.446 | 609 KB | 2.86e-08 | 15/16, P 85% R 98% F1 91% |
+| F | 64/2/128, 8 heads | 0.482 | 733 KB | 2.92e-08 | 15/16, P 85% R 98% F1 91% |
+| G | 32/3/64 | 0.494 | 294 KB | 2.84e-08 | 15/16, P 85% R 98% F1 91% |
+| H | 48/2/96, lr 1e-3 | 0.432 | 436 KB | 2.73e-08 | 15/16, P 84% R 98% F1 91% |
+| I | 24/2/48 | 0.420 | **133 KB** | 2.96e-08 | 15/16, P 86% R 98% F1 91% |
+
+Every parity check found zero argmax disagreements, so all nine are faithful
+exports; none of them is a better model.
+
+Nothing beat the baseline, so nothing shipped. Two things in the table are worth
+more than the ranking:
+
+**C is the inversion again.** It is the only candidate to clear the 0.50
+macro-F1 gate, and it is the only candidate that loses a mapping the baseline
+gets: `cook_tax_sale` goes from 3 correct / 1 spurious to 3 / 2. The gate would
+have exported the one model measurably worse on the key. Macro-F1 over 1,846
+holdout columns and mapping F1 over 16 hand-verified sources are not the same
+quantity, and when they disagree the key wins.
+
+**I is identical to the shipped model where it counts.** Its per-source
+ok/spurious/missed column is byte-identical to the baseline on all sixteen
+sources; only the timings differ. It has the worst holdout macro-F1 in the
+sweep, 0.420 against the baseline arch's 0.494, and 30% of the gzipped size. So
+across a 74 KB–733 KB range and a 0.42–0.50 macro-F1 range, the bench moves by
+at most one mapping. The tagger is not what the remaining 9% of mapping error is
+made of, and a bigger one cannot fix it.
+
+That also bounds this table's own worth. Picking the maximum over nine
+candidates on a 16-document key is the same selection effect the holdout fix was
+about, one document wide — which is why a tie is reported as a tie and not
+rounded up into a reason to ship.

@@ -9,6 +9,7 @@ compile_commands.json
 cloud/node_modules/
 tools/node_modules/
 build-wasm/
+build-ml/
 cloud/.alchemy/
 cloud/.env
 cloud/src/generated/

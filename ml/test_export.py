@@ -7,6 +7,7 @@ distribution, so the only real check is running both and comparing.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from export import check_parity, expected_size, flatten, write
 from model import ColumnTagger, Hyper
 
 REPO = Path(__file__).resolve().parent.parent
-BINARY = REPO / "build" / "datadiver"
+BINARY = Path(os.environ.get("DATADIVER_BIN", REPO / "build" / "datadiver"))
 
 SAMPLES = [
     ("owner_name", ["SMITH, JANE", "ACME LLC"]),
