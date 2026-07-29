@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -40,6 +41,7 @@ std::string iso_now();
 std::int64_t unix_now();
 std::string iso_from_unix(std::int64_t t);
 
+std::optional<std::int64_t> epoch_seconds(std::string_view stamp);
 double hours_between(std::string_view earlier, std::string_view later);
 } // namespace timeutil
 

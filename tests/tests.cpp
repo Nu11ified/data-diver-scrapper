@@ -2315,6 +2315,67 @@ TEST(compile_prefers_the_current_edition_and_keeps_the_previous) {
     CHECK_EQ(p.history.at("assessed_value").front().as_of, "2025");
 }
 
+TEST(compile_measures_days_since_the_newest_event) {
+    const std::string root = fresh_dir("compile_recency");
+    dd::store::Store store{root};
+    const dd::store::Source source = store.add_source("Roll", "https://a/roll", "Testville VA");
+    const std::int64_t now = dd::timeutil::unix_now();
+    const auto days_ago = [&](int days) {
+        return dd::timeutil::iso_from_unix(now - static_cast<std::int64_t>(days) * 86400);
+    };
+
+    auto event = [&](const std::string& parcel, const std::string& address,
+                     const std::string& date) {
+        dd::events::PropertyEvent e;
+        e.property_key = dd::entity::property_key("Testville VA", parcel, address);
+        e.kind = dd::events::Kind::AssessmentRecorded;
+        e.event_date = date;
+        e.recorded_at = dd::timeutil::iso_now();
+        e.source_id = source.id;
+        e.confidence = 0.9;
+        e.details["address"] = address;
+        e.details["parcel_id"] = parcel;
+        e.id = dd::events::PropertyEvent::compute_id(e);
+        return e;
+    };
+    store.add_events({
+        event("F1", "10 FRESH ST", days_ago(45)),
+        event("F1", "10 FRESH ST", days_ago(3)),
+        event("S1", "20 STALE ST", days_ago(400)),
+        event("U1", "30 UNDATED ST", ""),
+        event("U1", "30 UNDATED ST", "call the clerk"),
+        event("A1", "40 ANCIENT ST", "1850-01-01"),
+    });
+
+    const std::vector<dd::compile::Property> properties =
+        dd::compile::county(store, test_registry(), "testville");
+    std::map<std::string, std::optional<std::int64_t>> measured;
+    for (const dd::compile::Property& p : properties) {
+        const auto parcel = p.fields.find("parcel_id");
+        if (parcel == p.fields.end()) continue;
+        measured[parcel->second.value] = p.days_since_event;
+    }
+    CHECK_EQ(measured.size(), std::size_t{4});
+    CHECK(measured["F1"] == std::optional<std::int64_t>{3}); // the newest event, not the oldest
+    CHECK(measured["S1"] == std::optional<std::int64_t>{400});
+    CHECK(!measured["U1"].has_value());
+    CHECK(!measured["A1"].has_value()); // 1850 predates any instant this engine can date
+
+    const dd::json::Value rendered =
+        dd::json::parse(dd::compile::render_county_json("Testville VA", properties));
+    std::map<std::string, std::string> emitted;
+    for (const dd::json::Value& record : rendered.find("records")->items()) {
+        const dd::json::Value* parcel = record.find("fields")->find("parcel_id");
+        const dd::json::Value* days = record.find("signals")->find("days_since_event");
+        emitted[parcel->find("value")->as_string()] = days == nullptr ? "" : days->serialize();
+    }
+    CHECK_EQ(emitted.size(), std::size_t{4});
+    CHECK_EQ(emitted["F1"], "3");
+    CHECK_EQ(emitted["S1"], "400");
+    CHECK_EQ(emitted["U1"], ""); // absent, not zero: an unmeasured lead never reads as live
+    CHECK_EQ(emitted["A1"], "");
+}
+
 TEST(schema_registry_rejects_bad_files) {
     CHECK_THROWS(dd::schema::Registry::from_json("{}"));
     CHECK_THROWS(dd::schema::Registry::from_json(R"({"fields": []})"));

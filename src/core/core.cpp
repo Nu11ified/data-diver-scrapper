@@ -224,7 +224,6 @@ std::string iso_from_unix(std::int64_t t) {
 
 std::string iso_now() { return iso_from_unix(unix_now()); }
 
-namespace {
 std::optional<std::int64_t> epoch_seconds(std::string_view stamp) {
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
     const std::string text{stamp};
@@ -241,7 +240,6 @@ std::optional<std::int64_t> epoch_seconds(std::string_view stamp) {
     tm.tm_sec = s;
     return static_cast<std::int64_t>(timegm(&tm));
 }
-} // namespace
 
 double hours_between(std::string_view earlier, std::string_view later) {
     const std::optional<std::int64_t> a = epoch_seconds(earlier);

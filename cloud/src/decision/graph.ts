@@ -42,6 +42,7 @@ export const CriteriaSpec = Schema.Struct({
   minOwed: Schema.Number,
   requireMultiSource: Schema.Boolean,
   minDebtToValue: Schema.Number,
+  maxDaysSinceEvent: Schema.optional(Schema.Number),
 });
 export type CriteriaSpec = (typeof CriteriaSpec)["Type"];
 
@@ -61,7 +62,7 @@ export const DEFAULT_SPEC: CriteriaSpec = {
 
 export interface SignalInfo {
   readonly label: string;
-  readonly format: "money" | "ratio" | "count";
+  readonly format: "money" | "ratio" | "count" | "days";
   readonly description: string;
 }
 
@@ -98,6 +99,14 @@ export const SIGNAL_CATALOG: Readonly<Record<string, SignalInfo>> = {
     format: "count",
     description: "independent county sources that reported this property",
   },
+  days_since_event: {
+    label: "days since last event",
+    format: "days",
+    description:
+      "whole days between the newest dated county event for this property and the " +
+      "compile; absent when no event carries a date the engine can read, and an " +
+      "absent signal fails its condition",
+  },
 };
 
 export const compileSpec = (spec: CriteriaSpec, name: string, version: number): TreeDoc => {
@@ -130,6 +139,17 @@ export const compileSpec = (spec: CriteriaSpec, name: string, version: number): 
       field: "debtToValue",
       op: "gte",
       value: spec.minDebtToValue,
+      onPass: "",
+      onFail: "discard",
+    });
+  }
+  if (spec.maxDaysSinceEvent !== undefined && spec.maxDaysSinceEvent > 0) {
+    conditions.push({
+      kind: "condition",
+      id: "recent_activity",
+      field: "days_since_event",
+      op: "lte",
+      value: spec.maxDaysSinceEvent,
       onPass: "",
       onFail: "discard",
     });
@@ -302,6 +322,8 @@ export const formatValue = (field: string, value: number): string => {
       return money(value);
     case "ratio":
       return `${value}x`;
+    case "days":
+      return `${value} day${value === 1 ? "" : "s"}`;
     default:
       return String(value);
   }

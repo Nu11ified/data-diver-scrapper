@@ -5,6 +5,7 @@
 #include "dd/engine/entity.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 
 namespace dd::compile {
@@ -101,7 +102,19 @@ void resolve_fields(const schema::Registry& registry,
     }
 }
 
-void measure_signals(Property* property) {
+std::optional<std::int64_t> newest_event_epoch(const std::vector<events::PropertyEvent>& evs) {
+    std::optional<std::int64_t> newest;
+    for (const events::PropertyEvent& e : evs) {
+        const std::optional<std::string> date = schema::parse_date(e.event_date);
+        if (!date.has_value()) continue;
+        const std::optional<std::int64_t> at = timeutil::epoch_seconds(*date);
+        if (!at.has_value()) continue;
+        if (!newest.has_value() || *at > *newest) newest = at;
+    }
+    return newest;
+}
+
+void measure_signals(std::int64_t now, Property* property) {
     for (const events::PropertyEvent& e : property->events) {
         switch (e.kind) {
         case events::Kind::TaxDelinquency: property->due = e.amount; break;
@@ -125,6 +138,11 @@ void measure_signals(Property* property) {
                 break;
             }
         }
+    }
+    const std::optional<std::int64_t> newest = newest_event_epoch(property->events);
+    if (newest.has_value()) {
+        const double days = static_cast<double>(now - *newest) / 86400.0;
+        property->days_since_event = static_cast<std::int64_t>(std::floor(days));
     }
 }
 } // namespace
@@ -156,6 +174,7 @@ std::vector<Property> county_from_events(
     const std::map<std::string, std::map<std::string, double>>& trust,
     const std::string& county) {
     const std::string wanted = str::slug(county);
+    const std::int64_t now = timeutil::unix_now();
 
     std::map<std::string, std::vector<std::string>> groups;
     std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
@@ -233,7 +252,7 @@ std::vector<Property> county_from_events(
         sort_events(&property.events);
         property.state = events::reduce(property.events).state;
         resolve_fields(registry, trust, &property);
-        measure_signals(&property);
+        measure_signals(now, &property);
         const auto parcel = property.fields.find("parcel_id");
         const auto address = property.fields.find("address");
         property.locates_a_building =
@@ -313,6 +332,9 @@ std::string render_county_json(const std::string& county,
             w.field("code_violations", static_cast<std::int64_t>(p.violations));
         }
         if (!p.auction_date.empty()) w.field("auction_date", p.auction_date);
+        if (p.days_since_event.has_value()) {
+            w.field("days_since_event", *p.days_since_event);
+        }
         if (p.assessed > 0.0) w.field("assessed_value", p.assessed);
         if (p.due > 0.0 && p.assessed > 0.0) w.field("debt_to_value", p.due / p.assessed);
         if (p.assessed_previous > 0.0) {

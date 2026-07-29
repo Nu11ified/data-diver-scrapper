@@ -49,6 +49,39 @@ suite("compileSpec", () => {
     expect(conditions.every((n) => n.onFail === "discard")).toBe(true);
   });
 
+  test("a freshness window becomes a days_since_event ceiling", () => {
+    const tree = compileSpec({ ...DEFAULT_SPEC, maxDaysSinceEvent: 30 }, "acquisition", 2);
+    const conditions = tree.graph.nodes.filter((n) => n.kind === "condition");
+    expect(conditions.map((n) => n.id)).toEqual(["owed_floor", "recent_activity"]);
+    expect(conditions[1]).toMatchObject({
+      field: "days_since_event",
+      op: "lte",
+      value: 30,
+      onPass: "needs_approval",
+      onFail: "discard",
+    });
+    expect(validateGraph(tree.graph, Object.keys(SIGNAL_CATALOG))).toEqual([]);
+
+    const owed = { owed: 50_000 };
+    expect(evaluate(tree.graph, subject({ ...owed, days_since_event: 4 })).outcome).toBe("match");
+    expect(evaluate(tree.graph, subject({ ...owed, days_since_event: 30 })).outcome).toBe("match");
+    expect(evaluate(tree.graph, subject({ ...owed, days_since_event: 401 })).outcome).toBe(
+      "discard",
+    );
+    expect(evaluate(tree.graph, subject(owed)).outcome).toBe("discard");
+  });
+
+  test("an undated property is reported as unmeasured, never as fresh", () => {
+    const tree = compileSpec({ ...DEFAULT_SPEC, maxDaysSinceEvent: 30 }, "acquisition", 2);
+    const verdict = evaluate(tree.graph, subject({ owed: 50_000 }));
+    const step = verdict.trace.find((s) => s.kind === "condition" && s.field === "days_since_event");
+    expect(step).toMatchObject({ present: false, passed: false });
+    expect(explainTrace(verdict.trace)).toContain(
+      "✗ days since last event is not measured for this property (needs at most 30 days)",
+    );
+    expect(describe(tree.graph)).toContain("days since last event at most 30 days");
+  });
+
   test("round-trips through its schema", () => {
     const tree = compileSpec(DEFAULT_SPEC, "acquisition", 1);
     const decoded = Schema.decodeUnknownExit(TreeDoc)(JSON.parse(JSON.stringify(tree)));

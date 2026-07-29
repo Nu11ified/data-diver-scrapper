@@ -4,7 +4,9 @@
 #include "dd/engine/schema.hpp"
 #include "dd/engine/store.hpp"
 
+#include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,7 @@ struct Property {
     double assessed_previous = 0.0;  // the same field one edition earlier
     std::size_t violations = 0;
     std::string auction_date;
+    std::optional<std::int64_t> days_since_event;  // empty when no event carries a usable date
 };
 
 std::map<std::string, std::map<std::string, double>> source_trust(store::Store& store);
