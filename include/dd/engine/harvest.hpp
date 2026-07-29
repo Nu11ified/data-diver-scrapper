@@ -54,4 +54,13 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
                                   const std::function<void(const std::string&)>& log,
                                   Stats* stats);
 
+// Grows the document-classifier corpus with real datasets: for each class,
+// curated catalog queries pull live datasets and their first rows are saved
+// under corpus_dir/<class>/. Weak labels come from the query, so the LOO
+// confusion table in `train` is the audit: a dataset that lands in the
+// wrong class shows up there and the operator deletes the file.
+std::map<std::string, std::size_t> grow_corpus(const std::string& corpus_dir,
+                                               std::size_t datasets_per_query,
+                                               const std::function<void(const std::string&)>& log);
+
 } // namespace dd::harvest

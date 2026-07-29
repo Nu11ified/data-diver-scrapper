@@ -27,6 +27,10 @@ void review(store::Store& store, pipeline::Pipeline& pipeline, const std::string
 void model_status(const classify::Classifier& classifier,
                   const columns::ColumnModel* column_model);
 
+// Grows the document corpus from live catalog datasets and reports what
+// landed per class; `train sweep` afterwards is the audit.
+int harvest_docs(const std::string& corpus_dir, std::size_t datasets_per_query);
+
 // Trains at one alpha, or sweeps a small grid when sweep=true, printing
 // per-class results and the confusion pairs from leave-one-out. Saves the
 // model (best one when sweeping) if accuracy clears 0.85 and hot-swaps the

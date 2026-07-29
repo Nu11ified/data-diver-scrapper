@@ -237,4 +237,85 @@ std::vector<columns::Example> run(const schema::Registry& registry, const Option
     return out;
 }
 
+std::map<std::string, std::size_t> grow_corpus(
+    const std::string& corpus_dir, std::size_t datasets_per_query,
+    const std::function<void(const std::string&)>& log) {
+    static const std::vector<std::pair<const char*, std::vector<const char*>>> kQueries = {
+        {"tax_delinquency", {"delinquent property tax", "tax delinquent list"}},
+        {"building_permit", {"building permits issued", "construction permits"}},
+        {"code_violation", {"code enforcement violations", "property maintenance violations"}},
+        {"deed_transfer", {"real property sales deed", "property transfers"}},
+        {"foreclosure_filing", {"foreclosure filings", "lis pendens"}},
+        {"trustee_auction", {"sheriff sale", "tax sale results"}},
+        {"assessor_roll", {"property assessment roll", "parcel assessments"}},
+        {"probate_case", {"probate court", "estate cases"}},
+    };
+    fetch::Options net;
+    net.timeout_seconds = 20;
+    std::map<std::string, std::size_t> written;
+    std::set<std::string> seen_datasets;
+
+    for (const auto& [label, queries] : kQueries) {
+        for (const char* query : queries) {
+            const std::string url = std::string{kCatalog} + "?only=datasets&limit=" +
+                                    std::to_string(datasets_per_query) +
+                                    "&q=" + url_encode(query);
+            const fetch::Result catalog = fetch::get(url, net);
+            if (!catalog.ok) {
+                if (log) log(std::string{"catalog '"} + query + "' failed: " + catalog.error);
+                continue;
+            }
+            json::Value root;
+            try {
+                root = json::parse(catalog.body);
+            } catch (const Error&) {
+                continue;
+            }
+            const json::Value* results = root.find("results");
+            if (results == nullptr) continue;
+            std::size_t taken = 0;
+            for (const json::Value& entry : results->items()) {
+                if (taken >= datasets_per_query) break;
+                const json::Value* resource = entry.find("resource");
+                const json::Value* metadata = entry.find("metadata");
+                if (resource == nullptr || metadata == nullptr) continue;
+                const json::Value* id = resource->find("id");
+                const json::Value* domain = metadata->find("domain");
+                const json::Value* fields = resource->find("columns_field_name");
+                if (id == nullptr || domain == nullptr || fields == nullptr) continue;
+                const std::string dataset_id = id->as_string();
+                const std::string dataset_domain = domain->as_string();
+                if (!plausible_domain(dataset_domain) || !plausible_dataset_id(dataset_id)) {
+                    continue;
+                }
+                if (fields->items().size() < 4) continue; // too thin to classify
+                if (!seen_datasets.insert(dataset_id).second) continue;
+                const std::string path = corpus_dir + "/" + label + "/socrata_" +
+                                         str::replace_all(dataset_id, "-", "_") + ".json";
+                if (fileio::exists(path)) continue;
+                const fetch::Result rows = fetch::get(
+                    "https://" + dataset_domain + "/resource/" + dataset_id + ".json?$limit=5",
+                    net);
+                if (!rows.ok || rows.body.size() < 64) continue;
+                try {
+                    const json::Value parsed = json::parse(rows.body);
+                    if (!parsed.is_array() || parsed.items().empty() ||
+                        !parsed.items().front().is_object()) {
+                        continue;
+                    }
+                } catch (const Error&) {
+                    continue;
+                }
+                fileio::write_file_atomic(path, rows.body);
+                ++written[label];
+                ++taken;
+            }
+        }
+        if (log) {
+            log(std::string{label} + ": " + std::to_string(written[label]) + " real datasets");
+        }
+    }
+    return written;
+}
+
 } // namespace dd::harvest

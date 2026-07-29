@@ -470,6 +470,7 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
                         "  map SOURCE_ID          learned mapping with sample values\n"
                         "  review SOURCE_ID       confirm or refuse uncertain matches\n"
                         "  harvest [N]            build the column corpus from live portals\n"
+                        "  harvest docs [N]       grow the document corpus with real datasets\n"
                         "  train columns [EPOCHS] train the column transformer, validate by domain\n"
                         "  export COUNTY [FILE]   the compiled county as canonical JSON\n"
                         "  bench                  score against the hand-verified answer key\n"
@@ -547,14 +548,22 @@ int shell(const dd::schema::Registry& registry, const dd::classify::Classifier& 
             continue;
         }
         if (command == "harvest") {
-            std::optional<long> per_query{0};
-            if (parts.size() == 2) per_query = parse_long(parts[1], 1, 500);
-            if (parts.size() > 2 || !per_query.has_value()) {
-                std::printf("  usage: harvest [DATASETS_PER_QUERY (1-500)]\n");
+            const bool docs = parts.size() >= 2 && parts[1] == "docs";
+            const std::size_t value_index = docs ? 2 : 1;
+            std::optional<long> per_query{docs ? 6 : 0};
+            if (parts.size() == value_index + 1) {
+                per_query = parse_long(parts[value_index], 1, 500);
+            }
+            if (parts.size() > value_index + 1 || !per_query.has_value()) {
+                std::printf("  usage: harvest [docs] [DATASETS_PER_QUERY (1-500)]\n");
                 continue;
             }
-            dd::cli::harvest(registry, "data/columns/corpus.jsonl",
-                             static_cast<std::size_t>(*per_query));
+            if (docs) {
+                dd::cli::harvest_docs("data/corpus", static_cast<std::size_t>(*per_query));
+            } else {
+                dd::cli::harvest(registry, "data/columns/corpus.jsonl",
+                                 static_cast<std::size_t>(*per_query));
+            }
             continue;
         }
         if (command == "train" && parts.size() >= 2 && parts[1] == "columns") {

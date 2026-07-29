@@ -350,6 +350,23 @@ void model_status(const classify::Classifier& classifier,
     });
 }
 
+int harvest_docs(const std::string& corpus_dir, std::size_t datasets_per_query) {
+    section("Growing the document corpus from live portals");
+    const std::map<std::string, std::size_t> written = harvest::grow_corpus(
+        corpus_dir, datasets_per_query,
+        [](const std::string& line) { std::printf("  %s\n", line.c_str()); });
+    std::size_t total = 0;
+    for (const auto& [label, count] : written) total += count;
+    if (total == 0) {
+        std::printf("  %s nothing new; corpus unchanged\n", stamp("unchanged").c_str());
+        return 1;
+    }
+    std::printf("  %s %zu real datasets added; run 'train sweep' and prune any file the "
+                "confusion table flags\n",
+                stamp("ok").c_str(), total);
+    return 0;
+}
+
 int train(pipeline::Pipeline* pipeline, const std::string& corpus_dir,
           const std::string& model_path, double alpha, bool sweep) {
     struct Attempt {
