@@ -532,7 +532,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           return outcome;
         }
         if (decision.kind === "discover") {
-          const jurisdiction = slugId(decision.jurisdiction);
+          const jurisdiction =
+            snap.profile?.county ??
+            (snap.configured ? snap.county : decision.jurisdiction);
           const status = yield* ensureCountyWarm(
             jurisdiction,
             tenantId,
@@ -1988,10 +1990,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
           const thread = threadFor(tenantId);
           const snapshot = yield* thread.snapshot();
+          const currentCounty = snapshot.profile?.county ?? snapshot.county;
           const currentCanonical =
-            snapshot.county === ""
+            currentCounty === ""
               ? ""
-              : yield* resolveJurisdiction(snapshot.county);
+              : yield* resolveJurisdiction(currentCounty);
           if (
             currentCanonical !== "" &&
             currentCanonical !== canonical
