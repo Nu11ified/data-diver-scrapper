@@ -489,24 +489,19 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
         if (decision.kind === "discover") {
           const jurisdiction = slugId(decision.jurisdiction);
-          const result = yield* validateSourceCandidates(
+          const status = yield* ensureCountyWarm(
             jurisdiction,
-            decision.candidates,
+            tenantId,
+            DEFAULT_SOURCE_COVERAGE,
           );
-          if (result.admitted.length > 0 && result.admissionError === undefined) {
-            yield* ensureCountyWarm(jurisdiction, tenantId);
-          }
-          const sourceCount = result.admitted.length;
           return yield* thread.applyScout({
             userText: text,
             reply:
-              sourceCount > 0 && result.admissionError === undefined
-                ? `${decision.text}\n\nI verified ${sourceCount} public-record ` +
-                  `source${sourceCount === 1 ? "" : "s"} and started building the ` +
-                  `county lead list. I will report matches after the records are ready.`
-                : `${decision.text}\n\nI could not verify a usable public-record ` +
-                  `source yet, so there is no lead count to report. Nothing was guessed.`,
-            ...(sourceCount > 0 ? { county: jurisdiction } : {}),
+              status.state === "error"
+                ? `I could not start the county record scan: ${status.error ?? "the workflow was unavailable"}. Nothing was changed.`
+                : `${decision.text}\n\nThe county record scan is ${status.state}. ` +
+                  `I will only report matches after the required official sources are verified.`,
+            ...(status.state === "error" ? {} : { county: jurisdiction }),
           });
         }
         if (decision.kind === "temp_filter") {
