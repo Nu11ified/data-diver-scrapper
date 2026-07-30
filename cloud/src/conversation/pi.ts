@@ -187,6 +187,7 @@ const fieldsIn = (update: ProfileUpdate): readonly ProfileField[] => [
 const validateProfileUpdate = (
   expected: ProfileField | undefined,
   update: ProfileUpdate,
+  text: string,
 ): void => {
   if (expected === undefined) {
     throw new Error("The onboarding profile is already complete. Reply naturally.");
@@ -211,6 +212,14 @@ const validateProfileUpdate = (
   ) {
     throw new Error(
       "Choose either a numeric recency window or any event age, not both.",
+    );
+  }
+  if (
+    expected !== "requireApproval" &&
+    (!text.trim().includes("\n\n") || !text.trim().endsWith("?"))
+  ) {
+    throw new Error(
+      "Write the SMS as two short paragraphs: acknowledge the accepted answer, then ask exactly one next question.",
     );
   }
 };
@@ -238,7 +247,7 @@ export const runPiScout = async (
       name: "update_profile",
       label: "Update acquisition profile",
       description:
-        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS: acknowledge the accepted answer and ask the next missing field naturally. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
+        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS. Until the final field, write two short paragraphs separated by a blank line: acknowledge the accepted answer, then ask exactly one natural question for the next field. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
       parameters: Type.Object({
         text: MessageText,
         county: Type.Optional(County),
@@ -276,7 +285,11 @@ export const runPiScout = async (
             ? { requireApproval: params.requireApproval as boolean }
             : {}),
         };
-        validateProfileUpdate(nextProfileField(call.context.profile), update);
+        validateProfileUpdate(
+          nextProfileField(call.context.profile),
+          update,
+          params.text as string,
+        );
         return choose({
           kind: "update_profile",
           text: params.text as string,

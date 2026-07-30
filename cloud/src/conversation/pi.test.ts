@@ -72,12 +72,58 @@ describe("Pi conversation agent", () => {
     });
   });
 
+  test("retries a flat onboarding response until it is readable as an SMS", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("update_profile", {
+          text:
+            "Denton, TX is set as your market. What minimum delinquent amount should qualify?",
+          county: "Denton, TX",
+        }),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        fauxToolCall("update_profile", {
+          text:
+            "Denton, TX is set as your market.\n\n" +
+            "What minimum delinquent amount should qualify?",
+          county: "Denton, TX",
+        }),
+        { stopReason: "toolUse" },
+      ),
+    ]);
+
+    const result = await runPiScout(
+      {
+        accessToken: "test-token",
+        sessionId: "tenant-sms-shape",
+        userText: "Denton, TX",
+        context: context(),
+      },
+      {
+        model: faux.getModel(),
+        streamFn: faux.provider.streamSimple.bind(faux.provider),
+      },
+    );
+
+    expect(result.decision).toEqual({
+      kind: "update_profile",
+      text:
+        "Denton, TX is set as your market.\n\n" +
+        "What minimum delinquent amount should qualify?",
+      update: { county: "Denton, TX" },
+    });
+  });
+
   test("turns a vague onboarding answer into a typed profile update", async () => {
     const faux = fauxProvider();
     faux.setResponses([
       fauxAssistantMessage(
         fauxToolCall("update_profile", {
-          text: "I recommend requiring two independent county sources.",
+          text:
+            "I recommend requiring two independent county sources.\n\n" +
+            "Should older records remain eligible?",
           evidence: "multiple_sources",
         }),
         { stopReason: "toolUse" },
@@ -103,7 +149,9 @@ describe("Pi conversation agent", () => {
 
     expect(result.decision).toEqual({
       kind: "update_profile",
-      text: "I recommend requiring two independent county sources.",
+      text:
+        "I recommend requiring two independent county sources.\n\n" +
+        "Should older records remain eligible?",
       update: { evidence: "multiple_sources" },
     });
   });
