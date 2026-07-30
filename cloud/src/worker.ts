@@ -112,6 +112,14 @@ interface Probe {
   readonly crawledFrom?: string;
 }
 
+interface SmsPayload {
+  readonly from_number?: string;
+  readonly to_number?: string;
+  readonly number?: string;
+  readonly content?: string;
+  readonly message_handle?: string;
+}
+
 interface CountyRecord {
   readonly keys: readonly string[];
   readonly lifecycle_state: string;
@@ -180,6 +188,17 @@ const escapeHtml = (value: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+
+const smsWorkflowId = async (messageHandle: string): Promise<string> => {
+  const identity =
+    messageHandle.trim() === "" ? crypto.randomUUID() : messageHandle.trim();
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)),
+  );
+  return `sms_${Array.from(digest.slice(0, 20), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")}`;
+};
 
 export default class Scraper extends Cloudflare.Worker<Scraper>()(
   "Scraper",
@@ -1608,6 +1627,47 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     );
     const sourceRunWorkflow = yield* SourceRunWorkflow;
 
+    const SmsTurnWorkflow = Cloudflare.Workflow(
+      "SmsTurnWorkflow",
+      Effect.succeed(
+        Effect.fn(function* (input: { readonly payload: SmsPayload }) {
+          return yield* Cloudflare.Workflows.task(
+            "process-sms",
+            Effect.tryPromise({
+              try: async () => {
+                const response = await fetch(`${publicOrigin}/sms/process`, {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-datadiver-internal": Redacted.value(sendblueSecret),
+                  },
+                  body: JSON.stringify(input.payload),
+                });
+                const body = await response.text();
+                if (!response.ok) {
+                  throw new Error(
+                    `SMS processing returned ${response.status}: ${body.slice(0, 400)}`,
+                  );
+                }
+                return JSON.parse(body) as unknown;
+              },
+              catch: (cause): Error =>
+                cause instanceof Error ? cause : new Error(String(cause)),
+            }).pipe(Effect.orDie),
+            {
+              retries: {
+                limit: 2,
+                delay: "10 seconds",
+                backoff: "exponential",
+              },
+              timeout: "5 minutes",
+            },
+          );
+        }),
+      ),
+    );
+    const smsTurnWorkflow = yield* SmsTurnWorkflow;
+
     const queueSweep = Effect.gen(function* () {
       const sources = yield* allSources;
       const createdAt = new Date().toISOString();
@@ -1958,24 +2018,62 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
         }
 
-        if (url.pathname === "/sms" && request.method === "POST") {
+        if (
+          (url.pathname === "/sms" || url.pathname === "/sms/process") &&
+          request.method === "POST"
+        ) {
           const bodyText = yield* request.text;
-          const parsed = JSON.parse(bodyText) as {
-            readonly from_number?: string;
-            readonly to_number?: string;
-            readonly number?: string;
-            readonly content?: string;
-            readonly message_handle?: string;
-          };
+          const parsed = yield* Effect.try({
+            try: () => JSON.parse(bodyText) as SmsPayload,
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (parsed instanceof Error) {
+            return json({ ok: false, error: "request body must be valid JSON" }, 400);
+          }
           const phone = (parsed.from_number ?? "").replace(/[^+0-9]/g, "");
           const ourNumber = (parsed.to_number ?? parsed.number ?? "").replace(/[^+0-9]/g, "");
           const text = parsed.content ?? "";
           const messageHandle = parsed.message_handle?.trim() ?? "";
+          const secret = Redacted.value(sendblueSecret);
           const probe =
-            request.headers["x-datadiver-probe"] ===
-            Redacted.value(sendblueSecret);
+            request.headers["x-datadiver-probe"] === secret;
+          const internal =
+            url.pathname === "/sms/process" &&
+            request.headers["x-datadiver-internal"] === secret;
+          if (url.pathname === "/sms/process" && !internal) {
+            return json({ ok: false, error: "not found" }, 404);
+          }
           if (phone === "" || text === "") {
             return json({ ok: false, error: "from_number and content are required" }, 400);
+          }
+          if (url.pathname === "/sms" && !probe) {
+            const instanceId = yield* Effect.promise(() =>
+              smsWorkflowId(messageHandle),
+            );
+            const queued = yield* smsTurnWorkflow.create({
+              id: instanceId,
+              params: { payload: parsed },
+              retention: {
+                successRetention: "1 day",
+                errorRetention: "7 days",
+              },
+            }).pipe(
+              Effect.map(() => true),
+              Effect.catchCause(() =>
+                smsTurnWorkflow.get(instanceId).pipe(
+                  Effect.map(() => true),
+                  Effect.catchCause(() => Effect.succeed(false)),
+                ),
+              ),
+            );
+            if (!queued) {
+              return json(
+                { ok: false, error: "could not queue the SMS turn" },
+                503,
+              );
+            }
+            return json({ ok: true, queued: true });
           }
 
           const preflight = yield* Effect.tryPromise({
