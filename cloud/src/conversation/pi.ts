@@ -331,13 +331,21 @@ export const runPiScout = async (
         }),
     }),
   ];
+  const availableTools = call.context.configured
+    ? tools
+    : tools.filter(
+        (tool) =>
+          tool.name === "reply" ||
+          tool.name === "update_profile" ||
+          tool.name === "resolve_pending",
+      );
 
   const agent = new Agent({
     initialState: {
       systemPrompt: buildInstructions(call.context),
       model: runtime.model,
       thinkingLevel: "medium",
-      tools,
+      tools: availableTools,
       messages: historyMessages(call.context),
     },
     streamFn: runtime.streamFn,

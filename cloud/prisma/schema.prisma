@@ -21,8 +21,21 @@ model Tenant {
   messages     Message[]
   decisionTrees DecisionTree[]
   inboundDeliveries InboundDelivery[]
+  conversationState ConversationState[]
 
   @@map("tenants")
+}
+
+model ConversationState {
+  tenantId  String   @db.Uuid
+  key       String
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("conversation_state")
 }
 
 /// Envelope-encrypted third-party credentials. Ciphertext and IV only; the

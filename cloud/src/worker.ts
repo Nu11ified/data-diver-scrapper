@@ -25,14 +25,14 @@ import {
 import { makeClient, type Db } from "./db.ts";
 import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
-  ConversationThread,
-  ConversationThreadLive,
+  makeThread,
   slashCommand,
   subjectOf,
   templateDraft,
   type HandleMessageInput,
   type HandleOutcome,
   type PropertyMatch,
+  type ThreadSnapshot,
 } from "./conversation/thread.ts";
 import { runPiScout } from "./conversation/pi.ts";
 import { legacyProfileText } from "./conversation/profile.ts";
@@ -160,9 +160,33 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
   },
   Effect.gen(function* () {
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
-    const threads = yield* ConversationThread;
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
     const db = (): Db => makeClient(Redacted.value(databaseUrl));
+    const threadFor = (tenantId: string) => {
+      const prisma = db();
+      return makeThread({
+        get: <T>(key: string) =>
+          Effect.promise(async () => {
+            const row = await prisma.conversationState.findUnique({
+              where: { tenantId_key: { tenantId, key } },
+            });
+            return row?.value as T | undefined;
+          }),
+        put: (key: string, value: unknown) =>
+          Effect.promise(async () => {
+            const encoded = JSON.parse(JSON.stringify(value));
+            await prisma.conversationState.upsert({
+              where: { tenantId_key: { tenantId, key } },
+              create: { tenantId, key, value: encoded },
+              update: { value: encoded },
+            });
+          }),
+        delete: (key: string) =>
+          Effect.promise(async () => {
+            await prisma.conversationState.deleteMany({ where: { tenantId, key } });
+          }),
+      });
+    };
 
     const sendblueKey = yield* Config.redacted("SENDBLUE_API_KEY");
     const sendblueSecret = yield* Config.redacted("SENDBLUE_SECRET_KEY");
@@ -289,18 +313,20 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const scoutTurn = (
       tenantId: string,
-      phone: string,
       text: string,
       candidates: readonly PropertyMatch[],
+      snap: ThreadSnapshot,
       onDecision: (kind: string) => void,
       dryRun = false,
     ) =>
       Effect.gen(function* () {
-        const thread = threads.getByName(phone);
-        const snap = yield* thread.snapshot();
+        const thread = threadFor(tenantId);
         const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
         if (credential === undefined) {
-          return yield* new CodexError({ message: "no codex credential stored", status: 0 });
+          return yield* new CodexError({
+            message: "no codex credential stored",
+            status: 0,
+          });
         }
         const extraSignals = [
           ...new Set(candidates.flatMap((candidate) => Object.keys(candidate.signals))),
@@ -565,7 +591,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       Effect.gen(function* () {
         const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
         if (credential === undefined) {
-          return yield* new CodexError({ message: "no codex credential stored", status: 0 });
+          return yield* new CodexError({
+            message: "no codex credential stored",
+            status: 0,
+          });
         }
         const facts = [
           `property address: ${match.address}`,
@@ -1460,7 +1489,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (preflight.duplicate) {
             return json({ ok: true, duplicate: true });
           }
-
           const showTyping = Effect.tryPromise({
             try: () => sender.typing(phone, ourNumber),
             catch: (cause): Error =>
@@ -1568,7 +1596,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             if (wiped instanceof Error) {
               return json({ ok: false, phone, error: wiped.message }, 500);
             }
-            const thread = threads.getByName(phone);
+            const thread = threadFor(preflight.tenantId);
             yield* thread.forget();
             const onboarding = yield* thread.handleMessage({
               text,
@@ -1604,7 +1632,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             if (removed instanceof Error) {
               return json({ ok: false, phone, error: removed.message }, 500);
             }
-            yield* threads.getByName(phone).forget();
             const reply =
               `Account deleted. Everything held for ${phone} is gone: the Codex ` +
               `connection, criteria, decision trees, evaluations, outreach and the ` +
@@ -1616,7 +1643,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             }).pipe(Effect.catch(() => Effect.void));
             return json({ ok: true, phone, reply, deleted: true });
           }
-          const thread = threads.getByName(phone);
+          const thread = threadFor(preflight.tenantId);
           const snapshot = yield* thread.snapshot();
           const county = snapshot.county;
           if (snapshot.configured && !(yield* countyIsWarm(county))) {
@@ -1641,9 +1668,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               warming: warming.state,
             });
           }
+          const candidates = snapshot.configured
+            ? yield* countyMatches(county)
+            : [];
           let input: HandleMessageInput = {
             text,
-            candidates: yield* countyMatches(county),
+            candidates,
             codexAccount: preflight.codexAccount,
           };
           if ((lower === "connect" || lower === "connect codex") && masterKeyB64 !== "") {
@@ -1662,8 +1692,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             input = { ...input, connectUrl: `${origin}/connect/${token}` };
           }
 
-          // Signing in is not optional: the model is the conversation, so
-          // without it there is nothing to answer with except a link.
           if (preflight.codexAccount === "") {
             const link = masterKeyB64 === "" ? "" : yield* mintConnectUrl;
             const reply =
@@ -1686,9 +1714,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           let scoutDecision = "";
           const scouted = yield* scoutTurn(
             preflight.tenantId,
-            phone,
             text,
             input.candidates,
+            snapshot,
             (kind) => {
               scoutDecision = kind;
             },
@@ -1720,7 +1748,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
           const draftRequest = outcome.draftRequest;
           if (draftRequest !== undefined) {
-            const drafted = yield* draftOutreach(preflight.tenantId, draftRequest.match).pipe(
+            const drafted = yield* draftOutreach(
+              preflight.tenantId,
+              draftRequest.match,
+            ).pipe(
               Effect.catch((cause) => {
                 scoutError = cause.message;
                 return Effect.succeed(templateDraft(draftRequest.match));
@@ -1967,7 +1998,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       ),
     };
   }).pipe(
-    Effect.provide(ConversationThreadLive),
     Effect.provide(Cloudflare.Workers.CronEventSourceLive),
     Effect.provide(Cloudflare.R2.ReadWriteBucketBinding),
   ),
