@@ -1527,19 +1527,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         if (
           existing !== undefined &&
           existingAge < ACTIVE_WARM_MS &&
-          existingSatisfiesRequest
+          existingSatisfiesRequest &&
+          existing.state !== "error"
         ) {
           if (workflowIsActive(existingRuntime)) {
-            if (existing.state === "error") {
-              const reconciled: CountyWarmStatusValue = {
-                ...existing,
-                state: existingRuntime === "queued" ? "queued" : "running",
-                updatedAt: new Date().toISOString(),
-                error: undefined,
-              };
-              yield* writeWarmStatus(reconciled);
-              return reconciled;
-            }
             return existing;
           }
           if (existingRuntime === undefined && shouldReuseWarm(existing, nowMs)) {

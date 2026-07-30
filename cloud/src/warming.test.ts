@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ACTIVE_WARM_MS,
+  FAILED_WARM_RETRY_MS,
   countyWorkflowId,
   shouldReuseWarm,
   warmRetryKey,
@@ -77,6 +78,17 @@ describe("warmRetryKey", () => {
         Date.parse("2026-07-29T20:05:00.000Z"),
       ),
     ).toBe("");
+  });
+
+  test("retries a failed task even while its notification step is still running", () => {
+    const failed = status({ state: "error" });
+    expect(
+      warmRetryKey(
+        failed,
+        "running",
+        Date.parse(failed.updatedAt) + FAILED_WARM_RETRY_MS,
+      ),
+    ).toBe(failed.updatedAt);
   });
 });
 
