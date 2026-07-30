@@ -82,6 +82,31 @@ describe("buildInstructions", () => {
     expect(text).toContain("reply APPROVE or REJECT");
   });
 
+  test("gives every reply a clear outcome, progression and next move", () => {
+    const text = buildInstructions({
+      tree,
+      configured: true,
+      summary: "",
+      recentTurns: [],
+      county: "dallas_tx",
+      candidateCount: 50,
+      qualifiedCount: 8,
+      extraSignals: [],
+    });
+    expect(text).toContain("Guide the user like an acquisition scout");
+    expect(text).toContain("1. OUTCOME");
+    expect(text).toContain("2. PROGRESS");
+    expect(text).toContain("3. NEXT MOVE");
+    expect(text).toContain(
+      "end with exactly one contextual question or action",
+    );
+    expect(text).toContain("ranked call list");
+    expect(text).toContain("Never answer a broad question with a dense list");
+    expect(text).toContain("use three blocks");
+    expect(text).toContain("separated by blank lines");
+    expect(text).toContain("Line breaks should make the");
+  });
+
   test("runs the onboarding interview for unconfigured users", () => {
     const text = buildInstructions({
       tree,

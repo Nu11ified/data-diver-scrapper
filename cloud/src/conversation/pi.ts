@@ -52,7 +52,8 @@ const GraphInput = Type.Object({
   nodes: Type.Array(Type.Union([ConditionNode, ApprovalNode, ActionNode])),
 });
 
-const Text = Type.Object({ text: Type.String() });
+const MessageText = Type.String({ minLength: 1, maxLength: 500 });
+const Text = Type.Object({ text: MessageText });
 
 export interface PiScoutCall {
   readonly accessToken: string;
@@ -175,7 +176,7 @@ export const runPiScout = async (
       name: "reply",
       label: "Reply",
       description:
-        "Send a natural SMS reply or ask the next useful question without changing state.",
+        "Send a concise, structured SMS that answers directly, shows relevant progress, and ends with one contextual next move without changing state.",
       parameters: Text,
       execute: async (_id, params) =>
         choose({ kind: "reply", text: params.text as string }),
@@ -186,7 +187,7 @@ export const runPiScout = async (
       description:
         "Record normalized buyer answers during onboarding. Include only facts supported by the user's message. Use safe professional defaults when the user explicitly delegates the choice.",
       parameters: Type.Object({
-        text: Type.String(),
+        text: MessageText,
         county: Type.Optional(Type.String()),
         minOwed: Type.Optional(Type.Number({ minimum: 0 })),
         minAssessed: Type.Optional(Type.Number({ minimum: 0 })),
@@ -234,7 +235,7 @@ export const runPiScout = async (
       label: "Show matching properties",
       description: "List the strongest current properties that pass the active decision tree.",
       parameters: Type.Object({
-        text: Type.String(),
+        text: MessageText,
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),
       }),
       execute: async (_id, params) =>
@@ -248,7 +249,7 @@ export const runPiScout = async (
       name: "show_property",
       label: "Show property",
       description: "Open a one-based property number from the most recent lead list.",
-      parameters: Type.Object({ text: Type.String(), index: Type.Number({ minimum: 1 }) }),
+      parameters: Type.Object({ text: MessageText, index: Type.Number({ minimum: 1 }) }),
       execute: async (_id, params) =>
         choose({
           kind: "show_property",
@@ -261,7 +262,7 @@ export const runPiScout = async (
       label: "Resolve pending approval",
       description:
         "Approve or reject the tree, outreach draft, or temporary filter currently awaiting the user's decision.",
-      parameters: Type.Object({ text: Type.String(), approved: Type.Boolean() }),
+      parameters: Type.Object({ text: MessageText, approved: Type.Boolean() }),
       execute: async (_id, params) =>
         choose({
           kind: "resolve_pending",
@@ -274,7 +275,7 @@ export const runPiScout = async (
       label: "Propose decision tree",
       description:
         "Propose a persistent criteria change. The server validates and previews it; it never applies without user confirmation.",
-      parameters: Type.Object({ text: Type.String(), graph: GraphInput }),
+      parameters: Type.Object({ text: MessageText, graph: GraphInput }),
       execute: async (_id, params) =>
         choose({
           kind: "set_tree",
@@ -288,7 +289,7 @@ export const runPiScout = async (
       description:
         "Apply a provisional criteria change to this response only without changing saved criteria.",
       parameters: Type.Object({
-        text: Type.String(),
+        text: MessageText,
         graph: GraphInput,
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),
       }),
@@ -304,7 +305,7 @@ export const runPiScout = async (
       name: "remember_filter",
       label: "Remember temporary filter",
       description: "Keep or discard the last temporary filter after the user answers.",
-      parameters: Type.Object({ text: Type.String(), remember: Type.Boolean() }),
+      parameters: Type.Object({ text: MessageText, remember: Type.Boolean() }),
       execute: async (_id, params) =>
         choose({
           kind: "remember_filter",
@@ -318,7 +319,7 @@ export const runPiScout = async (
       description:
         "Validate public-record endpoints when the user asks to add or switch markets.",
       parameters: Type.Object({
-        text: Type.String(),
+        text: MessageText,
         jurisdiction: Type.String(),
         candidates: Type.Array(
           Type.Object({

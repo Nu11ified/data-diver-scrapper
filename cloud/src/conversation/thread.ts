@@ -465,36 +465,36 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
 
   const nextOnboardingQuestion = (profile: AcquisitionProfile): string => {
     if (profile.county === undefined) {
-      return "1/6 — What county or city and state do you buy in? Example: Norfolk, VA";
+      return "1/6 — Market\nWhere do you buy? Send a city or county + state. Example: Norfolk, VA";
     }
     if (profile.minOwed === undefined) {
       return (
-        "2/6 — What minimum recorded taxes or liens makes a property worth " +
-        "your time? Example: $20k, or tell me to choose."
+        "2/6 — Debt signal\nWhat minimum recorded taxes or liens makes a " +
+        "property worth reviewing? Example: $20k, or ask me to choose."
       );
     }
     if (profile.minAssessed === undefined) {
       return (
-        "3/6 — What minimum county-assessed property value do you want? " +
+        "3/6 — Value floor\nWhat minimum county-assessed value do you want? " +
         "Example: $150k, no minimum, or ask me to choose."
       );
     }
     if (profile.evidence === undefined) {
       return (
-        "4/6 — Should a lead need multiple county sources, an open violation, " +
-        "both, neither, or would you like my recommendation?"
+        "4/6 — Evidence strength\nShould a lead need multiple county sources, " +
+        "an open violation, both, neither, or my recommendation?"
       );
     }
     if (profile.recencyAnswered !== true) {
       return (
-        "5/6 — How recent must the latest county event be? Example: 180 days, " +
+        "5/6 — Recency\nHow recent must the latest county event be? Example: 180 days, " +
         "1 year, any age, or ask me to choose."
       );
     }
     if (profile.requireApproval === undefined) {
       return (
-        "6/6 — Must you approve every outreach message before anything is " +
-        "scheduled, or should I recommend the safer setting?"
+        "6/6 — Outreach control\nMust you approve every outreach message before " +
+        "it is scheduled, or should I use the safer setting?"
       );
     }
     return "";
@@ -601,11 +601,16 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
       const summary = (yield* storage.get<string>("summary")) ?? "";
       const reply =
-        `Data Diver turns county tax, assessment, code and court records into ` +
-        `property leads using a decision tree built only for you. I will ask six ` +
-        `short questions, show you the rule, and run nothing until you approve it. ` +
-        `Say YOU DECIDE when you want my safest default, or stop and resume later.\n\n` +
-        `1/6 — What county or city and state do you buy in? Example: Norfolk, VA`;
+        `I turn scattered county tax, assessment, code and court records into a ` +
+        `ranked call list—not another spreadsheet.\n\n` +
+        `Here is the path:\n` +
+        `1) Define your market and buy box\n` +
+        `2) Build your private decision tree\n` +
+        `3) Scan the records\n` +
+        `4) Show the strongest matches and why\n\n` +
+        `Nothing runs or reaches an owner without your approval. You can pause ` +
+        `anytime or ask me to choose a safe default.\n\n` +
+        nextOnboardingQuestion({});
       yield* storage.put("onboarding", {} satisfies AcquisitionProfile);
       yield* storage.put("pending", { kind: "idle" } satisfies Pending);
       yield* record(userText, reply, loaded.tree, turns, summary);

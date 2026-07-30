@@ -424,11 +424,15 @@ describe("guided onboarding", () => {
     const outcome = await answer(thread, "Hi, what can we do?");
 
     expect(outcome.reply).toContain("county tax, assessment, code and court records");
-    expect(outcome.reply).toContain("decision tree built only for you");
-    expect(outcome.reply).toContain("run nothing until you approve it");
-    expect(outcome.reply).toContain("stop and resume later");
+    expect(outcome.reply).toContain("ranked call list—not another spreadsheet");
+    expect(outcome.reply).toContain("Here is the path:");
+    expect(outcome.reply).toContain("Build your private decision tree");
+    expect(outcome.reply).toContain("Show the strongest matches and why");
+    expect(outcome.reply).toContain(
+      "Nothing runs or reaches an owner without your approval",
+    );
     expect(outcome.reply).toContain("1/6");
-    expect(outcome.reply).toContain("county or city and state");
+    expect(outcome.reply).toContain("Where do you buy?");
   });
 
   test("builds a tenant-specific graph and activates it only after approval", async () => {

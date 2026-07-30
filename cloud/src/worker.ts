@@ -387,7 +387,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         onDecision(decision.kind);
         if (dryRun) {
           return {
-            reply: "",
+            reply: decision.text,
             evaluations: [],
           } satisfies HandleOutcome;
         }
@@ -1743,6 +1743,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               ok: scouted !== undefined,
               brain: scouted !== undefined ? "codex" : "unavailable",
               ...(scouted === undefined ? { reply: MODEL_UNAVAILABLE_REPLY } : {}),
+              ...(scouted?.reply === undefined || scouted.reply === ""
+                ? {}
+                : { brainReply: scouted.reply }),
               ...(scoutDecision === ""
                 ? {}
                 : { brainDecision: scoutDecision }),
