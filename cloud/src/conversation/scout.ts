@@ -1,4 +1,5 @@
 import { SIGNAL_CATALOG, type Graph, type TreeDoc } from "../decision/graph.ts";
+import type { CoverageStatus } from "./thread.ts";
 import {
   nextProfileField,
   type AcquisitionProfile,
@@ -66,6 +67,7 @@ export interface ScoutContext {
   readonly qualifiedCount: number;
   readonly extraSignals: readonly string[];
   readonly profile?: AcquisitionProfile;
+  readonly coverage?: CoverageStatus;
 }
 
 export const buildInstructions = (context: ScoutContext): string => {
@@ -82,6 +84,7 @@ export const buildInstructions = (context: ScoutContext): string => {
       .reverse()
       .find((turn) => turn.role === "scout")?.text ?? "";
   const profileField = nextProfileField(context.profile);
+  const coverage = context.coverage ?? { ready: true, missing: [] };
   return [
     `You are Data Diver, an SMS assistant over a county public-record`,
     `ingestion engine that finds distressed properties. You manage the user's`,
@@ -95,8 +98,9 @@ export const buildInstructions = (context: ScoutContext): string => {
     `CURRENT DECISION TREE (version ${context.tree.version}):`,
     JSON.stringify(context.tree.graph),
     ``,
-    `SCAN STATE: county "${context.county}"; ${context.candidateCount} properties`,
-    `compiled from county records, ${context.qualifiedCount} currently match the tree.`,
+    coverage.ready
+      ? `SCAN STATE: county "${context.county}"; ${context.candidateCount} properties compiled from county records, ${context.qualifiedCount} currently match the search.`
+      : `SCAN STATE: county "${context.county}"; source coverage is incomplete for ${coverage.missing.join(", ")}. No valid lead count is available yet.`,
     ``,
     `CONVERSATION SUMMARY: ${context.summary === "" ? "(none)" : context.summary}`,
     `BUYER PROFILE: ${JSON.stringify(context.profile ?? {})}`,
@@ -126,6 +130,12 @@ export const buildInstructions = (context: ScoutContext): string => {
     `After setup,`,
     `offer the most relevant next decision: inspect strong matches, tune the rule,`,
     `or scan a market. Do not ask multiple unrelated questions.`,
+    `Call the user's criteria their search or buy box. Never mention decision-tree`,
+    `versions, graphs, nodes, schemas, or other implementation language.`,
+    `Do not claim you are checking, monitoring, scanning, or preparing something`,
+    `unless the chosen tool actually starts that work. Only report zero matches when`,
+    `source coverage is complete. When coverage is incomplete, do not suggest weaker`,
+    `criteria; explain which official records are still being verified.`,
     `When reporting a failure, state what failed, confirm what was not changed,`,
     `and give one recovery action. Do not restart with a canned introduction on`,
     `every turn.`,

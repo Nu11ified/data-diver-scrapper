@@ -222,6 +222,14 @@ const validateProfileUpdate = (
       "Write the SMS as two short paragraphs: acknowledge the accepted answer, then ask exactly one next question.",
     );
   }
+  if (
+    expected === "requireApproval" &&
+    (text.includes("?") || /\b(approve|scan|saved|set)\b/i.test(text))
+  ) {
+    throw new Error(
+      "Acknowledge the outreach choice in one short sentence only. Do not claim the search is saved or set, ask to scan, or request approval; the server presents the final search for approval.",
+    );
+  }
 };
 
 export const runPiScout = async (
@@ -247,7 +255,7 @@ export const runPiScout = async (
       name: "update_profile",
       label: "Update acquisition profile",
       description:
-        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS. Until the final field, write two short paragraphs separated by a blank line: acknowledge the accepted answer, then ask exactly one natural question for the next field. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
+        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS. Until the final field, write two short paragraphs separated by a blank line: acknowledge the accepted answer, then ask exactly one natural question for the next field. For the final field, only acknowledge the outreach choice in one short sentence; the server presents the completed search and approval request. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
       parameters: Type.Object({
         text: MessageText,
         county: Type.Optional(County),
@@ -300,7 +308,8 @@ export const runPiScout = async (
     defineTool({
       name: "show_matches",
       label: "Show matching properties",
-      description: "List the strongest current properties that pass the active decision tree.",
+      description:
+        "List the strongest current properties only when source coverage is complete.",
       parameters: Type.Object({
         text: MessageText,
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),

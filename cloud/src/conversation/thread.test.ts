@@ -5,7 +5,9 @@ import * as Effect from "effect/Effect";
 import { DEFAULT_SPEC, compileSpec, type Graph, type TreeDoc } from "../decision/graph.ts";
 import type { ProfileUpdate } from "./profile.ts";
 import {
+  coverageFor,
   makeThread,
+  subjectOf,
   type Pending,
   type PropertyMatch,
   type ThreadStorage,
@@ -56,6 +58,63 @@ const BUSINESS = property({
 
 const CANDIDATES = [RESIDENTIAL, BUSINESS];
 
+describe("source coverage", () => {
+  test("does not turn an unmeasured debt signal into a measured zero", () => {
+    const match = property({
+      propertyKey: "denton_tx|1",
+      measured: ["assessed", "sources"],
+    });
+    expect(subjectOf(match).owed).toBeUndefined();
+    expect(coverageFor(compileSpec(DEFAULT_SPEC, "acquisition", 1).graph, [match])).toEqual({
+      ready: false,
+      missing: ["amount owed"],
+    });
+  });
+
+  test("requires enough independent sources and a usable property address", () => {
+    const graph: Graph = {
+      entry: "sources",
+      nodes: [
+        {
+          kind: "condition",
+          id: "sources",
+          field: "sources",
+          op: "gte",
+          value: 2,
+          onPass: "match",
+          onFail: "discard",
+        },
+        { kind: "action", id: "match", action: "match" },
+        { kind: "action", id: "discard", action: "discard" },
+      ],
+    };
+    expect(
+      coverageFor(graph, [
+        property({
+          propertyKey: "tarrant_county_tx|1",
+          address: "",
+          sources: 1,
+          measured: ["sources"],
+        }),
+      ]),
+    ).toEqual({
+      ready: false,
+      missing: ["corroborating sources", "property addresses"],
+    });
+  });
+
+  test("does not call a capped county sample complete", () => {
+    const match = property({
+      propertyKey: "city_of_chicago_il|1",
+      dataComplete: false,
+    });
+    expect(coverageFor(compileSpec(DEFAULT_SPEC, "acquisition", 1).graph, [match])).toEqual({
+      ready: false,
+      missing: ["complete county pagination"],
+    });
+  });
+});
+
 /// Matches only the business parcel; the saved default tree matches both.
 const businessOnly: Graph = {
   entry: "business",
@@ -104,7 +163,8 @@ describe("previewFilter", () => {
     expect(baseline.version).toBe(1);
     expect(preview.reply).toContain("22 Commerce Way");
     expect(preview.reply).not.toContain("10 Elm St");
-    expect(preview.reply).toContain(`v${baseline.version}`);
+    expect(preview.reply).toContain("saved criteria are untouched");
+    expect(preview.reply).not.toContain(`v${baseline.version}`);
     expect(preview.tree).toBeUndefined();
 
     const after = await storedTree(storage);
@@ -127,9 +187,9 @@ describe("previewFilter", () => {
     expect(drill.reply).toContain("22 Commerce Way");
     expect(drill.reply).toContain("use code 2");
     expect(drill.reply).toContain(
-      `Why it matched (the one-off filter, not your saved criteria v${baseline.version}):`,
+      "Why it matched (the one-off filter, not your saved criteria):",
     );
-    expect(drill.reply).not.toContain(`Why it matched (criteria v${baseline.version})`);
+    expect(drill.reply).not.toContain(`v${baseline.version}`);
     expect(drill.evaluations).toEqual([]);
 
     const after = await storedTree(storage);
@@ -145,7 +205,8 @@ describe("previewFilter", () => {
 
     const drill = await run(thread.handleMessage({ text: "1", candidates: CANDIDATES }));
 
-    expect(drill.reply).toContain(`Why it matched (criteria v${baseline.version}):`);
+    expect(drill.reply).toContain("Why it matched (your saved criteria):");
+    expect(drill.reply).not.toContain(`v${baseline.version}`);
     expect(drill.reply).not.toContain("one-off filter");
   });
 
@@ -289,14 +350,11 @@ describe("proposeTree", () => {
     const storage = memoryStorage();
     const { baseline, proposal } = await proposeBusinessOnly(storage);
 
-    // The default tree (owed >= $10,000) matches both fixtures; the
-    // business-only proposal drops the residential one and keeps the other.
-    expect(proposal.reply).toContain(`active criteria v${baseline.version}`);
     expect(proposal.reply).toContain("1 remain qualified");
     expect(proposal.reply).toContain("1 removed: 10 Elm St");
     expect(proposal.reply).toContain("0 added");
     expect(proposal.reply).not.toContain("added: ");
-    expect(proposal.reply).toContain(`v${baseline.version + 1}`);
+    expect(proposal.reply).not.toContain(`v${baseline.version}`);
     expect(proposal.tree).toBeUndefined();
     expect(proposal.evaluations).toEqual([]);
 
@@ -327,7 +385,36 @@ describe("proposeTree", () => {
     expect(proposal.reply).toContain("1 remain qualified");
     expect(proposal.reply).toContain("0 removed");
     expect(proposal.reply).toContain("1 added: 10 Elm St");
-    expect(proposal.reply).toContain(`active criteria v${narrowed.version}`);
+    expect(proposal.reply).not.toContain(`v${narrowed.version}`);
+  });
+
+  test("withholds previews when required source coverage is missing", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const tree = (await run(thread.snapshot())).tree;
+    const partial = [
+      property({
+        propertyKey: "denton_tx|1",
+        measured: ["assessed", "sources"],
+      }),
+    ];
+    const proposal = await run(
+      thread.proposeTree({
+        userText: "keep this search",
+        lead: "",
+        graph: tree.graph,
+        candidates: partial,
+      }),
+    );
+    expect(proposal.reply).toContain("still verifying amount owed");
+    expect(proposal.reply).toContain("no valid lead count yet");
+    expect(proposal.reply).not.toContain("0 remain qualified");
+
+    const approved = await run(
+      thread.handleMessage({ text: "approve", candidates: partial }),
+    );
+    expect(approved.reply).toContain("still verifying amount owed");
+    expect(approved.evaluations).toEqual([]);
   });
 });
 
@@ -342,7 +429,8 @@ describe("approve_tree pending", () => {
 
     expect(outcome.tree?.version).toBe(baseline.version + 1);
     expect(outcome.tree?.graph).toEqual(businessOnly);
-    expect(outcome.reply).toContain(`v${baseline.version + 1}`);
+    expect(outcome.reply).toContain("Your search is saved");
+    expect(outcome.reply).not.toContain(`v${baseline.version + 1}`);
     expect(outcome.evaluations).toHaveLength(CANDIDATES.length);
     expect(
       outcome.evaluations.find((e) => e.propertyKey === BUSINESS.propertyKey)?.outcome,
@@ -367,7 +455,8 @@ describe("approve_tree pending", () => {
     );
 
     expect(outcome.tree).toBeUndefined();
-    expect(outcome.reply).toContain(`v${baseline.version}`);
+    expect(outcome.reply).toContain("Your saved search is unchanged");
+    expect(outcome.reply).not.toContain(`v${baseline.version}`);
 
     const after = await storedTree(storage);
     expect(after.version).toBe(baseline.version);
@@ -500,7 +589,7 @@ describe("guided onboarding", () => {
     expect(proposal.reply).toContain("owed ≥ $25,000");
     expect(proposal.reply).toContain("assessed ≥ $150,000");
     expect(proposal.reply).toContain("2+ independent sources");
-    expect(proposal.reply).toContain("proposal, not yet applied");
+    expect(proposal.reply).toContain("Reply APPROVE to save this search");
     expect((await storedTree(storage)).version).toBe(1);
 
     const pending = await run(storage.get<Pending>("pending"));
@@ -520,7 +609,8 @@ describe("guided onboarding", () => {
     const approved = await answer(thread, "approve");
     const snapshot = await run(thread.snapshot());
 
-    expect(approved.reply).toContain("decision tree v2 is active");
+    expect(approved.reply).toContain("Your search is saved");
+    expect(approved.reply).not.toContain("decision tree");
     expect(approved.evaluations).toHaveLength(CANDIDATES.length);
     expect(snapshot.configured).toBe(true);
     expect(snapshot.county).toBe("Norfolk, VA");

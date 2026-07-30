@@ -105,6 +105,31 @@ describe("buildInstructions", () => {
     expect(text).toContain("use three blocks");
     expect(text).toContain("separated by blank lines");
     expect(text).toContain("Line breaks should make the");
+    expect(text).toContain("Never mention decision-tree");
+    expect(text).toContain("Do not claim you are checking");
+    expect(text).toContain("Only report zero matches");
+    expect(text).toContain("source coverage is complete");
+  });
+
+  test("withholds lead counts while required county coverage is incomplete", () => {
+    const text = buildInstructions({
+      tree,
+      configured: true,
+      summary: "",
+      recentTurns: [],
+      county: "denton_tx",
+      candidateCount: 100,
+      qualifiedCount: 0,
+      extraSignals: [],
+      coverage: {
+        ready: false,
+        missing: ["amount owed", "corroborating sources"],
+      },
+    });
+    expect(text).toContain("source coverage is incomplete");
+    expect(text).toContain("amount owed, corroborating sources");
+    expect(text).toContain("No valid lead count is available yet");
+    expect(text).not.toContain("0 currently match");
   });
 
   test("runs the onboarding interview for unconfigured users", () => {

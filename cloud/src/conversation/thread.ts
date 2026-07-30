@@ -48,6 +48,13 @@ export interface PropertyMatch {
   readonly violations: number;
   readonly sources: number;
   readonly signals: Readonly<Record<string, number>>;
+  readonly measured?: readonly string[];
+  readonly dataComplete?: boolean;
+}
+
+export interface CoverageStatus {
+  readonly ready: boolean;
+  readonly missing: readonly string[];
 }
 
 export const templateDraft = (match: PropertyMatch): string =>
@@ -210,6 +217,7 @@ export interface HandleMessageInput {
   readonly codexAccount?: string;
   readonly onboardingUpdate?: ProfileUpdate;
   readonly onboardingLead?: string;
+  readonly coverage?: CoverageStatus;
 }
 
 export interface DraftRequest {
@@ -301,14 +309,51 @@ const onboardingGraph = (state: AcquisitionProfile): Graph => {
   };
 };
 
-export const subjectOf = (match: PropertyMatch): Subject => ({
-  ...match.signals,
-  owed: match.owed,
-  assessed: match.assessed,
-  debtToValue: match.debtToValue,
-  violations: match.violations,
-  sources: match.sources,
-});
+export const subjectOf = (match: PropertyMatch): Subject => {
+  const measured = new Set(
+    match.measured ?? ["owed", "assessed", "debtToValue", "violations", "sources"],
+  );
+  return {
+    ...match.signals,
+    ...(measured.has("owed") ? { owed: match.owed } : {}),
+    ...(measured.has("assessed") ? { assessed: match.assessed } : {}),
+    ...(measured.has("debtToValue") ? { debtToValue: match.debtToValue } : {}),
+    ...(measured.has("violations") ? { violations: match.violations } : {}),
+    ...(measured.has("sources") ? { sources: match.sources } : {}),
+  };
+};
+
+export const coverageFor = (
+  graph: Graph,
+  candidates: readonly PropertyMatch[],
+): CoverageStatus => {
+  const conditions = graph.nodes.filter((node) => node.kind === "condition");
+  const missing = conditions.flatMap((condition) => {
+    const values = candidates.flatMap((candidate) => {
+      const value = subjectOf(candidate)[condition.field];
+      return value === undefined ? [] : [value];
+    });
+    if (values.length === 0) {
+      return [SIGNAL_CATALOG[condition.field]?.label ?? condition.field];
+    }
+    if (
+      condition.field === "sources" &&
+      (condition.op === "gte" || condition.op === "gt") &&
+      Math.max(...values) < condition.value
+    ) {
+      return [SIGNAL_CATALOG[condition.field]?.label ?? condition.field];
+    }
+    return [];
+  });
+  if (!candidates.some((candidate) => candidate.address !== "")) {
+    missing.push("property addresses");
+  }
+  if (candidates.some((candidate) => candidate.dataComplete === false)) {
+    missing.push("complete county pagination");
+  }
+  const unique = [...new Set(missing)];
+  return { ready: unique.length === 0, missing: unique };
+};
 
 interface EvaluatedPair {
   readonly match: PropertyMatch;
@@ -377,6 +422,7 @@ export interface ProposeTreeInput {
   readonly lead: string;
   readonly graph: Graph;
   readonly candidates: readonly PropertyMatch[];
+  readonly coverage?: CoverageStatus;
 }
 
 export interface RememberFilterInput {
@@ -536,7 +582,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         const spec = tree.spec;
         const criteriaText =
           spec === undefined
-            ? `criteria v${tree.version} (custom decision tree)`
+            ? "custom acquisition criteria"
             : `criteria now: owed >= ${money(spec.minOwed)}` +
               `${spec.requireMultiSource ? ", multi-source only" : ""}` +
               `${spec.minDebtToValue > 0 ? `, debt/value >= ${spec.minDebtToValue}` : ""}`;
@@ -594,6 +640,15 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             `\nNothing was changed; try rephrasing.`,
         });
       }
+      const coverage = coverageFor(input.graph, input.candidates);
+      if (!coverage.ready) {
+        return yield* applyScout({
+          userText: input.userText,
+          reply:
+            `I cannot test that filter yet because ${coverage.missing.join(", ")} ` +
+            `coverage is still incomplete. Your saved search is unchanged.`,
+        });
+      }
       const loaded = yield* loadTree;
       const tree = loaded.tree;
       const qualified = qualifiedOf(evaluateAgainst(input.graph, input.candidates));
@@ -606,7 +661,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             `it. Top ${top.length}:\n\n${top.map(describeMatch).join("\n\n")}`;
       const reply =
         `${lead === "" ? "" : `${lead}\n\n`}${body}\n\n` +
-        `Just for this look: your saved criteria (v${tree.version}) are untouched.\n` +
+        `Just for this look: your saved criteria are untouched.\n` +
         `Reply YES to make this your criteria, or NO to drop it.`;
       yield* storage.put("pending", {
         kind: "remember_filter",
@@ -616,7 +671,6 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
       const summary = (yield* storage.get<string>("summary")) ?? "";
       yield* record(input.userText, reply, tree, turns, summary);
-      /// An evaluation names the stored tree version that produced it; an overlay has none.
       return {
         reply,
         evaluations: [],
@@ -636,10 +690,16 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       : names.join(", ");
   };
 
+  const missingCoverageText = (coverage: CoverageStatus): string =>
+    coverage.missing.length === 1
+      ? coverage.missing[0] ?? "required records"
+      : `${coverage.missing.slice(0, -1).join(", ")} and ${coverage.missing.at(-1)}`;
+
   const proposeTree = (input: ProposeTreeInput) =>
     Effect.gen(function* () {
       const loaded = yield* loadTree;
       const activeTree = loaded.tree;
+      const coverage = input.coverage ?? coverageFor(input.graph, input.candidates);
       const activeMatches = new Map(
         qualifiedOf(evaluateAgainst(activeTree.graph, input.candidates)).map((m) => [
           m.match.propertyKey,
@@ -662,11 +722,16 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       ];
       const lead = input.lead.trim();
       const reply =
-        `${lead === "" ? "" : `${lead}\n\n`}Impact preview against ${input.candidates.length} ` +
-        `scanned propert${input.candidates.length === 1 ? "y" : "ies"} (active criteria ` +
-        `v${activeTree.version}):\n${parts.join("; ")}.\n\n` +
-        `This is a proposal, not yet applied. Reply APPROVE to commit it as criteria ` +
-        `v${activeTree.version + 1}, or REJECT to discard.`;
+        !coverage.ready
+          ? `${lead === "" ? "" : `${lead}\n\n`}` +
+            `I am still verifying ${missingCoverageText(coverage)} from official ` +
+            `county sources, so there is no valid lead count yet. Reply APPROVE to ` +
+            `save this search, or REJECT to change it.`
+          : `${lead === "" ? "" : `${lead}\n\n`}Preview across ` +
+            `${input.candidates.length} loaded ` +
+            `propert${input.candidates.length === 1 ? "y" : "ies"}:\n` +
+            `${parts.join("; ")}.\n\nReply APPROVE to save this search, or REJECT ` +
+            `to discard it.`;
       yield* storage.put("pending", { kind: "approve_tree", graph: input.graph } satisfies Pending);
       const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
       const summary = (yield* storage.get<string>("summary")) ?? "";
@@ -689,7 +754,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           userText: input.userText,
           reply:
             `${prefix}There is no one-off filter waiting to be saved. Your criteria ` +
-            `(v${loaded.tree.version}) are:\n${describe(loaded.tree.graph)}`,
+            `are:\n${describe(loaded.tree.graph)}`,
         });
       }
       yield* storage.put("pending", { kind: "idle" } satisfies Pending);
@@ -697,7 +762,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         return yield* applyScout({
           userText: input.userText,
           reply:
-            `${prefix}Dropped it. Your saved criteria (v${loaded.tree.version}) still ` +
+            `${prefix}Dropped it. Your saved criteria still ` +
             `stand:\n${describe(loaded.tree.graph)}`,
         });
       }
@@ -831,17 +896,20 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             yield* storage.put("tree", tree);
             yield* storage.delete("onboarding");
             changedTree = tree;
-            const pairs = evaluateAll();
+            const coverage = coverageFor(pending.graph, input.candidates);
+            const pairs = coverage.ready ? evaluateAll() : [];
             const evaluations = asEvaluations(pairs);
             const qualifiedCount = qualifiedOf(pairs).length;
             return yield* respond(
               text,
-              `Your decision tree v${tree.version} is active. I evaluated ` +
-                `${input.candidates.length} ` +
-                `county propert${input.candidates.length === 1 ? "y" : "ies"} and found ` +
-                `${qualifiedCount} lead${qualifiedCount === 1 ? "" : "s"} that pass it. ` +
-                `Ask me to show the strongest leads, explain why one matched, or change ` +
-                `any part of the rule.`,
+              !coverage.ready
+                ? `Your search is saved. I am still verifying ` +
+                  `${missingCoverageText(coverage)} from official county sources. ` +
+                  `I will report matches only when the required records are present.`
+                : `Your search is saved. I checked ${input.candidates.length} loaded ` +
+                  `propert${input.candidates.length === 1 ? "y" : "ies"} and found ` +
+                  `${qualifiedCount} lead${qualifiedCount === 1 ? "" : "s"} that fit. ` +
+                  `Ask me to show the strongest leads or adjust the search.`,
               { kind: "idle" },
               evaluations,
             );
@@ -851,8 +919,8 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             return yield* respond(
               text,
               `Discarded. Nothing was applied. Tell me what you want changed, or say ` +
-                `"start over" and I will rebuild the questions with you. Your active ` +
-                `criteria remain v${tree.version}.`,
+                `"start over" and I will rebuild the questions with you. Your saved ` +
+                `search is unchanged.`,
               { kind: "idle" },
             );
           }
@@ -942,8 +1010,8 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           const match = evaluated.match;
           const basis =
             pending.kind === "remember_filter"
-              ? `the one-off filter, not your saved criteria v${tree.version}`
-              : `criteria v${tree.version}`;
+              ? "the one-off filter, not your saved criteria"
+              : "your saved criteria";
           const explanation =
             `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
             `${contactSummary(match)}\n\n` +
@@ -973,7 +1041,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             const window = nextSendWindow(audience, new Date(), timeZone);
             return yield* respond(
               text,
-              `${body}\n\nYour decision tree has no approval gate: outreach ` +
+              `${body}\n\nYour saved search has no approval gate: outreach ` +
                 `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
                 `(Demo mode: this message will NOT actually be sent.)`,
               { kind: "idle" },
@@ -995,15 +1063,26 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         }
 
         if (lower === "review" || lower === "yes" || lower === "scan") {
+          const coverage = coverageFor(tree.graph, input.candidates);
+          if (!coverage.ready) {
+            return yield* respond(
+              text,
+              `I cannot give you a valid lead count yet. I am still verifying ` +
+                `${missingCoverageText(coverage)} from official county sources.`,
+              { kind: "idle" },
+            );
+          }
           const pairs = evaluateAll();
           const qualified = qualifiedOf(pairs);
           const evaluations = asEvaluations(pairs);
           if (qualified.length === 0) {
             return yield* respond(
               text,
-              `No properties currently match your criteria (v${tree.version}):\n` +
-                `${describe(tree.graph)}\n` +
-                `Reply CRITERIA to see or change them.`,
+              input.candidates.length === 0
+                ? `No county records are loaded yet, so there is no valid lead count ` +
+                  `to report. Start the county scan before reviewing matches.`
+                : `None of the ${input.candidates.length} loaded properties fit your ` +
+                  `saved search. Ask me to loosen one requirement or explain the search.`,
               { kind: "idle" },
               evaluations,
             );
@@ -1019,7 +1098,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         if (lower === "criteria") {
           return yield* respond(
             text,
-            `Your acquisition criteria (v${tree.version}):\n${describe(tree.graph)}\n` +
+            `Your acquisition criteria:\n${describe(tree.graph)}\n` +
               `Codex: ${input.codexAccount !== undefined && input.codexAccount !== "" ? `connected as ${input.codexAccount}` : "not connected (reply CONNECT)"}\n\n` +
               `Change them like: "min owed 25000", "require multi source", ` +
               `"any source", "min debt ratio 0.5".`,
@@ -1037,7 +1116,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         if (wantsSpecEdit && baseSpec === undefined) {
           return yield* respond(
             text,
-            `Your criteria are a custom decision tree (v${tree.version}), so the ` +
+            `Your criteria use a custom rule, so the ` +
               `shorthand commands do not apply. Describe the change in plain ` +
               `language instead.`,
             pending,
@@ -1049,7 +1128,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           const remaining = qualifiedOf(evaluateAll()).length;
           return yield* respond(
             text,
-            `Done: minimum owed is now ${money(value)} (criteria v${tree.version}). ` +
+            `Done: minimum owed is now ${money(value)}. ` +
               `${remaining} properties currently qualify. Reply REVIEW to see them.`,
             { kind: "idle" },
           );
@@ -1059,7 +1138,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           return yield* respond(
             text,
             `Done: only properties corroborated by more than one county source ` +
-              `will match (criteria v${tree.version}).`,
+              `will match.`,
             { kind: "idle" },
           );
         }
@@ -1067,7 +1146,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           yield* adopt({ ...baseSpec, requireMultiSource: false });
           return yield* respond(
             text,
-            `Done: single-source properties can match again (criteria v${tree.version}).`,
+            "Done: single-source properties can match again.",
             { kind: "idle" },
           );
         }
@@ -1077,7 +1156,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           yield* adopt({ ...baseSpec, minDebtToValue: value });
           return yield* respond(
             text,
-            `Done: minimum debt/value is now ${value}x (criteria v${tree.version}).`,
+            `Done: minimum debt/value is now ${value}x.`,
             { kind: "idle" },
           );
         }
@@ -1117,7 +1196,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         const qualified = qualifiedOf(evaluateAll());
         return yield* respond(
           text,
-          `I have your decision tree and ${qualified.length} current ` +
+          `I have your saved search and ${qualified.length} current ` +
             `lead${qualified.length === 1 ? "" : "s"} pass it. Ask me to show the ` +
             `strongest leads, explain your criteria, change a rule, or inspect a ` +
             `specific property.`,
@@ -1170,7 +1249,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           const timeZone = zoneFor(input.match.propertyKey.split("|")[0] ?? "");
           const window = nextSendWindow(audience, new Date(), timeZone);
           reply =
-            `${body}\n\nYour decision tree has no approval gate: outreach ` +
+            `${body}\n\nYour saved search has no approval gate: outreach ` +
             `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
             `(Demo mode: this message will NOT actually be sent.)`;
           nextPending = { kind: "idle" };
