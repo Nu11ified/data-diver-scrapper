@@ -61,13 +61,17 @@ describe("shouldReuseWarm", () => {
 describe("warmRetryKey", () => {
   test("retries a workflow whose runtime errored even when its stored state is stale", () => {
     const failed = status({ state: "running" });
+    const now = Date.parse("2026-07-29T20:05:37.000Z");
     expect(
-      warmRetryKey(
-        failed,
-        "errored",
-        Date.parse("2026-07-29T20:05:00.000Z"),
-      ),
-    ).toBe(failed.updatedAt);
+      warmRetryKey(failed, "errored", now),
+    ).toBe("2026-07-29T20:05:00.000Z");
+  });
+
+  test("deduplicates failed-runtime retries within one retry window", () => {
+    const failed = status({ state: "running" });
+    expect(warmRetryKey(failed, "errored", Date.parse("2026-07-29T20:05:01.000Z"))).toBe(
+      warmRetryKey(failed, "errored", Date.parse("2026-07-29T20:05:59.999Z")),
+    );
   });
 
   test("does not replace a live workflow", () => {

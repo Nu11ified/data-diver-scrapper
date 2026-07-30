@@ -33,7 +33,9 @@ export const warmRetryKey = (
 ): string => {
   if (status === undefined) return "";
   if (runtime === "errored" || runtime === "terminated") {
-    return status.updatedAt;
+    return new Date(
+      Math.floor(now / FAILED_WARM_RETRY_MS) * FAILED_WARM_RETRY_MS,
+    ).toISOString();
   }
   if (
     status.state === "error" &&
