@@ -72,15 +72,20 @@ export const fetchPaginated = async (
   limiter: Limiter,
   fetchPage: (pageUrl: string) => Promise<PageFetch>,
   cap: number = RECORD_CAP,
+  minimumPageSize = 0,
 ): Promise<FetchResult> => {
-  const limit = socrataLimit(url);
+  const requestedLimit = socrataLimit(url);
+  const limit = Math.max(requestedLimit, minimumPageSize);
   const records: unknown[] = [];
   let contentType = "";
   let pages = 0;
   let offset = 0;
 
   for (;;) {
-    const pageUrl = pages === 0 ? url : withOffset(url, limit, offset);
+    const pageUrl =
+      pages === 0 && limit === requestedLimit
+        ? url
+        : withOffset(url, limit, offset);
     const permitted = await limiter.take(pageUrl);
     if (!permitted) {
       if (pages === 0) return fetchError("host request budget spent; try again shortly");

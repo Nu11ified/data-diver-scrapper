@@ -25,6 +25,7 @@ import {
 import { makeClient, type Db } from "./db.ts";
 import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
+  coverageFor,
   makeThread,
   slashCommand,
   subjectOf,
@@ -39,9 +40,16 @@ import {
   legacyProfileText,
   type ProfileUpdate,
 } from "./conversation/profile.ts";
-import type { ScoutDecision } from "./conversation/scout.ts";
+import type {
+  ScoutDecision,
+  SourceCandidate,
+} from "./conversation/scout.ts";
 import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
-import { CodexError, complete } from "./codex/client.ts";
+import {
+  CodexError,
+  RESEARCH_MODEL,
+  complete,
+} from "./codex/client.ts";
 import { CodexEgressHost, CodexEgressHostLive } from "./codex/egress-host.ts";
 import { makeCodexFetch } from "./codex/egress-fetch.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
@@ -70,7 +78,10 @@ import columnModel from "./engine/config/column_model.json";
 import { bundledSeed } from "./seed.ts";
 import { requestOrigin } from "./origin.ts";
 import {
+  ACTIVE_WARM_MS,
   CountyWarmStatus,
+  FAILED_WARM_RETRY_MS,
+  countyWorkflowId,
   shouldReuseWarm,
   type CountyWarmStatus as CountyWarmStatusValue,
 } from "./warming.ts";
@@ -120,11 +131,37 @@ const ConnectState = Schema.Struct({
   createdAt: Schema.String,
 });
 
+const CountySourceDiscovery = Schema.Struct({
+  jurisdiction: Schema.String,
+  candidates: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      url: Schema.String,
+    }),
+  ),
+});
+
+const SweepManifest = Schema.Struct({
+  id: Schema.String,
+  runId: Schema.String,
+  createdAt: Schema.String,
+  sourceIds: Schema.Array(Schema.String),
+});
+
 const CONNECT_TTL_MS = 15 * 60_000;
 const USER_AGENT = "DataDiver/0.1 (public-record research; contact site operator)";
 const MODEL_UNAVAILABLE_REPLY =
   `I could not reach the reasoning service, so I did not change your ` +
   `criteria or run anything. Please try again in a few minutes.`;
+const DEFAULT_SOURCE_COVERAGE = [
+  "recorded taxes and liens",
+  "assessed values",
+  "code or court events",
+  "dated events",
+  "independent corroborating sources",
+  "property addresses",
+] as const;
 
 const schemaJson = JSON.stringify(schema);
 const classifierJson = JSON.stringify(classifier);
@@ -345,6 +382,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           (candidate) =>
             evaluate(snap.tree.graph, subjectOf(candidate)).outcome === "match",
         ).length;
+        const coverage = coverageFor(snap.tree.graph, candidates);
+        const discoverableMissing = coverage.missing.filter(
+          (item) => item !== "complete county pagination",
+        );
+        if (!dryRun && discoverableMissing.length > 0 && snap.county !== "") {
+          yield* ensureCountyWarm(snap.county, tenantId, discoverableMissing);
+        }
         const context = {
           tree: snap.tree,
           configured: snap.configured,
@@ -354,6 +398,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           candidateCount: candidates.length,
           qualifiedCount,
           extraSignals,
+          coverage,
           ...(snap.profile === undefined ? {} : { profile: snap.profile }),
         };
         const askPi = (accessToken: string) =>
@@ -410,15 +455,19 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             text: asInternal,
             candidates,
             codexAccount: "",
+            coverage,
           });
-          const lead = decision.text.trim();
+          const lead =
+            decision.kind === "show_matches" && !coverage.ready
+              ? ""
+              : decision.text.trim();
           return {
             ...acted,
             reply: lead === "" ? acted.reply : `${lead}\n\n${acted.reply}`,
           };
         }
         if (decision.kind === "update_profile") {
-          return yield* thread.handleMessage({
+          const outcome = yield* thread.handleMessage({
             text:
               snap.profile === undefined
                 ? legacyProfileText(decision.update, text)
@@ -427,135 +476,37 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             codexAccount: credential.accountId,
             onboardingUpdate: decision.update,
             onboardingLead: decision.text,
+            coverage,
           });
+          if (decision.update.county !== undefined) {
+            yield* ensureCountyWarm(
+              decision.update.county,
+              tenantId,
+              DEFAULT_SOURCE_COVERAGE,
+            );
+          }
+          return outcome;
         }
         if (decision.kind === "discover") {
           const jurisdiction = slugId(decision.jurisdiction);
-          const runId = `run_${Date.now().toString(36)}`;
-          const vetted = decision.candidates.slice(0, 4);
-          const known = yield* Effect.promise(() =>
-            db().source.findMany({
-              where: { id: { in: vetted.map((c) => slugId(c.id)) } },
-              select: { id: true },
-            }),
+          const result = yield* validateSourceCandidates(
+            jurisdiction,
+            decision.candidates,
           );
-          const preexisting = new Set(known.map((row) => row.id));
-          const probes: readonly Probe[] = yield* Effect.all(
-            vetted.map((candidate) =>
-              candidate.url.startsWith("https://")
-                ? Effect.gen(function* () {
-                    const id = slugId(candidate.id);
-                    const attempted: RunOutcome[] = [];
-                    const direct = yield* runSource(
-                      { id, name: candidate.name, url: candidate.url, jurisdiction },
-                      runId,
-                    );
-                    attempted.push(direct);
-                    if (direct.ok && (direct.records ?? 0) > 0) {
-                      return { outcome: direct, attempted } satisfies Probe;
-                    }
-                    // The model often names the page a human would land on
-                    // rather than the export behind it, so the site is walked
-                    // and every page is put to the engine. The best page wins,
-                    // and the engine still decides what counts as records.
-                    let best: RunOutcome = direct;
-                    let bestUrl = "";
-                    let page = 0;
-                    yield* crawl(
-                      candidate.url,
-                      { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT, limiter },
-                      (visited) =>
-                        Effect.gen(function* () {
-                          page += 1;
-                          const outcome = yield* runSource(
-                            {
-                              id: `${id}_p${page}`,
-                              name: candidate.name,
-                              url: visited.url,
-                              jurisdiction,
-                            },
-                            runId,
-                          );
-                          attempted.push(outcome);
-                          if (outcome.ok && (outcome.records ?? 0) > (best.records ?? 0)) {
-                            best = outcome;
-                            bestUrl = visited.url;
-                          }
-                          return true;
-                        }),
-                    );
-                    return bestUrl === ""
-                      ? ({ outcome: direct, attempted } satisfies Probe)
-                      : ({ outcome: best, attempted, crawledFrom: bestUrl } satisfies Probe);
-                  })
-                : Effect.succeed({
-                    outcome: {
-                      sourceId: slugId(candidate.id),
-                      ok: false,
-                      stage: "fetch",
-                      error: "only https urls are validated",
-                    },
-                    attempted: [],
-                  } satisfies Probe),
-            ),
-            { concurrency: 2 },
-          );
-          const admitted = probes.filter(
-            (p) => p.outcome.ok && (p.outcome.records ?? 0) > 0,
-          );
-          // Every page the crawl probed left a Source row behind to hang events on.
-          const dead = probes
-            .flatMap((p) => p.attempted)
-            .filter((o) => !(o.ok && (o.records ?? 0) > 0))
-            .map((o) => o.sourceId)
-            .filter((id) => !preexisting.has(id));
-          const admission = yield* Effect.tryPromise({
-            try: async () => {
-              const prisma = db();
-              if (admitted.length > 0) {
-                await prisma.source.updateMany({
-                  where: { id: { in: admitted.map((p) => p.outcome.sourceId) } },
-                  data: { enabled: true },
-                });
-              }
-              if (dead.length > 0) {
-                await prisma.source.updateMany({
-                  where: { id: { in: dead } },
-                  data: { enabled: false },
-                });
-              }
-            },
-            catch: (cause): Error =>
-              cause instanceof Error ? cause : new Error(String(cause)),
-          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
-          const lines = probes.map(({ outcome, crawledFrom }) =>
-            outcome.ok
-              ? `✓ ${outcome.sourceId}: ${outcome.records ?? 0} records, ` +
-                `${Math.round((outcome.extractionRate ?? 0) * 100)}% extraction ` +
-                `(classified ${outcome.classification ?? "unknown"})` +
-                (crawledFrom === undefined ? "" : ` at ${crawledFrom}`) +
-                (outcome.truncated === true
-                  ? ` [capped at ${RECORD_CAP}; the source has more records than this run pulled]`
-                  : "")
-              : `✗ ${outcome.sourceId}: failed at ${outcome.stage}` +
-                `${outcome.error !== undefined ? ` - ${outcome.error}` : ""}`,
-          );
-          const verdictText =
-            admitted.length > 0
-              ? `\n\nNow scanning ${jurisdiction}. Reply REVIEW to see matches.`
-              : `\n\nNo candidate survived engine validation; nothing was added.`;
-          const bookkeeping =
-            admission instanceof Error
-              ? `\n\nThe sources ran but could not be enrolled in the hourly sweep: ${admission.message}`
-              : "";
+          if (result.admitted.length > 0 && result.admissionError === undefined) {
+            yield* ensureCountyWarm(jurisdiction, tenantId);
+          }
+          const sourceCount = result.admitted.length;
           return yield* thread.applyScout({
             userText: text,
             reply:
-              `${decision.text}\n\n` +
-              `Validated ${probes.length} candidate source(s):\n${lines.join("\n")}` +
-              verdictText +
-              bookkeeping,
-            ...(admitted.length > 0 ? { county: jurisdiction } : {}),
+              sourceCount > 0 && result.admissionError === undefined
+                ? `${decision.text}\n\nI verified ${sourceCount} public-record ` +
+                  `source${sourceCount === 1 ? "" : "s"} and started building the ` +
+                  `county lead list. I will report matches after the records are ready.`
+                : `${decision.text}\n\nI could not verify a usable public-record ` +
+                  `source yet, so there is no lead count to report. Nothing was guessed.`,
+            ...(sourceCount > 0 ? { county: jurisdiction } : {}),
           });
         }
         if (decision.kind === "temp_filter") {
@@ -661,7 +612,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const fetched: FetchResult = yield* Effect.tryPromise({
           try: () =>
             isSocrataUrl(source.url)
-              ? fetchPaginated(source.url, limiter, fetchPage)
+              ? fetchPaginated(source.url, limiter, fetchPage, RECORD_CAP, 1000)
               : fetchSingle(source.url, limiter, fetchPage),
           catch: (cause): Error =>
             cause instanceof Error ? cause : new Error(String(cause)),
@@ -841,20 +792,180 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       return rows.map(configFromRow);
     });
 
-    const runAll = Effect.gen(function* () {
-      const runId = `run_${Date.now().toString(36)}`;
-      const merged = yield* allSources;
-      return yield* Effect.all(
-        merged.map((source) => runSource(source, runId)),
-        { concurrency: 6 },
-      );
-    });
-
     const EVENT_LIMIT = 20_000;
-    const COMPILED_TTL_MS = 6 * 60 * 60_000;
 
     const countySlug = (county: string): string =>
       county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+    const discoverCountySources = (
+      tenantId: string,
+      county: string,
+      requiredCoverage: readonly string[] = [],
+    ) =>
+      Effect.gen(function* () {
+        const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
+        if (credential === undefined) {
+          return yield* new CodexError({
+            message: "no codex credential stored",
+            status: 0,
+          });
+        }
+        const raw = yield* complete(
+          {
+            accessToken: credential.accessToken,
+            accountId: credential.accountId,
+            model: RESEARCH_MODEL,
+            instructions: [
+              `Find official machine-readable public property-record sources for one`,
+              `US county or city. Prefer the county tax office, appraisal district,`,
+              `code enforcement, court, and official GIS. Return direct HTTPS CSV,`,
+              `JSON, ArcGIS query, or official download-page URLs that can be fetched`,
+              `without a browser login. Do not invent an endpoint. Return only JSON:`,
+              `{"jurisdiction":"snake_case_state","candidates":[`,
+              `{"id":"county_signal","name":"Official source name","url":"https://..."}`,
+              `]}. Use county-prefixed ids and at most four candidates.`,
+            ].join("\n"),
+            userText:
+              requiredCoverage.length === 0
+                ? county
+                : `${county}\nMissing coverage: ${requiredCoverage.join(", ")}`,
+          },
+          codexFetch,
+        );
+        const start = raw.indexOf("{");
+        const end = raw.lastIndexOf("}");
+        if (start < 0 || end <= start) {
+          return yield* new CodexError({
+            message: "county source research returned no JSON object",
+            status: 0,
+          });
+        }
+        return yield* Schema.decodeUnknownEffect(CountySourceDiscovery)(
+          JSON.parse(raw.slice(start, end + 1)),
+        ).pipe(
+          Effect.map((discovery) => ({
+            jurisdiction: countySlug(county),
+            candidates: discovery.candidates.slice(0, 4),
+          })),
+          Effect.mapError(
+            (cause) =>
+              new CodexError({
+                message: `county source research returned invalid JSON: ${String(cause)}`,
+                status: 0,
+              }),
+          ),
+        );
+      });
+
+    const validateSourceCandidates = (
+      jurisdiction: string,
+      candidates: readonly SourceCandidate[],
+    ) =>
+      Effect.gen(function* () {
+        const runId = `run_${Date.now().toString(36)}`;
+        const vetted = candidates.slice(0, 4);
+        const known = yield* Effect.promise(() =>
+          db().source.findMany({
+            where: { id: { in: vetted.map((candidate) => slugId(candidate.id)) } },
+            select: { id: true },
+          }),
+        );
+        const preexisting = new Set(known.map((row) => row.id));
+        const probes: readonly Probe[] = yield* Effect.all(
+          vetted.map((candidate) =>
+            candidate.url.startsWith("https://")
+              ? Effect.gen(function* () {
+                  const id = slugId(candidate.id);
+                  const attempted: RunOutcome[] = [];
+                  const direct = yield* runSource(
+                    { id, name: candidate.name, url: candidate.url, jurisdiction },
+                    runId,
+                  );
+                  attempted.push(direct);
+                  if (direct.ok && (direct.records ?? 0) > 0) {
+                    return { outcome: direct, attempted } satisfies Probe;
+                  }
+                  let best: RunOutcome = direct;
+                  let bestUrl = "";
+                  let page = 0;
+                  yield* crawl(
+                    candidate.url,
+                    { maxPages: 12, maxDepth: 2, userAgent: USER_AGENT, limiter },
+                    (visited) =>
+                      Effect.gen(function* () {
+                        page += 1;
+                        const outcome = yield* runSource(
+                          {
+                            id: `${id}_p${page}`,
+                            name: candidate.name,
+                            url: visited.url,
+                            jurisdiction,
+                          },
+                          runId,
+                        );
+                        attempted.push(outcome);
+                        if (
+                          outcome.ok &&
+                          (outcome.records ?? 0) > (best.records ?? 0)
+                        ) {
+                          best = outcome;
+                          bestUrl = visited.url;
+                        }
+                        return true;
+                      }),
+                  );
+                  return bestUrl === ""
+                    ? ({ outcome: direct, attempted } satisfies Probe)
+                    : ({ outcome: best, attempted, crawledFrom: bestUrl } satisfies Probe);
+                })
+              : Effect.succeed({
+                  outcome: {
+                    sourceId: slugId(candidate.id),
+                    ok: false,
+                    stage: "fetch",
+                    error: "only https urls are validated",
+                  },
+                  attempted: [],
+                } satisfies Probe),
+          ),
+          { concurrency: 2 },
+        );
+        const admitted = probes.filter(
+          (probe) => probe.outcome.ok && (probe.outcome.records ?? 0) > 0,
+        );
+        const dead = probes
+          .flatMap((probe) => probe.attempted)
+          .filter((outcome) => !(outcome.ok && (outcome.records ?? 0) > 0))
+          .map((outcome) => outcome.sourceId)
+          .filter((id) => !preexisting.has(id));
+        const admission = yield* Effect.tryPromise({
+          try: async () => {
+            const prisma = db();
+            if (admitted.length > 0) {
+              await prisma.source.updateMany({
+                where: {
+                  id: { in: admitted.map((probe) => probe.outcome.sourceId) },
+                },
+                data: { enabled: true },
+              });
+            }
+            if (dead.length > 0) {
+              await prisma.source.updateMany({
+                where: { id: { in: dead } },
+                data: { enabled: false },
+              });
+            }
+          },
+          catch: (cause): Error =>
+            cause instanceof Error ? cause : new Error(String(cause)),
+        }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+        return {
+          probes,
+          admitted,
+          admissionError:
+            admission instanceof Error ? admission.message : undefined,
+        };
+      });
 
     const countyWhere = (county: string) => {
       const slug = countySlug(county);
@@ -921,32 +1032,43 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const persist = (jurisdiction: string, records: readonly CountyRecord[]) =>
       Effect.promise(async () => {
-        const prisma = db();
-        for (const record of records) {
-          const sourceIds = new Set(record.events.map((e) => e.source));
-          const key = record.keys[0];
-          if (key === undefined) continue;
-          const row = {
-            jurisdiction,
-            address: record.fields.address?.value ?? null,
-            owner: record.fields.owner?.value ?? null,
-            parcelId: record.fields.parcel_id?.value ?? null,
-            lifecycleState: record.lifecycle_state,
-            owed: record.signals.delinquent_amount ?? null,
-            assessed: record.signals.assessed_value ?? null,
-            assessedPrior: record.signals.assessed_value_previous ?? null,
-            debtToValue: record.signals.debt_to_value ?? null,
-            violations: record.signals.code_violations ?? 0,
-            sourceCount: sourceIds.size,
-            mergedKeys: [...record.keys],
-            fields: JSON.parse(JSON.stringify(record.fields)) as object,
-            conflicts: JSON.parse(JSON.stringify(record.conflicts ?? [])) as object,
-          };
-          await prisma.property.upsert({
-            where: { key },
-            create: { key, ...row },
-            update: row,
+        for (let offset = 0; offset < records.length; offset += 100) {
+          const rows = records.slice(offset, offset + 100).flatMap((record) => {
+            const sourceIds = new Set(record.events.map((e) => e.source));
+            const key = record.keys[0];
+            if (key === undefined) return [];
+            const row = {
+              jurisdiction,
+              address: record.fields.address?.value ?? null,
+              owner: record.fields.owner?.value ?? null,
+              parcelId: record.fields.parcel_id?.value ?? null,
+              lifecycleState: record.lifecycle_state,
+              owed: record.signals.delinquent_amount ?? null,
+              assessed: record.signals.assessed_value ?? null,
+              assessedPrior: record.signals.assessed_value_previous ?? null,
+              debtToValue: record.signals.debt_to_value ?? null,
+              violations: record.signals.code_violations ?? 0,
+              sourceCount: sourceIds.size,
+              mergedKeys: [...record.keys],
+              fields: JSON.parse(JSON.stringify(record.fields)) as object,
+              conflicts: JSON.parse(JSON.stringify(record.conflicts ?? [])) as object,
+            };
+            return [{ key, row }];
           });
+          const prisma = db();
+          try {
+            await prisma.$transaction(
+              rows.map(({ key, row }) =>
+                prisma.property.upsert({
+                  where: { key },
+                  create: { key, ...row },
+                  update: row,
+                }),
+              ),
+            );
+          } finally {
+            await prisma.$disconnect();
+          }
         }
       });
 
@@ -971,8 +1093,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const fresh =
             decoded !== undefined &&
             decoded.abi === abi &&
-            decoded.stamp === stamp &&
-            Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS;
+            decoded.stamp === stamp;
           if (fresh && decoded !== undefined) {
             const parsed = JSON.parse(decoded.payload) as {
               readonly records: readonly CountyRecord[];
@@ -1064,9 +1185,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const CountyWarmWorkflow = Cloudflare.Workflow(
       "CountyWarmWorkflow",
       Effect.succeed(
-        Effect.fn(function* (input: { readonly county: string }) {
+        Effect.fn(function* (input: {
+          readonly county: string;
+          readonly tenantId?: string;
+          readonly requiredCoverage?: readonly string[];
+        }) {
           const canonical = yield* resolveJurisdiction(input.county);
-          const stamp = yield* countyStamp(input.county);
+          const initialStamp = yield* countyStamp(input.county);
           const event = yield* Cloudflare.Workflows.WorkflowEvent;
           const requestedAt =
             (yield* readWarmStatus(canonical))?.requestedAt ??
@@ -1074,7 +1199,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const running: CountyWarmStatusValue = {
             county: input.county,
             canonical,
-            stamp,
+            stamp: initialStamp,
             state: "running",
             instanceId: event.instanceId,
             requestedAt,
@@ -1082,33 +1207,127 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           };
           yield* writeWarmStatus(running);
 
-          const compiled = yield* Effect.exit(
-            Cloudflare.Workflows.task(
-              "compile-county",
-              Effect.gen(function* () {
-                const result = Option.getOrUndefined(
-                  yield* compileCountyPayload(input.county).pipe(Effect.orDie),
-                );
-                if (result === undefined) {
-                  return yield* Effect.die(
-                    new Error(`no events found for ${input.county}`),
-                  );
-                }
-                return { properties: result.records.length };
-              }),
+          let admittedSources = 0;
+          if (initialStamp === "0:none" && input.tenantId === undefined) {
+            const error = `no property records or linked researcher for ${input.county}`;
+            yield* writeWarmStatus({
+              ...running,
+              state: "error",
+              updatedAt: new Date().toISOString(),
+              error,
+            });
+            return { ok: false, county: input.county, error };
+          }
+          const requiredCoverage = input.requiredCoverage ?? [];
+          if (
+            input.tenantId !== undefined &&
+            (initialStamp === "0:none" || requiredCoverage.length > 0)
+          ) {
+            const discovery = yield* Cloudflare.Workflows.task(
+              "discover-county-sources",
+              discoverCountySources(
+                input.tenantId,
+                input.county,
+                requiredCoverage,
+              ).pipe(Effect.orDie),
               {
                 retries: {
-                  limit: 3,
+                  limit: 2,
                   delay: "15 seconds",
+                  backoff: "exponential",
+                },
+                timeout: "5 minutes",
+              },
+            );
+            const admission = yield* Cloudflare.Workflows.task(
+              "validate-county-sources",
+              validateSourceCandidates(
+                discovery.jurisdiction,
+                discovery.candidates,
+              ).pipe(
+                Effect.map((result) => ({
+                  tested: result.probes.length,
+                  admitted: result.admitted.length,
+                  admissionError: result.admissionError,
+                })),
+                Effect.orDie,
+              ),
+              {
+                retries: {
+                  limit: 2,
+                  delay: "20 seconds",
                   backoff: "exponential",
                 },
                 timeout: "10 minutes",
               },
-            ),
-          );
+            );
+            if (
+              initialStamp === "0:none" &&
+              (admission.admissionError !== undefined || admission.admitted === 0)
+            ) {
+              const error =
+                admission.admissionError ??
+                `no verified machine-readable source found for ${input.county}`;
+              yield* writeWarmStatus({
+                ...running,
+                state: "error",
+                updatedAt: new Date().toISOString(),
+                error,
+              });
+              return { ok: false, county: input.county, error };
+            }
+            admittedSources = admission.admitted;
+          }
 
-          if (Exit.isFailure(compiled)) {
-            const error = Cause.pretty(compiled.cause).split("\n")[0] ?? "county compile failed";
+          let properties = 0;
+          let finalStamp = initialStamp;
+          let stable = false;
+          let compileError = "";
+          for (let pass = 1; pass <= 3; pass += 1) {
+            const compileStamp = yield* countyStamp(input.county);
+            const compiled = yield* Effect.exit(
+              Cloudflare.Workflows.task(
+                `compile-county-${pass}`,
+                Effect.gen(function* () {
+                  const result = Option.getOrUndefined(
+                    yield* compileCountyPayload(input.county).pipe(Effect.orDie),
+                  );
+                  if (result === undefined) {
+                    return yield* Effect.die(
+                      new Error(`no events found for ${input.county}`),
+                    );
+                  }
+                  return { properties: result.records.length };
+                }),
+                {
+                  retries: {
+                    limit: 3,
+                    delay: "15 seconds",
+                    backoff: "exponential",
+                  },
+                  timeout: "10 minutes",
+                },
+              ),
+            );
+            if (Exit.isFailure(compiled)) {
+              compileError =
+                Cause.pretty(compiled.cause).slice(0, 400) ||
+                "county compile failed";
+              break;
+            }
+            properties = compiled.value.properties;
+            finalStamp = yield* countyStamp(input.county);
+            if (finalStamp === compileStamp) {
+              stable = true;
+              break;
+            }
+          }
+
+          if (!stable) {
+            const error =
+              compileError === ""
+                ? `county records changed throughout three compile passes`
+                : compileError;
             yield* writeWarmStatus({
               ...running,
               state: "error",
@@ -1120,42 +1339,103 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
           yield* writeWarmStatus({
             ...running,
+            stamp: finalStamp,
             state: "complete",
             updatedAt: new Date().toISOString(),
-            properties: compiled.value.properties,
+            properties,
           });
           return {
             ok: true,
             county: input.county,
-            properties: compiled.value.properties,
+            properties,
+            admittedSources,
           };
         }),
       ),
     );
     const countyWarmWorkflow = yield* CountyWarmWorkflow;
 
-    const workflowStatus = (instanceId: string) =>
+    const workflowDetails = (instanceId: string) =>
       countyWarmWorkflow.get(instanceId).pipe(
         Effect.flatMap((instance) => instance.status()),
-        Effect.map((status) => status.status),
         Effect.catchCause(() => Effect.succeed(undefined)),
       );
 
-    const ensureCountyWarm = (county: string) =>
+    const workflowStatus = (instanceId: string) =>
+      workflowDetails(instanceId).pipe(
+        Effect.map((status) => status?.status),
+      );
+
+    const workflowIsActive = (status: string | undefined): boolean =>
+      status === "queued" ||
+      status === "running" ||
+      status === "paused" ||
+      status === "waiting" ||
+      status === "waitingForPause" ||
+      status === "unknown";
+
+    const ensureCountyWarm = (
+      county: string,
+      tenantId?: string,
+      requiredCoverage: readonly string[] = [],
+    ) =>
       Effect.gen(function* () {
         const canonical = yield* resolveJurisdiction(county);
         const stamp = yield* countyStamp(county);
+        const { abi } = yield* Effect.promise(() => engineVersion());
         const existing = yield* readWarmStatus(canonical);
-        if (
-          existing !== undefined &&
-          shouldReuseWarm(existing, stamp, Date.now())
-        ) {
+        const coverageKey = [...new Set(requiredCoverage)].sort().join(",");
+        const nowMs = Date.now();
+        const existingAge =
+          existing === undefined
+            ? Number.POSITIVE_INFINITY
+            : nowMs - Date.parse(existing.updatedAt);
+        if (existing !== undefined && existingAge < ACTIVE_WARM_MS) {
           const runtime =
             existing.instanceId === ""
               ? undefined
               : yield* workflowStatus(existing.instanceId);
-          if (runtime !== "errored" && runtime !== "terminated") return existing;
+          if (workflowIsActive(runtime)) {
+            if (existing.state === "error") {
+              const reconciled: CountyWarmStatusValue = {
+                ...existing,
+                state: runtime === "queued" ? "queued" : "running",
+                updatedAt: new Date().toISOString(),
+                error: undefined,
+              };
+              yield* writeWarmStatus(reconciled);
+              return reconciled;
+            }
+            return existing;
+          }
+          if (runtime === undefined && shouldReuseWarm(existing, nowMs)) {
+            return existing;
+          }
         }
+
+        const baseInstanceId = yield* Effect.promise(() =>
+          countyWorkflowId(canonical, stamp, abi, "", coverageKey),
+        );
+        if (
+          existing !== undefined &&
+          existing.state === "error" &&
+          existing.instanceId === baseInstanceId &&
+          existingAge < FAILED_WARM_RETRY_MS
+        ) {
+          return existing;
+        }
+        const retry =
+          existing !== undefined &&
+          existing.state === "error" &&
+          existingAge >= FAILED_WARM_RETRY_MS
+            ? existing.updatedAt
+            : "";
+        const instanceId =
+          retry === ""
+            ? baseInstanceId
+            : yield* Effect.promise(() =>
+                countyWorkflowId(canonical, stamp, abi, retry, coverageKey),
+              );
 
         const now = new Date().toISOString();
         const queued: CountyWarmStatusValue = {
@@ -1167,16 +1447,70 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           requestedAt: now,
           updatedAt: now,
         };
-        yield* writeWarmStatus(queued);
         let createError = "";
-        const instance = yield* countyWarmWorkflow.create({ params: { county } }).pipe(
-          Effect.map((created) => created as { readonly id: string } | undefined),
+        const instance = yield* countyWarmWorkflow.create({
+          id: instanceId,
+          params: {
+            county,
+            ...(tenantId === undefined ? {} : { tenantId }),
+            ...(requiredCoverage.length === 0 ? {} : { requiredCoverage }),
+          },
+        }).pipe(
           Effect.catchCause((cause) => {
-            createError = Cause.pretty(cause).split("\n")[0] ?? "could not queue county warm";
+            createError = Cause.pretty(cause).slice(0, 400) || "could not queue county warm";
             return Effect.succeed(undefined);
           }),
         );
         if (instance === undefined) {
+          const concurrent = yield* countyWarmWorkflow.get(instanceId).pipe(
+            Effect.catchCause(() => Effect.succeed(undefined)),
+          );
+          if (concurrent !== undefined) {
+            const current = yield* readWarmStatus(canonical);
+            if (
+              current !== undefined &&
+              current.instanceId === instanceId &&
+              (shouldReuseWarm(current, Date.now()) ||
+                current.state === "complete" ||
+                current.state === "error")
+            ) {
+              return current;
+            }
+            const runtime = yield* concurrent.status().pipe(
+              Effect.catchCause(() => Effect.succeed(undefined)),
+            );
+            const state =
+              runtime?.status === "complete"
+                ? "complete"
+                : runtime?.status === "errored" ||
+                    runtime?.status === "terminated"
+                  ? "error"
+                  : runtime?.status === "queued"
+                    ? "queued"
+                    : "running";
+            const output =
+              typeof runtime?.output === "object" && runtime.output !== null
+                ? runtime.output as { readonly properties?: unknown }
+                : undefined;
+            const joined: CountyWarmStatusValue = {
+              ...queued,
+              instanceId,
+              state,
+              updatedAt: new Date().toISOString(),
+              ...(typeof output?.properties === "number"
+                ? { properties: output.properties }
+                : {}),
+              ...(state === "error"
+                ? {
+                    error:
+                      runtime?.error?.message ??
+                      "county preparation did not complete",
+                  }
+                : {}),
+            };
+            yield* writeWarmStatus(joined);
+            return joined;
+          }
           const failed: CountyWarmStatusValue = {
             ...queued,
             state: "error",
@@ -1188,16 +1522,161 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
 
         const current = yield* readWarmStatus(canonical);
-        if (current?.state !== "queued" || current.stamp !== stamp) {
-          return current ?? queued;
+        if (
+          current !== undefined &&
+          current.instanceId === instanceId &&
+          (shouldReuseWarm(current, Date.now()) ||
+            current.state === "complete" ||
+            current.state === "error")
+        ) {
+          return current;
         }
         const withInstance: CountyWarmStatusValue = {
-          ...current,
+          ...queued,
           instanceId: instance.id,
           updatedAt: new Date().toISOString(),
         };
         yield* writeWarmStatus(withInstance);
         return withInstance;
+      });
+
+    const SourceRunWorkflow = Cloudflare.Workflow(
+      "SourceRunWorkflow",
+      Effect.succeed(
+        Effect.fn(function* (input: {
+          readonly sourceId: string;
+          readonly runId: string;
+        }) {
+          const sources = yield* allSources;
+          const source = sources.find((candidate) => candidate.id === input.sourceId);
+          if (source === undefined) {
+            return {
+              outcome: {
+                sourceId: input.sourceId,
+                ok: false,
+                stage: "fetch",
+                error: "source is no longer enabled",
+              } satisfies RunOutcome,
+            };
+          }
+          const outcome = yield* Cloudflare.Workflows.task(
+            "ingest-source",
+            Effect.gen(function* () {
+              const context = yield* Cloudflare.Workflows.WorkflowStepContext;
+              const result = yield* runSource(
+                source,
+                `${input.runId}_a${context.attempt}`,
+              );
+              if (!result.ok) {
+                return yield* Effect.die(
+                  new Error(
+                    `${result.sourceId}@${result.stage}: ${result.error ?? "ingestion failed"}`,
+                  ),
+                );
+              }
+              return result;
+            }).pipe(Effect.orDie),
+            {
+              retries: {
+                limit: 2,
+                delay: "20 seconds",
+                backoff: "exponential",
+              },
+              timeout: "5 minutes",
+            },
+          );
+          const warm = yield* Cloudflare.Workflows.task(
+            "refresh-county-signals",
+            ensureCountyWarm(source.jurisdiction).pipe(Effect.orDie),
+            {
+              retries: {
+                limit: 2,
+                delay: "20 seconds",
+                backoff: "exponential",
+              },
+              timeout: "2 minutes",
+            },
+          );
+          return {
+            outcome,
+            warm: {
+              county: source.jurisdiction,
+              state: warm.state,
+              instanceId: warm.instanceId,
+            },
+          };
+        }),
+      ),
+    );
+    const sourceRunWorkflow = yield* SourceRunWorkflow;
+
+    const queueSweep = Effect.gen(function* () {
+      const sources = yield* allSources;
+      const createdAt = new Date().toISOString();
+      const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+      const id = `sweep_${Date.now().toString(36)}_${nonce}`;
+      const runId = `run_${Date.now().toString(36)}_${nonce}`;
+      const sourceIds = sources.map((source) => source.id);
+      if (sourceIds.length === 0) {
+        return { id, runId, createdAt, sourceIds, instances: [] as string[] };
+      }
+      const instances = yield* sourceRunWorkflow.createBatch(
+        sourceIds.map((sourceId) => ({
+          id: `${id}_${sourceId}`,
+          params: { sourceId, runId },
+          retention: {
+            successRetention: "1 day",
+            errorRetention: "7 days",
+          },
+        })),
+      );
+      yield* bucket.put(
+        `sweeps/${id}.json`,
+        JSON.stringify({ id, runId, createdAt, sourceIds }),
+      );
+      return {
+        id,
+        runId,
+        createdAt,
+        sourceIds,
+        instances: instances.map((instance) => instance.id),
+      };
+    });
+
+    const sweepStatus = (id: string) =>
+      Effect.gen(function* () {
+        const object = yield* bucket.get(`sweeps/${id}.json`);
+        if (object === null) return undefined;
+        const manifest = yield* Schema.decodeUnknownEffect(SweepManifest)(
+          JSON.parse(yield* object.text()),
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+        if (manifest === undefined) return undefined;
+        const sources = yield* Effect.all(
+          manifest.sourceIds.map((sourceId) =>
+            sourceRunWorkflow
+              .get(`${manifest.id}_${sourceId}`)
+              .pipe(
+                Effect.flatMap((instance) => instance.status()),
+                Effect.map((status) => ({
+                  sourceId,
+                  state: status.status,
+                  ...(status.output === undefined ? {} : { output: status.output }),
+                  ...(status.error === undefined || status.error === null
+                    ? {}
+                    : { error: status.error.message }),
+                })),
+                Effect.catchCause((cause) =>
+                  Effect.succeed({
+                    sourceId,
+                    state: "unknown",
+                    error: Cause.pretty(cause).slice(0, 300),
+                  }),
+                ),
+              ),
+          ),
+          { concurrency: 8 },
+        );
+        return { ...manifest, sources };
       });
 
     /// True when the county can be answered from R2 without compiling.
@@ -1218,8 +1697,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const { abi } = yield* Effect.promise(() => engineVersion());
         return (
           decoded.abi === abi &&
-          decoded.stamp === (yield* countyStamp(county)) &&
-          Date.now() - Date.parse(decoded.at) < COMPILED_TTL_MS
+          decoded.stamp === (yield* countyStamp(county))
         );
       }).pipe(Effect.catch(() => Effect.succeed(false)));
 
@@ -1227,9 +1705,39 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       Effect.gen(function* () {
         const compiled = Option.getOrUndefined(yield* compileCountyPayload(county));
         if (compiled === undefined) return [] as readonly PropertyMatch[];
+        const sourceIds = [
+          ...new Set(
+            compiled.records.flatMap((record) =>
+              record.events.map((event) => event.source),
+            ),
+          ),
+        ];
+        const runs = sourceIds.length === 0
+          ? []
+          : yield* Effect.promise(() =>
+              db().run.findMany({
+                where: { sourceId: { in: sourceIds }, ok: true },
+                orderBy: { startedAt: "desc" },
+                select: { sourceId: true, truncated: true },
+              }),
+            );
+        const latest = new Map<string, boolean>();
+        for (const run of runs) {
+          if (!latest.has(run.sourceId)) latest.set(run.sourceId, run.truncated);
+        }
+        const dataComplete =
+          sourceIds.length > 0 &&
+          sourceIds.every((sourceId) => latest.get(sourceId) === false);
         return compiled.records
           .map((record): PropertyMatch => {
             const sourceIds = new Set(record.events.map((e) => e.source));
+            const measured = [
+              ...(record.signals.delinquent_amount === undefined ? [] : ["owed"]),
+              ...(record.signals.assessed_value === undefined ? [] : ["assessed"]),
+              ...(record.signals.debt_to_value === undefined ? [] : ["debtToValue"]),
+              ...(record.signals.code_violations === undefined ? [] : ["violations"]),
+              "sources",
+            ];
             return {
               propertyKey: record.keys[0] ?? "",
               address: record.fields.address?.value ?? "",
@@ -1244,6 +1752,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               violations: record.signals.code_violations ?? 0,
               sources: sourceIds.size,
               signals: record.signals,
+              measured,
+              dataComplete,
             };
           })
           .filter((match) => match.address !== "");
@@ -1251,34 +1761,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     yield* Cloudflare.Workers.cron("0 * * * *", () =>
       Effect.gen(function* () {
-        const outcomes = yield* runAll;
-        const failed = outcomes.filter((o) => !o.ok);
-        yield* outcomes.length === 0
+        const sweep = yield* queueSweep;
+        yield* sweep.sourceIds.length === 0
           ? Effect.logError("cron sweep: no enabled sources; POST /seed to import the bundled list")
           : Effect.log(
-              `cron sweep: ${outcomes.length - failed.length}/${outcomes.length} ok` +
-                (failed.length > 0
-                  ? `; failed: ${failed.map((o) => `${o.sourceId}@${o.stage}`).join(", ")}`
-                  : ""),
+              `cron sweep ${sweep.id}: queued ${sweep.sourceIds.length} source workflows`,
             );
-
-        // The sweep just changed every county's event stamp, so the caches it
-        // invalidated are rebuilt here rather than by whoever texts first. A
-        // county compiles once, on the cron's clock, instead of making a
-        // person wait three minutes for their first reply.
-        const busiest = yield* Effect.promise(async () => {
-          const rows = await db().property.groupBy({
-            by: ["jurisdiction"],
-            _count: { key: true },
-            orderBy: { _count: { key: "desc" } },
-            take: 1,
-          });
-          return rows[0]?.jurisdiction ?? "";
-        });
-        if (busiest !== "") {
-          const warming = yield* ensureCountyWarm(busiest);
-          yield* Effect.log(`cron ${warming.state} county warm for ${busiest}`);
-        }
       }),
     );
 
@@ -1404,14 +1892,48 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
 
         if (url.pathname === "/run" && request.method === "POST") {
-          const outcomes = yield* runAll;
-          if (outcomes.length === 0) {
+          const sweep = yield* queueSweep;
+          if (sweep.sourceIds.length === 0) {
             return json(
-              { ok: false, error: "no enabled sources; POST /seed to import the bundled list", outcomes },
+              { ok: false, error: "no enabled sources; POST /seed to import the bundled list" },
               503,
             );
           }
-          return json({ ok: outcomes.every((o) => o.ok), outcomes });
+          return json({
+            ok: true,
+            state: "queued",
+            sweepId: sweep.id,
+            sources: sweep.sourceIds.length,
+            statusUrl: `/sweep/${sweep.id}`,
+          }, 202);
+        }
+
+        const sweepMatch = /^\/sweep\/([a-z0-9_]+)$/.exec(url.pathname);
+        if (sweepMatch !== null && request.method === "GET") {
+          const status = yield* sweepStatus(sweepMatch[1] ?? "");
+          if (status === undefined) {
+            return json({ ok: false, error: "unknown sweep" }, 404);
+          }
+          const complete = status.sources.filter((source) => source.state === "complete");
+          const failed = status.sources.filter(
+            (source) =>
+              source.state === "errored" || source.state === "terminated",
+          );
+          return json({
+            ok: failed.length === 0,
+            state:
+              complete.length + failed.length === status.sources.length
+                ? failed.length === 0
+                  ? "complete"
+                  : "error"
+                : "running",
+            sweepId: status.id,
+            createdAt: status.createdAt,
+            completed: complete.length,
+            failed: failed.length,
+            total: status.sources.length,
+            sources: status.sources,
+          });
         }
 
         const runMatch = /^\/run\/([a-z0-9_]+)$/.exec(url.pathname);
@@ -1668,20 +2190,22 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const snapshot = yield* thread.snapshot();
           const county = snapshot.county;
           if (snapshot.configured && !(yield* countyIsWarm(county))) {
-            const warming = yield* ensureCountyWarm(county);
+            const warming = yield* ensureCountyWarm(county, preflight.tenantId);
             const reply =
               warming.state === "error"
-                ? `I could not prepare ${county.replace(/_/g, " ")} right now. ` +
-                  `Nothing was guessed or partially scanned. Please try again shortly.`
-                : `Collecting information on ${county.replace(/_/g, " ")} now - reading the ` +
-                  `county's records and working out the signals for every property.\n\n` +
-                  `The durable job is ${warming.state}; it will retry automatically if ` +
-                  `anything interrupts it. Text me again in a few minutes.`;
-            yield* Effect.tryPromise({
-              try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
-              catch: (cause): Error =>
-                cause instanceof Error ? cause : new Error(String(cause)),
-            }).pipe(Effect.catch(() => Effect.void));
+                ? `I could not verify usable official records for ` +
+                  `${county.replace(/_/g, " ")} yet, so I do not have a real lead ` +
+                  `count to give you. Nothing was guessed.`
+                : `I am still collecting ${county.replace(/_/g, " ")} records and ` +
+                  `building the property signals. I will only show a lead count after ` +
+                  `the records are ready.`;
+            if (!probe) {
+              yield* Effect.tryPromise({
+                try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
+                catch: (cause): Error =>
+                  cause instanceof Error ? cause : new Error(String(cause)),
+              }).pipe(Effect.catch(() => Effect.void));
+            }
             return json({
               ok: warming.state !== "error",
               phone,
@@ -1689,9 +2213,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               warming: warming.state,
             });
           }
-          const candidates = snapshot.configured
-            ? yield* countyMatches(county)
-            : [];
+          const market = snapshot.profile?.county ?? (snapshot.configured ? county : "");
+          const candidates =
+            market !== "" && (yield* countyIsWarm(market))
+              ? yield* countyMatches(market)
+              : [];
           let input: HandleMessageInput = {
             text,
             candidates,

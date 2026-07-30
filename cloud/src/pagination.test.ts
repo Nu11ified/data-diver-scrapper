@@ -170,6 +170,28 @@ describe("fetchPaginated", () => {
     expect(maxInFlight).toBe(1);
   });
 
+  test("can raise small configured pages without changing the record cap", async () => {
+    const calls: string[] = [];
+    const result = await fetchPaginated(
+      url,
+      alwaysAllow,
+      async (pageUrl) => {
+        calls.push(pageUrl);
+        return calls.length === 1
+          ? jsonPage(Array.from({ length: 1000 }, (_, id) => ({ id })))
+          : jsonPage([{ id: 1000 }]);
+      },
+      RECORD_CAP,
+      1000,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(JSON.parse(result.body)).toHaveLength(1001);
+    expect(new URL(calls[0] ?? "").searchParams.get("$limit")).toBe("1000");
+    expect(new URL(calls[0] ?? "").searchParams.get("$offset")).toBe("0");
+    expect(new URL(calls[1] ?? "").searchParams.get("$offset")).toBe("1000");
+  });
+
   test("stops at the hard cap and reports the run as truncated", async () => {
     const bigUrl = "https://data.norfolk.gov/resource/abcd-1234.json?$limit=2000";
     let calls = 0;

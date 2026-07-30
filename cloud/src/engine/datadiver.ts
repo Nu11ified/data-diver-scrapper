@@ -63,20 +63,15 @@ export class EngineError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-let modulePromise: Promise<EmscriptenModule> | undefined;
-
-const engine = (): Promise<EmscriptenModule> => {
-  modulePromise ??= createModule({
+const engine = (): Promise<EmscriptenModule> =>
+  createModule({
     instantiateWasm: (imports, onSuccess) => {
       onSuccess(new WebAssembly.Instance(wasmModule, imports), wasmModule);
       return {};
     },
   }).catch((cause: unknown) => {
-    modulePromise = undefined;
     throw new EngineError(`wasm startup failed: ${String(cause)}`);
   });
-  return modulePromise;
-};
 
 const call = async (name: string, args: readonly string[]): Promise<unknown> => {
   const mod = await engine();
