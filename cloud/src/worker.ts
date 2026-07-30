@@ -35,7 +35,11 @@ import {
   type ThreadSnapshot,
 } from "./conversation/thread.ts";
 import { runPiScout } from "./conversation/pi.ts";
-import { legacyProfileText } from "./conversation/profile.ts";
+import {
+  legacyProfileText,
+  type ProfileUpdate,
+} from "./conversation/profile.ts";
+import type { ScoutDecision } from "./conversation/scout.ts";
 import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
 import { CodexError, complete } from "./codex/client.ts";
 import { CodexEgressHost, CodexEgressHostLive } from "./codex/egress-host.ts";
@@ -322,7 +326,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       text: string,
       candidates: readonly PropertyMatch[],
       snap: ThreadSnapshot,
-      onDecision: (kind: string) => void,
+      onDecision: (decision: ScoutDecision) => void,
       dryRun = false,
     ) =>
       Effect.gen(function* () {
@@ -384,7 +388,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           ),
         );
         const decision = piResult.decision;
-        onDecision(decision.kind);
+        onDecision(decision);
         if (dryRun) {
           return {
             reply: decision.text,
@@ -1608,14 +1612,21 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             }
             const thread = threadFor(preflight.tenantId);
             yield* thread.forget();
-            const onboarding = yield* thread.handleMessage({
+            const resetSnapshot = yield* thread.snapshot();
+            const onboarding = yield* scoutTurn(
+              preflight.tenantId,
               text,
-              candidates: [],
-              codexAccount: preflight.codexAccount || "reset",
-            });
+              [],
+              resetSnapshot,
+              () => {},
+            ).pipe(
+              Effect.map((outcome): HandleOutcome | undefined => outcome),
+              Effect.catch(() => Effect.succeed(undefined)),
+            );
             const reply =
               `Reset complete. Your prior criteria, results and conversation were ` +
-              `removed; your ChatGPT connection was kept.\n\n${onboarding.reply}`;
+              `removed; your ChatGPT connection was kept.\n\n` +
+              (onboarding?.reply ?? MODEL_UNAVAILABLE_REPLY);
             yield* Effect.tryPromise({
               try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
               catch: (cause): Error =>
@@ -1722,13 +1733,17 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           if (!probe) yield* showTyping;
           let scoutError = "";
           let scoutDecision = "";
+          let scoutProfileUpdate: ProfileUpdate | undefined;
           const scouted = yield* scoutTurn(
             preflight.tenantId,
             text,
             input.candidates,
             snapshot,
-            (kind) => {
-              scoutDecision = kind;
+            (decision) => {
+              scoutDecision = decision.kind;
+              if (decision.kind === "update_profile") {
+                scoutProfileUpdate = decision.update;
+              }
             },
             probe,
           ).pipe(
@@ -1749,6 +1764,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               ...(scoutDecision === ""
                 ? {}
                 : { brainDecision: scoutDecision }),
+              ...(scoutProfileUpdate === undefined
+                ? {}
+                : { brainProfileUpdate: scoutProfileUpdate }),
               ...(scoutError === "" ? {} : { scoutError }),
             });
           }

@@ -29,6 +29,49 @@ const context = (profile: ScoutContext["profile"] = {}): ScoutContext => ({
 });
 
 describe("Pi conversation agent", () => {
+  test("retries an invalid market normalization and preserves the supplied state", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("update_profile", {
+          text: "Denton is set.",
+          county: "Denton",
+        }),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        fauxToolCall("update_profile", {
+          text:
+            "Denton, TX is set as your market.\n\n" +
+            "What minimum recorded taxes or liens makes a property worth reviewing?",
+          county: "Denton, TX",
+        }),
+        { stopReason: "toolUse" },
+      ),
+    ]);
+
+    const result = await runPiScout(
+      {
+        accessToken: "test-token",
+        sessionId: "tenant-market",
+        userText: "Denton, TX",
+        context: context(),
+      },
+      {
+        model: faux.getModel(),
+        streamFn: faux.provider.streamSimple.bind(faux.provider),
+      },
+    );
+
+    expect(result.decision).toEqual({
+      kind: "update_profile",
+      text:
+        "Denton, TX is set as your market.\n\n" +
+        "What minimum recorded taxes or liens makes a property worth reviewing?",
+      update: { county: "Denton, TX" },
+    });
+  });
+
   test("turns a vague onboarding answer into a typed profile update", async () => {
     const faux = fauxProvider();
     faux.setResponses([

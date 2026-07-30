@@ -28,6 +28,7 @@ import {
   type Audience,
 } from "../outreach/schedule.ts";
 import {
+  nextProfileField,
   type AcquisitionProfile,
   type EvidencePolicy,
   type ProfileUpdate,
@@ -463,43 +464,6 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
     };
   };
 
-  const nextOnboardingQuestion = (profile: AcquisitionProfile): string => {
-    if (profile.county === undefined) {
-      return "1/6 — Market\nWhere do you buy? Send a city or county + state. Example: Norfolk, VA";
-    }
-    if (profile.minOwed === undefined) {
-      return (
-        "2/6 — Debt signal\nWhat minimum recorded taxes or liens makes a " +
-        "property worth reviewing? Example: $20k, or ask me to choose."
-      );
-    }
-    if (profile.minAssessed === undefined) {
-      return (
-        "3/6 — Value floor\nWhat minimum county-assessed value do you want? " +
-        "Example: $150k, no minimum, or ask me to choose."
-      );
-    }
-    if (profile.evidence === undefined) {
-      return (
-        "4/6 — Evidence strength\nShould a lead need multiple county sources, " +
-        "an open violation, both, neither, or my recommendation?"
-      );
-    }
-    if (profile.recencyAnswered !== true) {
-      return (
-        "5/6 — Recency\nHow recent must the latest county event be? Example: 180 days, " +
-        "1 year, any age, or ask me to choose."
-      );
-    }
-    if (profile.requireApproval === undefined) {
-      return (
-        "6/6 — Outreach control\nMust you approve every outreach message before " +
-        "it is scheduled, or should I use the safer setting?"
-      );
-    }
-    return "";
-  };
-
   const mergeProfile = (
     current: AcquisitionProfile,
     update: ProfileUpdate,
@@ -594,28 +558,6 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
     yield* storage.put("tree", tree);
     return { tree, created: true };
   });
-
-  const startOnboarding = (userText: string) =>
-    Effect.gen(function* () {
-      const loaded = yield* loadTree;
-      const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
-      const summary = (yield* storage.get<string>("summary")) ?? "";
-      const reply =
-        `I turn scattered county tax, assessment, code and court records into a ` +
-        `ranked call list—not another spreadsheet.\n\n` +
-        `Here is the path:\n` +
-        `1) Define your market and buy box\n` +
-        `2) Build your private decision tree\n` +
-        `3) Scan the records\n` +
-        `4) Show the strongest matches and why\n\n` +
-        `Nothing runs or reaches an owner without your approval. You can pause ` +
-        `anytime or ask me to choose a safe default.\n\n` +
-        nextOnboardingQuestion({});
-      yield* storage.put("onboarding", {} satisfies AcquisitionProfile);
-      yield* storage.put("pending", { kind: "idle" } satisfies Pending);
-      yield* record(userText, reply, loaded.tree, turns, summary);
-      return { reply, evaluations: [] } satisfies HandleOutcome;
-    });
 
   const applyScout = (input: ApplyScoutInput) =>
     Effect.gen(function* () {
@@ -925,16 +867,11 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             AcquisitionProfile | LegacyOnboardingState
           >("onboarding");
           const current = profileOf(stored) ?? {};
-          if (stored === undefined && input.onboardingUpdate === undefined) {
-            return yield* startOnboarding(text);
-          }
           if (input.onboardingUpdate === undefined) {
-            const question = nextOnboardingQuestion(current);
             return yield* respond(
               text,
-              question === ""
-                ? "Your decision tree is waiting for confirmation."
-                : question,
+              input.onboardingLead?.trim() ||
+                "I could not identify a profile update, so nothing was changed.",
               pending,
             );
           }
@@ -942,8 +879,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           if (merged instanceof Error) {
             return yield* respond(
               text,
-              `I could not safely store that answer: ${merged.message}. ` +
-                nextOnboardingQuestion(current),
+              `I could not safely store that answer: ${merged.message}. Nothing was changed.`,
               { kind: "idle" },
             );
           }
@@ -951,12 +887,12 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           if (merged.county !== undefined) {
             yield* storage.put("county", merged.county);
           }
-          const nextQuestion = nextOnboardingQuestion(merged);
           const lead = input.onboardingLead?.trim() ?? "";
-          if (nextQuestion !== "") {
+          if (nextProfileField(merged) !== undefined) {
             return yield* respond(
               text,
-              `${lead === "" ? "" : `${lead}\n\n`}${nextQuestion}`,
+              lead ||
+                "I stored that answer, but could not prepare the next question.",
               { kind: "idle" },
             );
           }

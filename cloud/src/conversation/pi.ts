@@ -14,7 +14,11 @@ import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-code
 import { CHAT_MODEL } from "../codex/client.ts";
 import type { HttpFetch } from "../codex/egress-fetch.ts";
 import type { Graph } from "../decision/graph.ts";
-import type { ProfileUpdate } from "./profile.ts";
+import {
+  nextProfileField,
+  type ProfileField,
+  type ProfileUpdate,
+} from "./profile.ts";
 import type { ScoutDecision, ScoutContext } from "./scout.ts";
 import { buildInstructions } from "./scout.ts";
 
@@ -54,6 +58,11 @@ const GraphInput = Type.Object({
 
 const MessageText = Type.String({ minLength: 1, maxLength: 500 });
 const Text = Type.Object({ text: MessageText });
+const County = Type.String({
+  pattern: "^[^,\\n]+,\\s*[A-Z]{2}$",
+  description:
+    'The user market normalized as "City or County, ST" with an uppercase two-letter state.',
+});
 
 export interface PiScoutCall {
   readonly accessToken: string;
@@ -162,6 +171,50 @@ const defineTool = <TParameters extends TSchema>(
   tool: AgentTool<TParameters>,
 ): AgentTool<TParameters> => tool;
 
+const fieldsIn = (update: ProfileUpdate): readonly ProfileField[] => [
+  ...(update.county === undefined ? [] : ["county" as const]),
+  ...(update.minOwed === undefined ? [] : ["minOwed" as const]),
+  ...(update.minAssessed === undefined ? [] : ["minAssessed" as const]),
+  ...(update.evidence === undefined ? [] : ["evidence" as const]),
+  ...(update.maxDaysSinceEvent === undefined && update.anyEventAge === undefined
+    ? []
+    : ["recency" as const]),
+  ...(update.requireApproval === undefined
+    ? []
+    : ["requireApproval" as const]),
+];
+
+const validateProfileUpdate = (
+  expected: ProfileField | undefined,
+  update: ProfileUpdate,
+): void => {
+  if (expected === undefined) {
+    throw new Error("The onboarding profile is already complete. Reply naturally.");
+  }
+  const fields = fieldsIn(update);
+  if (fields.length !== 1 || fields[0] !== expected) {
+    throw new Error(
+      `Update only the current onboarding field: ${expected}. Preserve the user's answer and call update_profile again.`,
+    );
+  }
+  if (
+    update.county !== undefined &&
+    !/^[^,\n]+,\s*[A-Z]{2}$/.test(update.county.trim())
+  ) {
+    throw new Error(
+      'Keep the place and state from the user, normalize it as "City or County, ST", and call update_profile again.',
+    );
+  }
+  if (
+    update.maxDaysSinceEvent !== undefined &&
+    update.anyEventAge !== undefined
+  ) {
+    throw new Error(
+      "Choose either a numeric recency window or any event age, not both.",
+    );
+  }
+};
+
 export const runPiScout = async (
   call: PiScoutCall,
   runtime: PiScoutRuntime = productionRuntime(call.fetch),
@@ -185,10 +238,10 @@ export const runPiScout = async (
       name: "update_profile",
       label: "Update acquisition profile",
       description:
-        "Record normalized buyer answers during onboarding. Include only facts supported by the user's message. Use safe professional defaults when the user explicitly delegates the choice.",
+        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS: acknowledge the accepted answer and ask the next missing field naturally. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
       parameters: Type.Object({
         text: MessageText,
-        county: Type.Optional(Type.String()),
+        county: Type.Optional(County),
         minOwed: Type.Optional(Type.Number({ minimum: 0 })),
         minAssessed: Type.Optional(Type.Number({ minimum: 0 })),
         evidence: Type.Optional(
@@ -223,6 +276,7 @@ export const runPiScout = async (
             ? { requireApproval: params.requireApproval as boolean }
             : {}),
         };
+        validateProfileUpdate(nextProfileField(call.context.profile), update);
         return choose({
           kind: "update_profile",
           text: params.text as string,

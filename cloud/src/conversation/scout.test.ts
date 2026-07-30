@@ -119,7 +119,10 @@ describe("buildInstructions", () => {
       extraSignals: [],
     });
     expect(text).toContain("The user is onboarding");
-    expect(text).toContain("must use update_profile");
-    expect(text).toContain("Never repeat a list of allowed keywords");
+    expect(text).toContain("use update_profile");
+    expect(text).toContain("NEXT ONBOARDING FIELD: county");
+    expect(text).toContain("never drop a supplied state");
+    expect(text).toContain("complete user-facing SMS");
+    expect(text).toContain("Never expose command menus");
   });
 });

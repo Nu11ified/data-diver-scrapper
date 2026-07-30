@@ -1,5 +1,9 @@
 import { SIGNAL_CATALOG, type Graph, type TreeDoc } from "../decision/graph.ts";
-import type { AcquisitionProfile, ProfileUpdate } from "./profile.ts";
+import {
+  nextProfileField,
+  type AcquisitionProfile,
+  type ProfileUpdate,
+} from "./profile.ts";
 
 export interface SourceCandidate {
   readonly id: string;
@@ -77,6 +81,7 @@ export const buildInstructions = (context: ScoutContext): string => {
     [...context.recentTurns]
       .reverse()
       .find((turn) => turn.role === "scout")?.text ?? "";
+  const profileField = nextProfileField(context.profile);
   return [
     `You are Data Diver, an SMS assistant over a county public-record`,
     `ingestion engine that finds distressed properties. You manage the user's`,
@@ -95,11 +100,12 @@ export const buildInstructions = (context: ScoutContext): string => {
     ``,
     `CONVERSATION SUMMARY: ${context.summary === "" ? "(none)" : context.summary}`,
     `BUYER PROFILE: ${JSON.stringify(context.profile ?? {})}`,
+    `NEXT ONBOARDING FIELD: ${profileField ?? "(complete)"}`,
     `CURRENT UNANSWERED QUESTION: ${currentQuestion === "" ? "(none)" : currentQuestion}`,
     ``,
     context.configured
       ? `The user has configured criteria. Use the tools to inspect leads, explain facts, or propose requested changes.`
-      : `The user is onboarding. When their latest message answers or delegates the CURRENT UNANSWERED QUESTION, you must use update_profile and normalize the answer. Use reply only when they explicitly pause, ask a question, or discuss something unrelated. Never repeat a list of allowed keywords. If they delegate evidence policy, recommend multiple_sources; if they delegate recency, use anyEventAge; if they delegate outreach safety, require approval. Explain the judgment in the tool's text. Do not propose a tree yourself during onboarding; the server builds it from the completed profile.`,
+      : `The user is onboarding. The field order is county, minOwed, minAssessed, evidence, recency, requireApproval. When their latest message answers or delegates the NEXT ONBOARDING FIELD, use update_profile for exactly that field. Preserve values the user supplied. Normalize a market as "City or County, ST" with an uppercase two-letter state; never drop a supplied state. Use reply only when they pause, ask a question, or discuss something unrelated. If they delegate evidence policy, recommend multiple_sources; if they delegate recency, use anyEventAge; if they delegate outreach safety, require approval. Do not propose a tree yourself during onboarding; the server builds it from the completed profile.`,
     ``,
     `CONVERSATION EXPERIENCE:`,
     `Guide the user like an acquisition scout, not a feature list or command interface.`,
@@ -113,8 +119,11 @@ export const buildInstructions = (context: ScoutContext): string => {
     `separated by blank lines: the ranked call list outcome; a short numbered path`,
     `from buy box to private decision tree to verified matches to user-controlled`,
     `outreach; then one contextual next question.`,
-    `Use the live profile and scan state to choose the next move. During onboarding,`,
-    `briefly say what the answer changes, then advance the interview. After setup,`,
+    `Use the live profile and scan state to choose the next move. The text passed`,
+    `to any tool is the complete user-facing SMS. During onboarding, acknowledge`,
+    `what the answer changes and ask the next missing field in the same text. Never`,
+    `output internal validation language, field names, schemas, or tool instructions.`,
+    `After setup,`,
     `offer the most relevant next decision: inspect strong matches, tune the rule,`,
     `or scan a market. Do not ask multiple unrelated questions.`,
     `When reporting a failure, state what failed, confirm what was not changed,`,

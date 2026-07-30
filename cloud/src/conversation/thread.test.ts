@@ -417,49 +417,84 @@ describe("guided onboarding", () => {
       }),
     );
 
-  test("introduces the product before asking for the buyer's market", async () => {
+  test("uses the model-authored onboarding message without appending canned copy", async () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
+    const reply =
+      "Denton, TX is set as your market.\n\n" +
+      "What minimum recorded taxes or liens makes a property worth reviewing?";
 
-    const outcome = await answer(thread, "Hi, what can we do?");
-
-    expect(outcome.reply).toContain("county tax, assessment, code and court records");
-    expect(outcome.reply).toContain("ranked call list—not another spreadsheet");
-    expect(outcome.reply).toContain("Here is the path:");
-    expect(outcome.reply).toContain("Build your private decision tree");
-    expect(outcome.reply).toContain("Show the strongest matches and why");
-    expect(outcome.reply).toContain(
-      "Nothing runs or reaches an owner without your approval",
+    const outcome = await answer(
+      thread,
+      "Denton, TX",
+      { county: "Denton, TX" },
+      reply,
     );
-    expect(outcome.reply).toContain("1/6");
-    expect(outcome.reply).toContain("Where do you buy?");
+
+    expect(outcome.reply).toBe(reply);
+    expect((await run(thread.snapshot())).profile?.county).toBe("Denton, TX");
   });
 
   test("builds a tenant-specific graph and activates it only after approval", async () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
 
-    await answer(thread, "start");
-    expect(
-      (await answer(thread, "Norfolk, VA", { county: "Norfolk, VA" })).reply,
-    ).toContain("2/6");
-    expect((await answer(thread, "$25k", { minOwed: 25_000 })).reply).toContain(
-      "3/6",
-    );
-    expect(
-      (await answer(thread, "$150k", { minAssessed: 150_000 })).reply,
-    ).toContain("4/6");
     expect(
       (
-        await answer(thread, "multiple sources", {
-          evidence: "multiple_sources",
-        })
+        await answer(
+          thread,
+          "Norfolk, VA",
+          { county: "Norfolk, VA" },
+          "Norfolk, VA is set.\n\nWhat recorded debt floor makes a lead worth reviewing?",
+        )
       ).reply,
-    ).toContain("5/6");
+    ).toContain("What recorded debt floor");
     expect(
-      (await answer(thread, "ANY", { anyEventAge: true })).reply,
-    ).toContain("6/6");
-    const proposal = await answer(thread, "yes", { requireApproval: true });
+      (
+        await answer(
+          thread,
+          "$25k",
+          { minOwed: 25_000 },
+          "$25,000 is the debt floor.\n\nWhat minimum assessed value should qualify?",
+        )
+      ).reply,
+    ).toContain("What minimum assessed value");
+    expect(
+      (
+        await answer(
+          thread,
+          "$150k",
+          { minAssessed: 150_000 },
+          "$150,000 is the assessed-value floor.\n\nHow much corroborating evidence should a lead need?",
+        )
+      ).reply,
+    ).toContain("How much corroborating evidence");
+    expect(
+      (
+        await answer(
+          thread,
+          "multiple sources",
+          { evidence: "multiple_sources" },
+          "I will require two independent sources.\n\nShould older records remain eligible?",
+        )
+      ).reply,
+    ).toContain("Should older records remain eligible");
+    expect(
+      (
+        await answer(
+          thread,
+          "ANY",
+          { anyEventAge: true },
+          "Records of any age can qualify.\n\nShould every owner contact require your approval?",
+        )
+      ).reply,
+    ).toContain("Should every owner contact require your approval");
+    const proposal = await answer(
+      thread,
+      "yes",
+      { requireApproval: true },
+      "You will approve every owner contact.",
+    );
 
     expect(proposal.reply).toContain("private lead rule for Norfolk, VA");
     expect(proposal.reply).toContain("owed ≥ $25,000");
@@ -496,40 +531,58 @@ describe("guided onboarding", () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
 
-    await answer(thread, "start");
     const invalid = await answer(thread, "somewhere around Virginia", {
       county: "somewhere around Virginia",
     });
-    const valid = await answer(thread, "Norfolk, VA", {
-      county: "Norfolk, VA",
-    });
+    const validReply =
+      "Norfolk, VA is set.\n\nWhat recorded debt floor makes a lead worth reviewing?";
+    const valid = await answer(
+      thread,
+      "Norfolk, VA",
+      { county: "Norfolk, VA" },
+      validReply,
+    );
 
     expect(invalid.reply).toContain("could not safely store");
     expect(invalid.reply).toContain("two-letter state");
-    expect(valid.reply).toContain("2/6");
+    expect(valid.reply).toBe(validReply);
   });
 
   test("stores model-chosen safe defaults without parsing the user's phrase", async () => {
     const storage = memoryStorage();
     let thread = makeThread(storage);
 
-    await answer(thread, "start");
-    await answer(thread, "Dallas, TX", { county: "Dallas, TX" });
-    await answer(thread, "$20k", { minOwed: 20_000 });
-    await answer(thread, "$80k", { minAssessed: 80_000 });
+    await answer(
+      thread,
+      "Dallas, TX",
+      { county: "Dallas, TX" },
+      "Dallas, TX is set.\n\nWhat recorded debt floor makes a lead worth reviewing?",
+    );
+    await answer(
+      thread,
+      "$20k",
+      { minOwed: 20_000 },
+      "$20,000 is the debt floor.\n\nWhat minimum assessed value should qualify?",
+    );
+    await answer(
+      thread,
+      "$80k",
+      { minAssessed: 80_000 },
+      "$80,000 is the assessed-value floor.\n\nHow much corroborating evidence should a lead need?",
+    );
 
     thread = makeThread(storage);
     const evidence = await answer(
       thread,
       "whatever works",
       { evidence: "multiple_sources" },
-      "I recommend corroboration by 2 independent county sources.",
+      "I recommend corroboration by 2 independent county sources.\n\nShould older records remain eligible?",
     );
     const recency = await answer(
       thread,
       "you decide",
       { anyEventAge: true },
-      "I will use any event age and let stronger evidence decide.",
+      "I will use any event age and let stronger evidence decide.\n\nShould every owner contact require your approval?",
     );
     const proposal = await answer(
       thread,
@@ -539,9 +592,11 @@ describe("guided onboarding", () => {
     );
 
     expect(evidence.reply).toContain("2 independent county sources");
-    expect(evidence.reply).toContain("5/6");
+    expect(evidence.reply).toContain("Should older records remain eligible?");
     expect(recency.reply).toContain("use any event age");
-    expect(recency.reply).toContain("6/6");
+    expect(recency.reply).toContain(
+      "Should every owner contact require your approval?",
+    );
     expect(proposal.reply).toContain("your approval before outreach");
     expect(proposal.reply).toContain(
       "nothing should contact an owner without your say-so",
@@ -561,24 +616,28 @@ describe("guided onboarding", () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
 
-    await answer(thread, "start");
-    await answer(thread, "Dallas, TX", { county: "Dallas, TX" });
+    await answer(
+      thread,
+      "Dallas, TX",
+      { county: "Dallas, TX" },
+      "Dallas, TX is set.\n\nWhat recorded debt floor makes a lead worth reviewing?",
+    );
     const owed = await answer(
       thread,
       "skip",
       { minOwed: 0 },
-      "No recorded-debt floor.",
+      "No recorded-debt floor.\n\nWhat minimum assessed value should qualify?",
     );
     const assessed = await answer(
       thread,
       "whatever works",
       { minAssessed: 0 },
-      "No assessed-value floor.",
+      "No assessed-value floor.\n\nHow much corroborating evidence should a lead need?",
     );
 
     expect(owed.reply).toContain("No recorded-debt floor");
     expect(assessed.reply).toContain("No assessed-value floor");
-    expect(assessed.reply).toContain("4/6");
+    expect(assessed.reply).toContain("How much corroborating evidence");
   });
 
   test("resumes a pre-Pi onboarding record at the same unanswered field", async () => {
@@ -604,10 +663,10 @@ describe("guided onboarding", () => {
       thread,
       "Whatever works",
       { evidence: "multiple_sources" },
-      "I recommend requiring two independent county sources.",
+      "I recommend requiring two independent county sources.\n\nShould older records remain eligible?",
     );
 
-    expect(outcome.reply).toContain("5/6");
+    expect(outcome.reply).toContain("Should older records remain eligible?");
     expect((await run(thread.snapshot())).profile?.evidence).toBe(
       "multiple_sources",
     );

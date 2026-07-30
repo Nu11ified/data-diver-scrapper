@@ -24,6 +24,26 @@ export interface ProfileUpdate {
   readonly requireApproval?: boolean;
 }
 
+export type ProfileField =
+  | "county"
+  | "minOwed"
+  | "minAssessed"
+  | "evidence"
+  | "recency"
+  | "requireApproval";
+
+export const nextProfileField = (
+  profile: AcquisitionProfile | undefined,
+): ProfileField | undefined => {
+  if (profile?.county === undefined) return "county";
+  if (profile.minOwed === undefined) return "minOwed";
+  if (profile.minAssessed === undefined) return "minAssessed";
+  if (profile.evidence === undefined) return "evidence";
+  if (profile.recencyAnswered !== true) return "recency";
+  if (profile.requireApproval === undefined) return "requireApproval";
+  return undefined;
+};
+
 export const legacyProfileText = (
   update: ProfileUpdate,
   fallback: string,
