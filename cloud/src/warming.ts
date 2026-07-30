@@ -57,13 +57,18 @@ export const countyWorkflowId = async (
   abi: number,
   retry = "",
   coverage = "",
+  notificationRecipient = "",
 ): Promise<string> => {
   const retryIdentity =
     retry === ""
       ? `${canonical}:${stamp}:${abi}`
       : `${canonical}:${stamp}:${abi}:${retry}`;
-  const identity =
+  const coverageIdentity =
     coverage === "" ? retryIdentity : `${retryIdentity}:coverage:${coverage}`;
+  const identity =
+    notificationRecipient === ""
+      ? coverageIdentity
+      : `${coverageIdentity}:notify:${notificationRecipient}`;
   const bytes = new TextEncoder().encode(identity);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const suffix = [...digest.subarray(0, 10)]

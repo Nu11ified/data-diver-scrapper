@@ -145,4 +145,33 @@ describe("countyWorkflowId", () => {
       ),
     ).toBe(coverage);
   });
+
+  test("uses a separate job when a tenant needs a completion notification", async () => {
+    const silent = await countyWorkflowId(
+      "city_of_norfolk_va",
+      "100:now",
+      3,
+      "",
+      "amount owed",
+    );
+    const notified = await countyWorkflowId(
+      "city_of_norfolk_va",
+      "100:now",
+      3,
+      "",
+      "amount owed",
+      "tenant-1",
+    );
+    expect(notified).not.toBe(silent);
+    expect(
+      await countyWorkflowId(
+        "city_of_norfolk_va",
+        "100:now",
+        3,
+        "",
+        "amount owed",
+        "tenant-1",
+      ),
+    ).toBe(notified);
+  });
 });

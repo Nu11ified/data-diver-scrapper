@@ -28,6 +28,8 @@ import {
   type Audience,
 } from "../outreach/schedule.ts";
 import {
+  applyProfileUpdate,
+  marketsOf,
   nextProfileField,
   type AcquisitionProfile,
   type EvidencePolicy,
@@ -55,6 +57,7 @@ export interface PropertyMatch {
 export interface CoverageStatus {
   readonly ready: boolean;
   readonly missing: readonly string[];
+  readonly partial: boolean;
 }
 
 export const templateDraft = (match: PropertyMatch): string =>
@@ -166,6 +169,8 @@ export type Pending =
     }
   | { readonly kind: "approve_tree"; readonly graph: Graph };
 
+export type PendingKind = Pending["kind"];
+
 type LegacyOnboardingStep =
   | "market"
   | "min_owed"
@@ -213,10 +218,12 @@ export interface PropertyEvaluation {
 export interface HandleMessageInput {
   readonly text: string;
   readonly candidates: readonly PropertyMatch[];
+  readonly excludePropertyKeys?: readonly string[];
   readonly connectUrl?: string;
   readonly codexAccount?: string;
   readonly onboardingUpdate?: ProfileUpdate;
   readonly onboardingLead?: string;
+  readonly onboardingCompleteWithDefaults?: boolean;
   readonly coverage?: CoverageStatus;
 }
 
@@ -250,18 +257,20 @@ const SUMMARY_LIMIT = 2_400;
 const money = (value: number): string =>
   `$${Math.round(value).toLocaleString("en-US")}`;
 
-const onboardingGraph = (state: AcquisitionProfile): Graph => {
+export const onboardingGraph = (state: AcquisitionProfile): Graph => {
   const requireMultiSource =
     state.evidence === "multiple_sources" || state.evidence === "both";
   const requireViolation =
     state.evidence === "open_violation" || state.evidence === "both";
   const conditions = [
-    {
-      id: "owed_floor",
-      field: "owed",
-      op: "gte" as const,
-      value: state.minOwed ?? 0,
-    },
+    ...((state.minOwed ?? 0) > 0
+      ? [{
+          id: "owed_floor",
+          field: "owed",
+          op: "gte" as const,
+          value: state.minOwed ?? 0,
+        }]
+      : []),
     ...(state.minAssessed !== undefined && state.minAssessed > 0
       ? [{
           id: "assessed_floor",
@@ -348,11 +357,12 @@ export const coverageFor = (
   if (!candidates.some((candidate) => candidate.address !== "")) {
     missing.push("property addresses");
   }
-  if (candidates.some((candidate) => candidate.dataComplete === false)) {
-    missing.push("complete county pagination");
-  }
   const unique = [...new Set(missing)];
-  return { ready: unique.length === 0, missing: unique };
+  return {
+    ready: unique.length === 0,
+    missing: unique,
+    partial: candidates.some((candidate) => candidate.dataComplete === false),
+  };
 };
 
 interface EvaluatedPair {
@@ -380,17 +390,94 @@ const knownSignalsOf = (candidates: readonly PropertyMatch[]): readonly string[]
   ]),
 ];
 
-const describeMatch = (evaluated: EvaluatedMatch, index: number): string => {
+const marketKey = (match: PropertyMatch): string =>
+  match.propertyKey.split("|")[0] ?? "";
+
+const marketLabel = (match: PropertyMatch): string => {
+  const key = marketKey(match).toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  const state = key.match(/_([a-z]{2})$/)?.[1]?.toUpperCase() ?? "";
+  const place = key
+    .replace(/_[a-z]{2}$/, "")
+    .replace(/^city_of_/, "")
+    .replace(/_county$/, "")
+    .split("_")
+    .filter((part) => part !== "")
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+  return state === "" ? place : `${place}, ${state}`;
+};
+
+const matchStrength = (evaluated: EvaluatedMatch): number =>
+  evaluated.match.owed * 1_000 +
+  evaluated.match.violations * 100 +
+  evaluated.match.sources * 10 +
+  evaluated.match.assessed / 1_000_000;
+
+const strongestAcrossMarkets = (
+  qualified: readonly EvaluatedMatch[],
+  limit: number,
+): readonly EvaluatedMatch[] => {
+  const groups = new Map<string, EvaluatedMatch[]>();
+  for (const evaluated of qualified) {
+    const key = marketKey(evaluated.match);
+    groups.set(key, [...(groups.get(key) ?? []), evaluated]);
+  }
+  for (const matches of groups.values()) {
+    matches.sort((left, right) => matchStrength(right) - matchStrength(left));
+  }
+  const result: EvaluatedMatch[] = [];
+  for (let offset = 0; result.length < limit; offset += 1) {
+    let added = false;
+    for (const matches of groups.values()) {
+      const match = matches[offset];
+      if (match !== undefined) {
+        result.push(match);
+        added = true;
+        if (result.length === limit) break;
+      }
+    }
+    if (!added) break;
+  }
+  return result;
+};
+
+const marketBreakdown = (qualified: readonly EvaluatedMatch[]): string => {
+  const counts = new Map<string, { readonly label: string; count: number }>();
+  for (const evaluated of qualified) {
+    const key = marketKey(evaluated.match);
+    const current = counts.get(key);
+    counts.set(key, {
+      label: current?.label ?? marketLabel(evaluated.match),
+      count: (current?.count ?? 0) + 1,
+    });
+  }
+  return [...counts.values()]
+    .map(({ label, count }) => `${label}: ${count.toLocaleString("en-US")}`)
+    .join("; ");
+};
+
+const describeMatch = (
+  evaluated: EvaluatedMatch,
+  index: number,
+  showMarket = false,
+): string => {
   const match = evaluated.match;
-  const lines = [
-    `${index + 1}. ${match.address}`,
-    `   Owner: ${match.owner || "unknown"}`,
-    `   Owed: ${money(match.owed)}${match.assessed > 0 ? ` against ${money(match.assessed)} assessed` : ""}`,
-  ];
-  if (match.debtToValue > 0) lines.push(`   Debt to value: ${match.debtToValue.toFixed(1)}x`);
-  if (match.violations > 0) lines.push(`   Open violations: ${match.violations}`);
-  lines.push(`   Corroborated by ${match.sources} source${match.sources === 1 ? "" : "s"}`);
-  return lines.join("\n");
+  const measured = new Set(
+    match.measured ?? ["owed", "assessed", "debtToValue", "violations", "sources"],
+  );
+  const facts = [
+    measured.has("owed") ? `${money(match.owed)} owed` : "",
+    measured.has("violations") && match.violations > 0
+      ? `${match.violations} open violation${match.violations === 1 ? "" : "s"}`
+      : "",
+    measured.has("sources")
+      ? `${match.sources} source${match.sources === 1 ? "" : "s"}`
+      : "",
+  ].filter((fact) => fact !== "");
+  return (
+    `${index + 1}. ${showMarket ? `[${marketLabel(match)}] ` : ""}${match.address} - ` +
+    facts.join(", ")
+  );
 };
 
 export interface ThreadSnapshot {
@@ -399,6 +486,9 @@ export interface ThreadSnapshot {
   readonly recentTurns: readonly Turn[];
   readonly configured: boolean;
   readonly county: string;
+  readonly markets: readonly string[];
+  readonly pending: PendingKind;
+  readonly pendingGraph?: Graph;
   readonly profile?: AcquisitionProfile;
 }
 
@@ -407,6 +497,7 @@ export interface ApplyScoutInput {
   readonly reply: string;
   readonly graph?: Graph;
   readonly county?: string;
+  readonly markets?: readonly string[];
 }
 
 export interface PreviewFilterInput {
@@ -439,6 +530,17 @@ export interface AttachDraftInput {
   readonly requiresApproval: boolean;
 }
 
+export interface ReplaceDraftInput {
+  readonly userText: string;
+  readonly propertyKey: string;
+  readonly draft: string;
+}
+
+export interface PendingOutreach {
+  readonly match: PropertyMatch;
+  readonly draft: string;
+}
+
 export interface ThreadShape {
   readonly forget: () => Effect.Effect<void, never, RuntimeContextInterface>;
   readonly handleMessage: (
@@ -459,6 +561,14 @@ export interface ThreadShape {
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
   readonly attachDraft: (
     input: AttachDraftInput,
+  ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
+  readonly pendingOutreach: () => Effect.Effect<
+    PendingOutreach | undefined,
+    never,
+    RuntimeContextInterface
+  >;
+  readonly replaceDraft: (
+    input: ReplaceDraftInput,
   ) => Effect.Effect<HandleOutcome, never, RuntimeContextInterface>;
 }
 
@@ -492,6 +602,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               ? "neither"
               : undefined;
     return {
+      ...(stored.county === undefined ? {} : { markets: [stored.county] }),
       ...(stored.county === undefined ? {} : { county: stored.county }),
       ...(stored.minOwed === undefined ? {} : { minOwed: stored.minOwed }),
       ...(stored.minAssessed === undefined
@@ -513,14 +624,30 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
   const mergeProfile = (
     current: AcquisitionProfile,
     update: ProfileUpdate,
+    completeWithDefaults: boolean,
   ): AcquisitionProfile | Error => {
-    let county = current.county;
-    if (update.county !== undefined) {
-      const match = update.county.trim().match(/^(.+?),\s*([A-Za-z]{2})$/);
-      if (match === null || (match[1] ?? "").trim() === "") {
+    let normalizedUpdate = update;
+    const suppliedMarkets =
+      update.markets ??
+      (update.county === undefined ? undefined : [update.county]);
+    if (suppliedMarkets !== undefined) {
+      const normalizedMarkets = suppliedMarkets.map((market) => {
+        const match = market.trim().match(/^(.+?),\s*([A-Za-z]{2})$/);
+        return match === null || (match[1] ?? "").trim() === ""
+          ? undefined
+          : `${(match[1] ?? "").trim()}, ${(match[2] ?? "").toUpperCase()}`;
+      });
+      if (
+        normalizedMarkets.length === 0 ||
+        normalizedMarkets.some((market) => market === undefined)
+      ) {
         return new Error("the market must include a city or county and two-letter state");
       }
-      county = `${(match[1] ?? "").trim()}, ${(match[2] ?? "").toUpperCase()}`;
+      normalizedUpdate = {
+        ...update,
+        markets: [...new Set(normalizedMarkets as string[])],
+        county: normalizedMarkets[0],
+      };
     }
     for (const value of [
       update.minOwed,
@@ -537,28 +664,14 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
     ) {
       return new Error("a recency window must be at least one day");
     }
-    const maxDaysSinceEvent =
-      update.anyEventAge === true
-        ? undefined
-        : update.maxDaysSinceEvent ?? current.maxDaysSinceEvent;
-    const minOwed = update.minOwed ?? current.minOwed;
-    const minAssessed = update.minAssessed ?? current.minAssessed;
-    const evidence = update.evidence ?? current.evidence;
-    const requireApproval =
-      update.requireApproval ?? current.requireApproval;
-    return {
-      ...(county === undefined ? {} : { county }),
-      ...(minOwed === undefined ? {} : { minOwed }),
-      ...(minAssessed === undefined ? {} : { minAssessed }),
-      ...(evidence === undefined ? {} : { evidence }),
-      ...(maxDaysSinceEvent === undefined ? {} : { maxDaysSinceEvent }),
-      ...(update.anyEventAge === true ||
-      update.maxDaysSinceEvent !== undefined ||
-      current.recencyAnswered === true
-        ? { recencyAnswered: true }
-        : {}),
-      ...(requireApproval === undefined ? {} : { requireApproval }),
-    };
+    if (update.anyEventAge === false) {
+      return new Error("event age must be a positive day limit or any age");
+    }
+    return applyProfileUpdate(
+      current,
+      normalizedUpdate,
+      completeWithDefaults,
+    );
   };
 
   const record = (
@@ -618,6 +731,10 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       if (input.county !== undefined && input.county !== "") {
         yield* storage.put("county", input.county);
       }
+      if (input.markets !== undefined && input.markets.length > 0) {
+        yield* storage.put("markets", input.markets);
+        yield* storage.put("county", input.markets[0]);
+      }
       const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
       const summary = (yield* storage.get<string>("summary")) ?? "";
       yield* record(input.userText, input.reply, tree, turns, summary);
@@ -657,12 +774,17 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       const body =
         qualified.length === 0
           ? `Nothing matches that filter.`
-          : `${qualified.length} propert${qualified.length === 1 ? "y matches" : "ies match"} ` +
-            `it. Top ${top.length}:\n\n${top.map(describeMatch).join("\n\n")}`;
+          : `${qualified.length} verified propert${qualified.length === 1 ? "y matches" : "ies match"} ` +
+            `in the loaded records. Top ${top.length}:\n\n${top
+              .map((item, index) => describeMatch(item, index))
+              .join("\n\n")}`;
       const reply =
         `${lead === "" ? "" : `${lead}\n\n`}${body}\n\n` +
+        `${coverage.partial
+          ? `County pagination is incomplete, so this is a floor rather than a countywide total.\n\n`
+          : ""}` +
         `Just for this look: your saved criteria are untouched.\n` +
-        `Reply YES to make this your criteria, or NO to drop it.`;
+        `Should I keep this as your search or leave the saved one unchanged?`;
       yield* storage.put("pending", {
         kind: "remember_filter",
         graph: input.graph,
@@ -685,9 +807,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
     matches: ReadonlyMap<string, PropertyMatch>,
   ): string => {
     const names = keys.map((key) => matches.get(key)?.address ?? key);
-    return names.length > MAX_NAMED_CHANGES
-      ? `${names.slice(0, MAX_NAMED_CHANGES).join(", ")}, +${names.length - MAX_NAMED_CHANGES} more`
-      : names.join(", ");
+    return names.length <= MAX_NAMED_CHANGES ? names.join(", ") : "";
   };
 
   const missingCoverageText = (coverage: CoverageStatus): string =>
@@ -715,23 +835,33 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
       const remain = [...activeMatches.keys()].filter((key) => proposedMatches.has(key));
       const removed = [...activeMatches.keys()].filter((key) => !proposedMatches.has(key));
       const added = [...proposedMatches.keys()].filter((key) => !activeMatches.has(key));
+      const describeChange = (
+        count: number,
+        verb: "removed" | "added",
+        keys: readonly string[],
+        matches: ReadonlyMap<string, PropertyMatch>,
+      ): string => {
+        const names = namedList(keys, matches);
+        return `${count.toLocaleString("en-US")} ${verb}${names === "" ? "" : `: ${names}`}`;
+      };
       const parts = [
-        `${remain.length} remain qualified`,
-        `${removed.length} removed${removed.length > 0 ? `: ${namedList(removed, activeMatches)}` : ""}`,
-        `${added.length} added${added.length > 0 ? `: ${namedList(added, proposedMatches)}` : ""}`,
+        `${remain.length.toLocaleString("en-US")} remain qualified`,
+        describeChange(removed.length, "removed", removed, activeMatches),
+        describeChange(added.length, "added", added, proposedMatches),
       ];
       const lead = input.lead.trim();
       const reply =
         !coverage.ready
           ? `${lead === "" ? "" : `${lead}\n\n`}` +
-            `I am still verifying ${missingCoverageText(coverage)} from official ` +
-            `county sources, so there is no valid lead count yet. Reply APPROVE to ` +
-            `save this search, or REJECT to change it.`
+            `Still verifying ${missingCoverageText(coverage)} from official county ` +
+            `sources, so there is no valid lead count yet.\n\nApprove this search, ` +
+            `reject it, or tell me what to change.`
           : `${lead === "" ? "" : `${lead}\n\n`}Preview across ` +
             `${input.candidates.length} loaded ` +
-            `propert${input.candidates.length === 1 ? "y" : "ies"}:\n` +
-            `${parts.join("; ")}.\n\nReply APPROVE to save this search, or REJECT ` +
-            `to discard it.`;
+            `propert${input.candidates.length === 1 ? "y" : "ies"}` +
+            `${coverage.partial ? " (verified partial set)" : ""}:\n` +
+            `${parts.join("; ")}.\n\nApprove this search, reject it, or tell me ` +
+            `what to change.`;
       yield* storage.put("pending", { kind: "approve_tree", graph: input.graph } satisfies Pending);
       const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
       const summary = (yield* storage.get<string>("summary")) ?? "";
@@ -787,6 +917,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           "summary",
           "pending",
           "county",
+          "markets",
           "onboarding",
         ]) {
           yield* storage.delete(key);
@@ -872,7 +1003,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               `scheduled for ${formatInZone(window.at, timeZone)} - ${window.reason}.\n` +
               `(Demo mode: this message will NOT actually be sent. No real ` +
               `outreach leaves this system.)\n\n` +
-              `Reply REVIEW to see remaining matches.`;
+              `Want to see the remaining matches?`;
             return yield* respond(text, sent, { kind: "idle" }, [], {
               propertyKey: match.propertyKey,
               draft: pending.draft,
@@ -884,7 +1015,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           if (lower === "reject" || lower === "no") {
             return yield* respond(
               text,
-              "Draft discarded. Reply REVIEW to see other matches.",
+              "Draft discarded. Want to see the other matches?",
               { kind: "idle" },
             );
           }
@@ -896,7 +1027,8 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             yield* storage.put("tree", tree);
             yield* storage.delete("onboarding");
             changedTree = tree;
-            const coverage = coverageFor(pending.graph, input.candidates);
+            const coverage =
+              input.coverage ?? coverageFor(pending.graph, input.candidates);
             const pairs = coverage.ready ? evaluateAll() : [];
             const evaluations = asEvaluations(pairs);
             const qualifiedCount = qualifiedOf(pairs).length;
@@ -908,19 +1040,20 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
                   `I will report matches only when the required records are present.`
                 : `Your search is saved. I checked ${input.candidates.length} loaded ` +
                   `propert${input.candidates.length === 1 ? "y" : "ies"} and found ` +
-                  `${qualifiedCount} lead${qualifiedCount === 1 ? "" : "s"} that fit. ` +
+                  `${qualifiedCount} verified lead${qualifiedCount === 1 ? "" : "s"} that fit. ` +
+                  `${coverage.partial
+                    ? `County pagination is incomplete, so that count is a floor rather than a countywide total. `
+                    : ""}` +
                   `Ask me to show the strongest leads or adjust the search.`,
               { kind: "idle" },
               evaluations,
             );
           }
           if (lower === "reject" || lower === "no") {
-            yield* storage.delete("onboarding");
             return yield* respond(
               text,
-              `Discarded. Nothing was applied. Tell me what you want changed, or say ` +
-                `"start over" and I will rebuild the questions with you. Your saved ` +
-                `search is unchanged.`,
+              `Nothing was applied, and your saved search is unchanged. You can ` +
+                `change any part without starting over. What should I change?`,
               { kind: "idle" },
             );
           }
@@ -943,7 +1076,11 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               pending,
             );
           }
-          const merged = mergeProfile(current, input.onboardingUpdate);
+          const merged = mergeProfile(
+            current,
+            input.onboardingUpdate,
+            input.onboardingCompleteWithDefaults === true,
+          );
           if (merged instanceof Error) {
             return yield* respond(
               text,
@@ -952,8 +1089,10 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             );
           }
           yield* storage.put("onboarding", merged);
-          if (merged.county !== undefined) {
-            yield* storage.put("county", merged.county);
+          const markets = marketsOf(merged);
+          if (markets.length > 0) {
+            yield* storage.put("markets", markets);
+            yield* storage.put("county", markets[0]);
           }
           const lead = input.onboardingLead?.trim() ?? "";
           if (nextProfileField(merged) !== undefined) {
@@ -974,23 +1113,27 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               : "",
           ].filter((value) => value !== "");
           const rule =
-            `I built your private lead rule for ${merged.county}: owed ≥ ` +
-            `${money(merged.minOwed ?? 0)}, assessed ≥ ` +
-            `${money(merged.minAssessed ?? 0)}, ` +
+            `${markets.join(" + ")} search: ${(merged.minOwed ?? 0) === 0
+              ? "no debt floor"
+              : `${money(merged.minOwed ?? 0)}+ owed`}; ` +
+            `${(merged.minAssessed ?? 0) === 0
+              ? "no assessed floor"
+              : `${money(merged.minAssessed ?? 0)}+ assessed`}; ` +
             `${evidence.length === 0
-              ? "no extra evidence requirement"
-              : evidence.join(" and ")}, ` +
+              ? "no extra evidence"
+              : evidence.join(" and ")}; ` +
             `${merged.maxDaysSinceEvent === undefined
               ? "any event age"
-              : `activity within ${merged.maxDaysSinceEvent} days`}, ` +
+              : `within ${merged.maxDaysSinceEvent} days`}; ` +
             `${merged.requireApproval === true
-              ? "your approval before outreach"
-              : "no outreach approval gate"}.`;
+              ? "you approve outreach"
+              : "outreach needs no approval"}.`;
           return yield* proposeTree({
             userText: text,
-            lead: `${lead === "" ? "" : `${lead}\n\n`}${rule}`,
+            lead: rule,
             graph,
             candidates: input.candidates,
+            coverage: input.coverage,
           });
         }
 
@@ -1013,7 +1156,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               ? "the one-off filter, not your saved criteria"
               : "your saved criteria";
           const explanation =
-            `${match.address} — recorded owner: ${match.owner || "unknown"}.\n` +
+            `${match.address} - recorded owner: ${match.owner || "unknown"}.\n` +
             `${contactSummary(match)}\n\n` +
             `${worthSummary(match)}\n\n` +
             `${linkBlock(match.address, match.propertyKey.split("|")[0] ?? "")}\n\n` +
@@ -1057,13 +1200,13 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           }
           return yield* respond(
             text,
-            `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`,
+            `${body}\n\nShould I schedule it, revise it, or discard it?`,
             { kind: "approve_outreach", match, draft },
           );
         }
 
         if (lower === "review" || lower === "yes" || lower === "scan") {
-          const coverage = coverageFor(tree.graph, input.candidates);
+          const coverage = input.coverage ?? coverageFor(tree.graph, input.candidates);
           if (!coverage.ready) {
             return yield* respond(
               text,
@@ -1073,7 +1216,10 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             );
           }
           const pairs = evaluateAll();
-          const qualified = qualifiedOf(pairs);
+          const excluded = new Set(input.excludePropertyKeys ?? []);
+          const qualified = qualifiedOf(pairs).filter(
+            ({ match }) => !excluded.has(match.propertyKey),
+          );
           const evaluations = asEvaluations(pairs);
           if (qualified.length === 0) {
             return yield* respond(
@@ -1087,11 +1233,21 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
               evaluations,
             );
           }
-          const top = qualified.slice(0, 3);
+          const top = strongestAcrossMarkets(qualified, 4);
+          const marketCount = new Set(top.map((item) => marketKey(item.match))).size;
+          const breakdown = marketBreakdown(qualified);
           const reply =
-            `${qualified.length} properties match your criteria. Top ${top.length}:\n\n` +
-            top.map(describeMatch).join("\n\n") +
-            `\n\nReply with a property number for owner and outreach.`;
+            `${qualified.length} verified propert${qualified.length === 1 ? "y matches" : "ies match"} ` +
+            `${coverage.partial ? "in the loaded records" : ""}` +
+            `${breakdown === "" ? ". " : ` across ${breakdown}. `}` +
+            `Strongest ${top.length}:\n\n` +
+            top
+              .map((item, index) => describeMatch(item, index, marketCount > 1))
+              .join("\n\n") +
+            `${coverage.partial
+              ? `\n\nCounty pagination is incomplete, so this is a floor rather than a countywide total.`
+              : ""}` +
+            `\n\nWhich property do you want to inspect?`;
           return yield* respond(text, reply, { kind: "review", matches: top }, evaluations);
         }
 
@@ -1129,7 +1285,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           return yield* respond(
             text,
             `Done: minimum owed is now ${money(value)}. ` +
-              `${remaining} properties currently qualify. Reply REVIEW to see them.`,
+              `${remaining} properties currently qualify. Want to see them?`,
             { kind: "idle" },
           );
         }
@@ -1215,12 +1371,29 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
             "onboarding",
           ),
         );
+        const pendingState =
+          (yield* storage.get<Pending>("pending")) ?? { kind: "idle" as const };
+        const pending = pendingState.kind;
+        const storedMarkets = (yield* storage.get<readonly string[]>("markets")) ?? [];
+        const markets =
+          storedMarkets.length > 0
+            ? storedMarkets
+            : marketsOf(profile).length > 0
+              ? marketsOf(profile)
+              : county === "" || loaded.tree.version === 1
+                ? []
+                : [county];
         return {
           tree: loaded.tree,
           summary,
           recentTurns: turns.slice(-8),
           configured: loaded.tree.version > 1,
           county,
+          markets,
+          pending,
+          ...(pendingState.kind === "approve_tree"
+            ? { pendingGraph: pendingState.graph }
+            : {}),
           ...(profile === undefined ? {} : { profile }),
         };
       }),
@@ -1238,7 +1411,7 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
         let nextPending: Pending;
         let outreach: OutreachOrder | undefined;
         if (input.requiresApproval) {
-          reply = `${body}\n\nReply APPROVE to schedule it, or REJECT to discard.`;
+          reply = `${body}\n\nShould I schedule it, revise it, or discard it?`;
           nextPending = {
             kind: "approve_outreach",
             match: input.match,
@@ -1268,6 +1441,47 @@ export const makeThread = (storage: ThreadStorage): ThreadShape => {
           evaluations: [],
           ...(changedTree === undefined ? {} : { tree: changedTree }),
           ...(outreach === undefined ? {} : { outreach }),
+        } satisfies HandleOutcome;
+      }),
+
+    pendingOutreach: () =>
+      Effect.gen(function* () {
+        const pending = yield* storage.get<Pending>("pending");
+        return pending?.kind === "approve_outreach"
+          ? { match: pending.match, draft: pending.draft }
+          : undefined;
+      }),
+
+    replaceDraft: (input: ReplaceDraftInput) =>
+      Effect.gen(function* () {
+        const loaded = yield* loadTree;
+        const pending = yield* storage.get<Pending>("pending");
+        if (
+          pending?.kind !== "approve_outreach" ||
+          pending.match.propertyKey !== input.propertyKey
+        ) {
+          return yield* applyScout({
+            userText: input.userText,
+            reply:
+              "That outreach draft is no longer pending, so nothing changed. " +
+              "Choose a property before requesting another draft.",
+          });
+        }
+        const reply =
+          `Revised draft:\n"${input.draft}"\n\nShould I schedule it, revise it ` +
+          `again, or discard it?`;
+        yield* storage.put("pending", {
+          kind: "approve_outreach",
+          match: pending.match,
+          draft: input.draft,
+        } satisfies Pending);
+        const turns = (yield* storage.get<readonly Turn[]>("turns")) ?? [];
+        const summary = (yield* storage.get<string>("summary")) ?? "";
+        yield* record(input.userText, reply, loaded.tree, turns, summary);
+        return {
+          reply,
+          evaluations: [],
+          ...(loaded.created ? { tree: loaded.tree } : {}),
         } satisfies HandleOutcome;
       }),
 

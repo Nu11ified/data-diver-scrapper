@@ -183,13 +183,15 @@ stored credential is alive by refreshing it and re-sealing the result.
 
 With an account connected the assistant gains a Codex brain: free-text
 messages carry the measured signal catalog, the live tree and real scan
-counts into the model, which answers under a strict JSON contract — a
-reply, a validated tree proposal, or a county discovery request.
-First-time users get an interview that builds their tree. Asking for a
-new county makes the model propose candidate record endpoints, each of
-which must survive the real fetch-classify-extract pipeline before it is
-admitted to the hourly sweep; the reply reports what each candidate
-actually measured.
+counts into the model, which answers through typed conversation actions.
+First-time users can state their whole search in one message or answer
+incrementally; corrections preserve everything else they already supplied.
+The source-backed [SMS conversation contract](docs/conversation-guide.md)
+defines the required one-shot, correction, interruption, recovery and resume
+behaviors. Asking for a new county makes the model propose candidate record
+endpoints, each of which must survive the real fetch-classify-extract pipeline
+before it is admitted to the hourly sweep; the reply reports what each
+candidate actually measured.
 
 Approving outreach schedules a simulated send rather than pretending one
 happened: the owner name classifies as business or person, the send lands

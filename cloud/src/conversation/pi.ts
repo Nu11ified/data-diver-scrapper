@@ -56,7 +56,7 @@ const GraphInput = Type.Object({
   nodes: Type.Array(Type.Union([ConditionNode, ApprovalNode, ActionNode])),
 });
 
-const MessageText = Type.String({ minLength: 1, maxLength: 500 });
+const MessageText = Type.String({ minLength: 1, maxLength: 320 });
 const Text = Type.Object({ text: MessageText });
 const County = Type.String({
   pattern: "^[^,\\n]+,\\s*[A-Z]{2}$",
@@ -172,7 +172,9 @@ const defineTool = <TParameters extends TSchema>(
 ): AgentTool<TParameters> => tool;
 
 const fieldsIn = (update: ProfileUpdate): readonly ProfileField[] => [
-  ...(update.county === undefined ? [] : ["county" as const]),
+  ...(update.county === undefined && update.markets === undefined
+    ? []
+    : ["county" as const]),
   ...(update.minOwed === undefined ? [] : ["minOwed" as const]),
   ...(update.minAssessed === undefined ? [] : ["minAssessed" as const]),
   ...(update.evidence === undefined ? [] : ["evidence" as const]),
@@ -184,18 +186,58 @@ const fieldsIn = (update: ProfileUpdate): readonly ProfileField[] => [
     : ["requireApproval" as const]),
 ];
 
+const explicitProfileUpdate = (text: string): ProfileUpdate => {
+  const amountMatch =
+    /\b(?:minimum(?:\s+amount)?\s+owed|at\s+least)\b[^$\d]{0,24}\$?\s*([\d,.]+)\s*([kK])?/i.exec(
+      text,
+    );
+  const minOwed =
+    amountMatch === null
+      ? undefined
+      : Number(amountMatch[1]?.replace(/,/g, "")) *
+        (amountMatch[2] === undefined ? 1 : 1_000);
+  const requireApproval =
+    /\b(?:without|no)\s+(?:my\s+)?approval\b/i.test(text)
+      ? false
+      : /\b(?:require|requiring|required|use)\s+(?:my\s+)?approval\b|\bapproval\s+before\s+outreach\b/i.test(
+            text,
+          )
+        ? true
+        : undefined;
+  return {
+    ...(Number.isFinite(minOwed) ? { minOwed } : {}),
+    ...(/\b(?:no|without)\s+(?:assessed(?:-value)?|assessment(?:-value)?)\s+(?:minimum|floor)\b/i.test(
+      text,
+    )
+      ? { minAssessed: 0 }
+      : {}),
+    ...(/\b(?:allow|use|keep|include)\s+(?:records?\s+of\s+)?any\s+event\s+age\b/i.test(
+      text,
+    )
+      ? { anyEventAge: true }
+      : {}),
+    ...(/\b(?:evidence\s+from|require|use)\s+(?:multiple|two|2)\s+(?:independent\s+)?(?:county\s+)?sources\b/i.test(
+      text,
+    )
+      ? { evidence: "multiple_sources" as const }
+      : {}),
+    ...(requireApproval === undefined ? {} : { requireApproval }),
+  };
+};
+
 const validateProfileUpdate = (
-  expected: ProfileField | undefined,
+  current: PiScoutCall["context"]["profile"],
   update: ProfileUpdate,
-  text: string,
+  completeWithDefaults: boolean,
 ): void => {
-  if (expected === undefined) {
-    throw new Error("The onboarding profile is already complete. Reply naturally.");
-  }
+  const expected = nextProfileField(current);
   const fields = fieldsIn(update);
-  if (fields.length !== 1 || fields[0] !== expected) {
+  if (
+    fields.length === 0 &&
+    (!completeWithDefaults || expected === undefined)
+  ) {
     throw new Error(
-      `Update only the current onboarding field: ${expected}. Preserve the user's answer and call update_profile again.`,
+      "Capture every search preference the user supplied, or reply naturally if they supplied none.",
     );
   }
   if (
@@ -207,6 +249,18 @@ const validateProfileUpdate = (
     );
   }
   if (
+    update.markets !== undefined &&
+    (update.markets.length === 0 ||
+      update.markets.length > 5 ||
+      update.markets.some(
+        (market) => !/^[^,\n]+,\s*[A-Z]{2}$/.test(market.trim()),
+      ))
+  ) {
+    throw new Error(
+      'Keep every place and state from the user, normalize each as "City or County, ST", and call update_profile again.',
+    );
+  }
+  if (
     update.maxDaysSinceEvent !== undefined &&
     update.anyEventAge !== undefined
   ) {
@@ -214,23 +268,16 @@ const validateProfileUpdate = (
       "Choose either a numeric recency window or any event age, not both.",
     );
   }
-  if (
-    expected !== "requireApproval" &&
-    (!text.trim().includes("\n\n") || !text.trim().endsWith("?"))
-  ) {
-    throw new Error(
-      "Write the SMS as two short paragraphs: acknowledge the accepted answer, then ask exactly one next question.",
-    );
-  }
-  if (
-    expected === "requireApproval" &&
-    (text.includes("?") || /\b(approve|scan|saved|set)\b/i.test(text))
-  ) {
-    throw new Error(
-      "Acknowledge the outreach choice in one short sentence only. Do not claim the search is saved or set, ask to scan, or request approval; the server presents the final search for approval.",
-    );
+  if (update.anyEventAge === false) {
+    throw new Error("Use anyEventAge=true, or provide a positive maxDaysSinceEvent.");
   }
 };
+
+const authorizesDefaults = (text: string): boolean =>
+  /\b(?:safe\s+defaults?|use\s+(?:the\s+)?defaults?|default\s+the\s+rest|whatever\s+works|you\s+decide|handle\s+the\s+rest)\b/i.test(
+    text,
+  ) ||
+  /\b(?:find|search|scan|show|compare|target|look(?:ing)?\s+for)\b/i.test(text);
 
 export const runPiScout = async (
   call: PiScoutCall,
@@ -248,17 +295,28 @@ export const runPiScout = async (
       description:
         "Send a concise, structured SMS that answers directly, shows relevant progress, and ends with one contextual next move without changing state.",
       parameters: Text,
-      execute: async (_id, params) =>
-        choose({ kind: "reply", text: params.text as string }),
+      execute: async (_id, params) => {
+        const update = explicitProfileUpdate(call.userText);
+        return fieldsIn(update).length === 0
+          ? choose({ kind: "reply", text: params.text as string })
+          : choose({
+              kind: "update_profile",
+              text: params.text as string,
+              update,
+            });
+      },
     }),
     defineTool({
       name: "update_profile",
       label: "Update acquisition profile",
       description:
-        `Record exactly the current onboarding field (${nextProfileField(call.context.profile) ?? "complete"}). The text is the complete user-facing SMS. Until the final field, write two short paragraphs separated by a blank line: acknowledge the accepted answer, then ask exactly one natural question for the next field. For the final field, only acknowledge the outreach choice in one short sentence; the server presents the completed search and approval request. Include only facts supported by the user, or a safe professional default when they explicitly delegate the choice.`,
+        `Record every onboarding preference in the latest message, regardless of the current field (${nextProfileField(call.context.profile) ?? "complete"}). Never drop values that arrive early. Use markets for one to five simultaneous markets and preserve their order. A message can answer a prior location question and ask "why"; capture the answer and address the question in text. Set completeWithDefaults=true when the user gives usable markets and asks for a search without requesting an interview, or delegates unspecified choices. Defaults fill only unanswered preferences: $10,000 owed, no assessed-value floor, multiple independent sources, any event age, and approval before outreach. Explicit values always win. If anything remains missing, acknowledge all captured values and ask one question for everything else, offering defaults. If complete, acknowledge once without a question; the server shows the full search and confirmation.`,
       parameters: Type.Object({
         text: MessageText,
         county: Type.Optional(County),
+        markets: Type.Optional(
+          Type.Array(County, { minItems: 1, maxItems: 5 }),
+        ),
         minOwed: Type.Optional(Type.Number({ minimum: 0 })),
         minAssessed: Type.Optional(Type.Number({ minimum: 0 })),
         evidence: Type.Optional(
@@ -270,12 +328,16 @@ export const runPiScout = async (
           ]),
         ),
         maxDaysSinceEvent: Type.Optional(Type.Number({ minimum: 1 })),
-        anyEventAge: Type.Optional(Type.Boolean()),
+        anyEventAge: Type.Optional(Type.Literal(true)),
         requireApproval: Type.Optional(Type.Boolean()),
+        completeWithDefaults: Type.Optional(Type.Boolean()),
       }),
       execute: async (_id, params) => {
         const update: ProfileUpdate = {
           ...("county" in params ? { county: params.county as string } : {}),
+          ...("markets" in params
+            ? { markets: params.markets as readonly string[] }
+            : {}),
           ...("minOwed" in params ? { minOwed: params.minOwed as number } : {}),
           ...("minAssessed" in params
             ? { minAssessed: params.minAssessed as number }
@@ -292,16 +354,26 @@ export const runPiScout = async (
           ...("requireApproval" in params
             ? { requireApproval: params.requireApproval as boolean }
             : {}),
+          ...explicitProfileUpdate(call.userText),
         };
+        const completeWithDefaults =
+          params.completeWithDefaults === true && authorizesDefaults(call.userText);
+        if (fieldsIn(update).length === 0 && !completeWithDefaults) {
+          return choose({
+            kind: "reply",
+            text: params.text as string,
+          });
+        }
         validateProfileUpdate(
-          nextProfileField(call.context.profile),
+          call.context.profile,
           update,
-          params.text as string,
+          completeWithDefaults,
         );
         return choose({
           kind: "update_profile",
           text: params.text as string,
           update,
+          ...(completeWithDefaults ? { completeWithDefaults: true } : {}),
         });
       },
     }),
@@ -309,7 +381,7 @@ export const runPiScout = async (
       name: "show_matches",
       label: "Show matching properties",
       description:
-        "List the strongest current properties only when source coverage is complete.",
+        "List the strongest current properties when required signals are available. Use this for a verified partial set too; the server labels its count as a floor.",
       parameters: Type.Object({
         text: MessageText,
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),
@@ -344,6 +416,22 @@ export const runPiScout = async (
           kind: "resolve_pending",
           text: params.text as string,
           approved: params.approved as boolean,
+        }),
+    }),
+    defineTool({
+      name: "revise_outreach",
+      label: "Revise outreach draft",
+      description:
+        "Revise the pending outreach draft without losing the selected property. Use only when PENDING ACTION is approve_outreach.",
+      parameters: Type.Object({
+        text: MessageText,
+        instruction: Type.String({ minLength: 1, maxLength: 240 }),
+      }),
+      execute: async (_id, params) =>
+        choose({
+          kind: "revise_outreach",
+          text: params.text as string,
+          instruction: params.instruction as string,
         }),
     }),
     defineTool({

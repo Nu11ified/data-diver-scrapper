@@ -14,3 +14,4 @@ cloud/.alchemy/
 cloud/.env
 cloud/src/generated/
 cloud/.env
+demo/

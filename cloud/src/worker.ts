@@ -27,6 +27,7 @@ import { sendblue, simulated, type Sender } from "./outreach.ts";
 import {
   coverageFor,
   makeThread,
+  onboardingGraph,
   slashCommand,
   subjectOf,
   templateDraft,
@@ -37,14 +38,21 @@ import {
 } from "./conversation/thread.ts";
 import { runPiScout } from "./conversation/pi.ts";
 import {
+  applyProfileUpdate,
   legacyProfileText,
+  marketsOf,
   type ProfileUpdate,
 } from "./conversation/profile.ts";
 import type {
   ScoutDecision,
   SourceCandidate,
 } from "./conversation/scout.ts";
-import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
+import {
+  SIGNAL_CATALOG,
+  evaluate,
+  validateGraph,
+  type Graph,
+} from "./decision/graph.ts";
 import {
   CodexError,
   RESEARCH_MODEL,
@@ -420,23 +428,94 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const extraSignals = [
           ...new Set(candidates.flatMap((candidate) => Object.keys(candidate.signals))),
         ];
+        const coverageGraph =
+          snap.pending === "approve_tree" && snap.pendingGraph !== undefined
+            ? snap.pendingGraph
+            : snap.tree.graph;
         const qualifiedCount = candidates.filter(
           (candidate) =>
-            evaluate(snap.tree.graph, subjectOf(candidate)).outcome === "match",
+            evaluate(coverageGraph, subjectOf(candidate)).outcome === "match",
         ).length;
-        const coverage = coverageFor(snap.tree.graph, candidates);
-        const discoverableMissing = coverage.missing.filter(
-          (item) => item !== "complete county pagination",
-        );
+        const activeMarkets =
+          snap.markets.length > 0
+            ? snap.markets
+            : marketsOf(snap.profile).length > 0
+              ? marketsOf(snap.profile)
+              : snap.configured && snap.county !== ""
+                ? [snap.county]
+                : [];
+        const scanMarkets = (
+          graph: Graph,
+          markets: readonly string[],
+        ) =>
+          Effect.forEach(
+            markets,
+            (market) =>
+              Effect.gen(function* () {
+                const canonical = yield* resolveJurisdiction(market);
+                const marketCandidates = candidates.filter(
+                  (candidate) =>
+                    (candidate.propertyKey.split("|")[0] ?? "") === canonical,
+                );
+                const warm = yield* countyIsWarm(market);
+                const marketCoverage = warm
+                  ? coverageFor(graph, marketCandidates)
+                  : {
+                      ready: false,
+                      missing: ["county records"],
+                      partial: false,
+                    };
+                return {
+                  market,
+                  candidateCount: marketCandidates.length,
+                  qualifiedCount: marketCandidates.filter(
+                    (candidate) =>
+                      evaluate(graph, subjectOf(candidate)).outcome === "match",
+                  ).length,
+                  coverage: marketCoverage,
+                };
+              }),
+            { concurrency: 4 },
+          );
+        const combinedCoverage = (
+          graph: Graph,
+          scans: readonly {
+            readonly market: string;
+            readonly coverage: {
+              readonly ready: boolean;
+              readonly missing: readonly string[];
+              readonly partial: boolean;
+            };
+          }[],
+        ) =>
+          scans.length === 0
+            ? coverageFor(graph, candidates)
+            : scans.length === 1
+              ? scans[0]?.coverage ?? coverageFor(graph, candidates)
+              : {
+                  ready: scans.every((scan) => scan.coverage.ready),
+                  missing: scans.flatMap((scan) =>
+                    scan.coverage.ready
+                      ? []
+                      : scan.coverage.missing.map(
+                          (missing) => `${scan.market}: ${missing}`,
+                        ),
+                  ),
+                  partial: scans.some((scan) => scan.coverage.partial),
+                };
+        const marketScans = yield* scanMarkets(coverageGraph, activeMarkets);
+        const coverage = combinedCoverage(coverageGraph, marketScans);
         const context = {
           tree: snap.tree,
           configured: snap.configured,
           summary: snap.summary,
           recentTurns: snap.recentTurns,
           county: snap.county,
+          markets: marketScans,
           candidateCount: candidates.length,
           qualifiedCount,
           extraSignals,
+          pending: snap.pending,
           coverage,
           ...(snap.profile === undefined ? {} : { profile: snap.profile }),
         };
@@ -480,17 +559,30 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           } satisfies HandleOutcome;
         }
         if (
-          discoverableMissing.length > 0 &&
-          snap.county !== "" &&
+          marketScans.some((scan) => !scan.coverage.ready) &&
           decision.kind !== "discover" &&
-          !(decision.kind === "update_profile" && decision.update.county !== undefined)
+          !(
+            decision.kind === "update_profile" &&
+            (decision.update.county !== undefined ||
+              decision.update.markets !== undefined)
+          )
         ) {
-          yield* ensureCountyWarm(
-            snap.county,
-            tenantId,
-            discoverableMissing,
-            snap.configured,
-            notifyFrom,
+          yield* Effect.forEach(
+            marketScans.filter((scan) => !scan.coverage.ready),
+            (scan) =>
+              ensureCountyWarm(
+                scan.market,
+                tenantId,
+                scan.coverage.missing.filter(
+                  (item) => item !== "complete county pagination",
+                ),
+                snap.configured ||
+                  (decision.kind === "resolve_pending" &&
+                    decision.approved &&
+                    snap.pending === "approve_tree"),
+                notifyFrom,
+              ),
+            { concurrency: 4 },
           );
         }
         const asInternal =
@@ -504,9 +596,25 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                   : "reject"
                 : "";
         if (asInternal !== "") {
+          const excludePropertyKeys =
+            decision.kind === "show_matches" &&
+            /\b(?:remaining|other|next|excluding|exclude)\b/i.test(text)
+              ? yield* Effect.promise(() =>
+                  db().outreach
+                    .findMany({
+                      where: {
+                        tenantId,
+                        status: "scheduled",
+                      },
+                      select: { propertyKey: true },
+                    })
+                    .then((rows) => rows.map((row) => row.propertyKey)),
+                )
+              : [];
           const acted = yield* thread.handleMessage({
             text: asInternal,
             candidates,
+            excludePropertyKeys,
             codexAccount: "",
             coverage,
           });
@@ -520,6 +628,16 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           };
         }
         if (decision.kind === "update_profile") {
+          const proposedProfile = applyProfileUpdate(
+            snap.profile,
+            decision.update,
+            decision.completeWithDefaults === true,
+          );
+          const proposedGraph = onboardingGraph(proposedProfile);
+          const proposedScans = yield* scanMarkets(
+            proposedGraph,
+            marketsOf(proposedProfile),
+          );
           const outcome = yield* thread.handleMessage({
             text:
               snap.profile === undefined
@@ -529,17 +647,25 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             codexAccount: credential.accountId,
             onboardingUpdate: decision.update,
             onboardingLead: decision.text,
-            coverage,
+            ...(decision.completeWithDefaults === true
+              ? { onboardingCompleteWithDefaults: true }
+              : {}),
+            coverage: combinedCoverage(proposedGraph, proposedScans),
           });
-          if (decision.update.county !== undefined) {
-            yield* ensureCountyWarm(
-              decision.update.county,
-              tenantId,
-              DEFAULT_SOURCE_COVERAGE,
-              false,
-              notifyFrom,
-            );
-          }
+          yield* Effect.forEach(
+            proposedScans.filter((scan) => !scan.coverage.ready),
+            (scan) =>
+              ensureCountyWarm(
+                scan.market,
+                tenantId,
+                scan.coverage.missing.filter(
+                  (item) => item !== "complete county pagination",
+                ),
+                false,
+                notifyFrom,
+              ),
+            { concurrency: 4 },
+          );
           return outcome;
         }
         if (decision.kind === "discover") {
@@ -583,6 +709,44 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             remember: decision.remember,
           });
         }
+        if (decision.kind === "revise_outreach") {
+          const pendingOutreach = yield* thread.pendingOutreach();
+          if (pendingOutreach === undefined) {
+            return yield* thread.applyScout({
+              userText: text,
+              reply:
+                "There is no outreach draft waiting to be revised. Choose a " +
+                "property first.",
+            });
+          }
+          const revised = yield* draftOutreach(
+            tenantId,
+            pendingOutreach.match,
+            {
+              previousDraft: pendingOutreach.draft,
+              instruction: decision.instruction,
+            },
+          ).pipe(
+            Effect.catch((cause) =>
+              Effect.succeed(
+                cause instanceof Error ? cause : new Error(String(cause)),
+              ),
+            ),
+          );
+          if (revised instanceof Error) {
+            return yield* thread.applyScout({
+              userText: text,
+              reply:
+                "I could not revise the draft, so the original is unchanged. " +
+                "Try the revision again.",
+            });
+          }
+          return yield* thread.replaceDraft({
+            userText: text,
+            propertyKey: pendingOutreach.match.propertyKey,
+            draft: revised,
+          });
+        }
         if (decision.kind === "set_tree") {
           const problems = validateGraph(decision.graph, [
             ...Object.keys(SIGNAL_CATALOG),
@@ -607,7 +771,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         return yield* thread.applyScout({ userText: text, reply: decision.text });
       });
 
-    const draftOutreach = (tenantId: string, match: PropertyMatch) =>
+    const draftOutreach = (
+      tenantId: string,
+      match: PropertyMatch,
+      revision?: {
+        readonly previousDraft: string;
+        readonly instruction: string;
+      },
+    ) =>
       Effect.gen(function* () {
         const credential = Option.getOrUndefined(yield* freshCredential(tenantId));
         if (credential === undefined) {
@@ -621,6 +792,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           `recorded owner: ${match.owner}`,
           match.mailing !== "" ? `owner mailing address: ${match.mailing}` : "",
           match.assessed > 0 ? `county assessed value: $${Math.round(match.assessed)}` : "",
+          revision === undefined ? "" : `previous draft: ${revision.previousDraft}`,
+          revision === undefined ? "" : `requested revision: ${revision.instruction}`,
         ]
           .filter((line) => line !== "")
           .join("\n");
@@ -630,7 +803,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           `numbers or circumstances. Address the owner naturally by name. Reference`,
           `the property address. Express interest in buying and invite a`,
           `conversation. Do not mention taxes, debts, delinquency, violations or`,
-          `hardship of any kind. 2 to 4 sentences. Output the message as plain`,
+          `hardship of any kind.`,
+          revision === undefined
+            ? `Write a new draft.`
+            : `Revise the previous draft as requested.`,
+          `Use 1 or 2 sentences and stay under 220 characters. Output the message as plain`,
           `text only: no placeholders, no signature block, no quotes, no JSON.`,
         ].join("\n");
         const raw = yield* complete(
@@ -1130,15 +1307,17 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           });
           const prisma = db();
           try {
-            await prisma.$transaction(
-              rows.map(({ key, row }) =>
-                prisma.property.upsert({
-                  where: { key },
-                  create: { key, ...row },
-                  update: row,
-                }),
-              ),
-            );
+            for (let offset = 0; offset < rows.length; offset += 200) {
+              await prisma.$transaction(
+                rows.slice(offset, offset + 200).map(({ key, row }) =>
+                  prisma.property.upsert({
+                    where: { key },
+                    create: { key, ...row },
+                    update: row,
+                  }),
+                ),
+              );
+            }
           } finally {
             await prisma.$disconnect();
           }
@@ -1330,17 +1509,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                     timeout: "2 minutes",
                   },
                 );
+          const finalize = (status: CountyWarmStatusValue) =>
+            Effect.gen(function* () {
+              const current = yield* readWarmStatus(canonical);
+              if (!shouldNotifyWarm(current, event.instanceId)) return false;
+              yield* writeWarmStatus(status);
+              return true;
+            });
 
           let admittedSources = 0;
           if (initialStamp === "0:none" && input.tenantId === undefined) {
             const error = `no property records or linked researcher for ${input.county}`;
-            yield* writeWarmStatus({
+            const current = yield* finalize({
               ...running,
               state: "error",
               updatedAt: new Date().toISOString(),
               error,
             });
-            yield* notify(false, error);
+            if (current) yield* notify(false, error);
             return { ok: false, county: input.county, error };
           }
           const requiredCoverage = input.requiredCoverage ?? [];
@@ -1370,13 +1556,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               const error =
                 Cause.pretty(discovered.cause).slice(0, 400) ||
                 `county source discovery failed`;
-              yield* writeWarmStatus({
+              const current = yield* finalize({
                 ...running,
                 state: "error",
                 updatedAt: new Date().toISOString(),
                 error,
               });
-              yield* notify(false, error);
+              if (current) yield* notify(false, error);
               return { ok: false, county: input.county, error };
             }
             const admitted = yield* Effect.exit(
@@ -1407,13 +1593,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               const error =
                 Cause.pretty(admitted.cause).slice(0, 400) ||
                 `county source validation failed`;
-              yield* writeWarmStatus({
+              const current = yield* finalize({
                 ...running,
                 state: "error",
                 updatedAt: new Date().toISOString(),
                 error,
               });
-              yield* notify(false, error);
+              if (current) yield* notify(false, error);
               return { ok: false, county: input.county, error };
             }
             const admission = admitted.value;
@@ -1424,13 +1610,13 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               const error =
                 admission.admissionError ??
                 `no verified machine-readable source found for ${input.county}`;
-              yield* writeWarmStatus({
+              const current = yield* finalize({
                 ...running,
                 state: "error",
                 updatedAt: new Date().toISOString(),
                 error,
               });
-              yield* notify(false, error);
+              if (current) yield* notify(false, error);
               return { ok: false, county: input.county, error };
             }
             admittedSources = admission.admitted;
@@ -1485,24 +1671,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               compileError === ""
                 ? `county records changed throughout three compile passes`
                 : compileError;
-            yield* writeWarmStatus({
+            const current = yield* finalize({
               ...running,
               state: "error",
               updatedAt: new Date().toISOString(),
               error,
             });
-            yield* notify(false, error);
+            if (current) yield* notify(false, error);
             return { ok: false, county: input.county, error };
           }
 
-          yield* writeWarmStatus({
+          const current = yield* finalize({
             ...running,
             stamp: finalStamp,
             state: "complete",
             updatedAt: new Date().toISOString(),
             properties,
           });
-          yield* notify(true);
+          if (current) yield* notify(true);
           return {
             ok: true,
             county: input.county,
@@ -1574,7 +1760,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         }
 
         const baseInstanceId = yield* Effect.promise(() =>
-          countyWorkflowId(canonical, stamp, abi, "", coverageKey),
+          countyWorkflowId(
+            canonical,
+            stamp,
+            abi,
+            "",
+            coverageKey,
+            notifyTenant ? tenantId ?? "" : "",
+          ),
         );
         if (
           existing !== undefined &&
@@ -1589,7 +1782,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           retry === ""
             ? baseInstanceId
             : yield* Effect.promise(() =>
-                countyWorkflowId(canonical, stamp, abi, retry, coverageKey),
+                countyWorkflowId(
+                  canonical,
+                  stamp,
+                  abi,
+                  retry,
+                  coverageKey,
+                  notifyTenant ? tenantId ?? "" : "",
+                ),
               );
 
         const now = new Date().toISOString();
@@ -1905,13 +2105,34 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       Effect.gen(function* () {
         const compiled = Option.getOrUndefined(yield* compileCountyPayload(county));
         if (compiled === undefined) return [] as readonly PropertyMatch[];
-        const sourceIds = [
-          ...new Set(
-            compiled.records.flatMap((record) =>
-              record.events.map((event) => event.source),
-            ),
-          ),
-        ];
+        const canonical = yield* resolveJurisdiction(county);
+        const properties = yield* Effect.promise(() =>
+          db().property.findMany({
+            where: { jurisdiction: canonical },
+            orderBy: [{ owed: "desc" }, { key: "asc" }],
+            take: 20_000,
+            select: {
+              key: true,
+              address: true,
+              owner: true,
+              lifecycleState: true,
+              owed: true,
+              assessed: true,
+              debtToValue: true,
+              violations: true,
+              sourceCount: true,
+              fields: true,
+            },
+          }),
+        );
+        const eventSources = yield* Effect.promise(() =>
+          db().event.findMany({
+            where: countyWhere(county),
+            distinct: ["sourceId"],
+            select: { sourceId: true },
+          }),
+        );
+        const sourceIds = eventSources.map((event) => event.sourceId);
         const runs = sourceIds.length === 0
           ? []
           : yield* Effect.promise(() =>
@@ -1928,9 +2149,11 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const eventCount = Number((yield* countyStamp(county)).split(":")[0] ?? 0);
         const dataComplete =
           eventCount <= EVENT_LIMIT &&
+          properties.length < 20_000 &&
           sourceIds.length > 0 &&
           sourceIds.every((sourceId) => latest.get(sourceId) === false);
-        return compiled.records
+        const compiledMatches = new Map(
+          compiled.records
           .map((record): PropertyMatch => {
             const sourceIds = new Set(record.events.map((e) => e.source));
             const measured = [
@@ -1958,7 +2181,67 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               dataComplete,
             };
           })
-          .filter((match) => match.address !== "");
+          .filter((match) => match.address !== "")
+          .map((match) => [match.propertyKey, match] as const),
+        );
+        if (properties.length === 0) return [...compiledMatches.values()];
+        const fieldValue = (
+          fields: unknown,
+          name: string,
+        ): string => {
+          if (typeof fields !== "object" || fields === null || Array.isArray(fields)) {
+            return "";
+          }
+          const fact = (fields as Record<string, unknown>)[name];
+          if (typeof fact !== "object" || fact === null || Array.isArray(fact)) {
+            return "";
+          }
+          const value = (fact as Record<string, unknown>).value;
+          return typeof value === "string" || typeof value === "number"
+            ? String(value)
+            : "";
+        };
+        return properties.flatMap((property): readonly PropertyMatch[] => {
+          const address = property.address ?? "";
+          if (address === "") return [];
+          const cached = compiledMatches.get(property.key);
+          const owed = property.owed === null ? undefined : Number(property.owed);
+          const assessed =
+            property.assessed === null ? undefined : Number(property.assessed);
+          const debtToValue =
+            property.debtToValue === null ? undefined : property.debtToValue;
+          const signals = {
+            ...(cached?.signals ?? {}),
+            ...(owed === undefined ? {} : { delinquent_amount: owed }),
+            ...(assessed === undefined ? {} : { assessed_value: assessed }),
+            ...(debtToValue === undefined ? {} : { debt_to_value: debtToValue }),
+            code_violations: property.violations,
+          };
+          const measured = [
+            ...(owed === undefined ? [] : ["owed"]),
+            ...(assessed === undefined ? [] : ["assessed"]),
+            ...(debtToValue === undefined ? [] : ["debtToValue"]),
+            "violations",
+            "sources",
+          ];
+          return [{
+            propertyKey: property.key,
+            address,
+            owner: property.owner ?? "",
+            mailing: fieldValue(property.fields, "mailing_address"),
+            phone: fieldValue(property.fields, "owner_phone"),
+            email: fieldValue(property.fields, "owner_email"),
+            lifecycleState: property.lifecycleState,
+            owed: owed ?? 0,
+            assessed: assessed ?? 0,
+            debtToValue: debtToValue ?? 0,
+            violations: property.violations,
+            sources: property.sourceCount,
+            signals,
+            measured,
+            dataComplete,
+          }];
+        });
       });
 
     yield* Cloudflare.Workers.cron("0 * * * *", () =>
@@ -2032,20 +2315,38 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
           const thread = threadFor(tenantId);
           const snapshot = yield* thread.snapshot();
-          const currentCounty = snapshot.profile?.county ?? snapshot.county;
-          const currentCanonical =
-            currentCounty === ""
-              ? ""
-              : yield* resolveJurisdiction(currentCounty);
+          const currentMarkets =
+            snapshot.markets.length > 0
+              ? snapshot.markets
+              : marketsOf(snapshot.profile).length > 0
+                ? marketsOf(snapshot.profile)
+                : snapshot.county === ""
+                  ? []
+                  : [snapshot.county];
+          const currentCanonicals = yield* Effect.forEach(
+            currentMarkets,
+            resolveJurisdiction,
+            { concurrency: 4 },
+          );
           if (
-            currentCanonical !== "" &&
-            currentCanonical !== canonical
+            currentCanonicals.length > 0 &&
+            !currentCanonicals.includes(canonical)
           ) {
             yield* bucket.put(
               notificationKey,
               JSON.stringify({ skipped: "market changed" }),
             );
             return json({ ok: true, skipped: true });
+          }
+          const portfolioKey =
+            `notifications/portfolio/${tenantId}/${snapshot.tree.version}/` +
+            `${currentCanonicals.slice().sort().join("+")}.json`;
+          if (parsed.ok && (yield* bucket.get(portfolioKey)) !== null) {
+            yield* bucket.put(
+              notificationKey,
+              JSON.stringify({ skipped: "portfolio already delivered" }),
+            );
+            return json({ ok: true, duplicate: true });
           }
 
           let outcome: HandleOutcome;
@@ -2056,10 +2357,54 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 `The ${county.replace(/_/g, " ")} source check stopped ` +
                 `before I could verify the records your search needs. I did not ` +
                 `guess or report a false zero. Reply RETRY to run the source check again.`,
-            });
+              });
           } else {
-            const candidates = yield* countyMatches(county);
-            const coverage = coverageFor(snapshot.tree.graph, candidates);
+            const scans = yield* Effect.forEach(
+              currentMarkets,
+              (market) =>
+                Effect.gen(function* () {
+                  const warm = yield* countyIsWarm(market);
+                  const candidates = warm ? yield* countyMatches(market) : [];
+                  return {
+                    market,
+                    warm,
+                    candidates,
+                    coverage: warm
+                      ? coverageFor(snapshot.tree.graph, candidates)
+                      : {
+                          ready: false,
+                          missing: ["county records"],
+                          partial: false,
+                        },
+                  };
+                }),
+              { concurrency: 4 },
+            );
+            if (scans.some((scan) => !scan.warm)) {
+              yield* bucket.put(
+                notificationKey,
+                JSON.stringify({ waiting: "other markets" }),
+              );
+              return json({ ok: true, waiting: true });
+            }
+            const candidates = [
+              ...new Map(
+                scans
+                  .flatMap((scan) => scan.candidates)
+                  .map((candidate) => [candidate.propertyKey, candidate] as const),
+              ).values(),
+            ];
+            const coverage = {
+              ready: scans.every((scan) => scan.coverage.ready),
+              missing: scans.flatMap((scan) =>
+                scan.coverage.ready
+                  ? []
+                  : scan.coverage.missing.map(
+                      (missing) => `${scan.market}: ${missing}`,
+                    ),
+              ),
+              partial: scans.some((scan) => scan.coverage.partial),
+            };
             if (!coverage.ready) {
               const missing = coverage.missing.join(", ");
               outcome = yield* thread.applyScout({
@@ -2128,6 +2473,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             notificationKey,
             JSON.stringify({ deliveredAt: new Date().toISOString() }),
           );
+          if (parsed.ok) {
+            yield* bucket.put(
+              portfolioKey,
+              JSON.stringify({ deliveredAt: new Date().toISOString() }),
+            );
+          }
           return json({ ok: true, notified: true });
         }
 
@@ -2528,22 +2879,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             }
             const thread = threadFor(preflight.tenantId);
             yield* thread.forget();
-            const resetSnapshot = yield* thread.snapshot();
-            const onboarding = yield* scoutTurn(
-              preflight.tenantId,
-              text,
-              [],
-              resetSnapshot,
-              () => {},
-              ourNumber,
-            ).pipe(
-              Effect.map((outcome): HandleOutcome | undefined => outcome),
-              Effect.catch(() => Effect.succeed(undefined)),
-            );
             const reply =
               `Reset complete. Your prior criteria, results and conversation were ` +
               `removed; your ChatGPT connection was kept.\n\n` +
-              (onboarding?.reply ?? MODEL_UNAVAILABLE_REPLY);
+              `Tell me which markets you want to compare and any must-have rules.`;
             yield* Effect.tryPromise({
               try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
               catch: (cause): Error =>
@@ -2583,12 +2922,31 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           }
           const thread = threadFor(preflight.tenantId);
           const snapshot = yield* thread.snapshot();
-          const county = snapshot.county;
-          const market = snapshot.profile?.county ?? (snapshot.configured ? county : "");
-          const candidates =
-            market !== "" && (yield* countyIsWarm(market))
-              ? yield* countyMatches(market)
-              : [];
+          const activeMarkets =
+            snapshot.markets.length > 0
+              ? snapshot.markets
+              : marketsOf(snapshot.profile).length > 0
+                ? marketsOf(snapshot.profile)
+                : snapshot.configured && snapshot.county !== ""
+                  ? [snapshot.county]
+                  : [];
+          const marketCandidates = yield* Effect.forEach(
+            activeMarkets,
+            (market) =>
+              Effect.gen(function* () {
+                return (yield* countyIsWarm(market))
+                  ? yield* countyMatches(market)
+                  : [];
+              }),
+            { concurrency: 4 },
+          );
+          const candidates = [
+            ...new Map(
+              marketCandidates
+                .flat()
+                .map((candidate) => [candidate.propertyKey, candidate] as const),
+            ).values(),
+          ];
           let input: HandleMessageInput = {
             text,
             candidates,

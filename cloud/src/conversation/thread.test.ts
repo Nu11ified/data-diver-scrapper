@@ -59,6 +59,48 @@ const BUSINESS = property({
 const CANDIDATES = [RESIDENTIAL, BUSINESS];
 
 describe("source coverage", () => {
+  test("does not require debt coverage when the search has no debt floor", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const proposal = await run(
+      thread.handleMessage({
+        text: "use no debt floor",
+        candidates: [
+          property({
+            propertyKey: "city_of_cincinnati_oh|1",
+            measured: ["violations", "sources"],
+            violations: 1,
+          }),
+        ],
+        codexAccount: "connected",
+        onboardingUpdate: {
+          markets: ["Norfolk, VA", "Cincinnati, OH"],
+          minOwed: 0,
+          minAssessed: 0,
+          evidence: "open_violation",
+          anyEventAge: true,
+          requireApproval: true,
+        },
+        coverage: { ready: true, missing: [], partial: false },
+      }),
+    );
+
+    expect(proposal.reply).toContain("no debt floor");
+    expect(proposal.reply).not.toContain("Still verifying amount owed");
+    expect(
+      coverageFor(
+        proposal.tree?.graph ?? { entry: "match", nodes: [] },
+        [
+          property({
+            propertyKey: "city_of_cincinnati_oh|1",
+            measured: ["violations", "sources"],
+            violations: 1,
+          }),
+        ],
+      ),
+    ).toEqual({ ready: true, missing: [], partial: false });
+  });
+
   test("does not turn an unmeasured debt signal into a measured zero", () => {
     const match = property({
       propertyKey: "denton_tx|1",
@@ -68,6 +110,7 @@ describe("source coverage", () => {
     expect(coverageFor(compileSpec(DEFAULT_SPEC, "acquisition", 1).graph, [match])).toEqual({
       ready: false,
       missing: ["amount owed"],
+      partial: false,
     });
   });
 
@@ -100,17 +143,19 @@ describe("source coverage", () => {
     ).toEqual({
       ready: false,
       missing: ["corroborating sources", "property addresses"],
+      partial: false,
     });
   });
 
-  test("does not call a capped county sample complete", () => {
+  test("allows verified matches from a capped county sample while marking it partial", () => {
     const match = property({
       propertyKey: "city_of_chicago_il|1",
       dataComplete: false,
     });
     expect(coverageFor(compileSpec(DEFAULT_SPEC, "acquisition", 1).graph, [match])).toEqual({
-      ready: false,
-      missing: ["complete county pagination"],
+      ready: true,
+      missing: [],
+      partial: true,
     });
   });
 });
@@ -292,6 +337,7 @@ describe("rememberFilter", () => {
       thread.handleMessage({ text: "review", candidates: CANDIDATES }),
     );
     expect(review.reply).toContain("10 Elm St");
+    expect(review.reply.length).toBeLessThanOrEqual(320);
   });
 
   test("a bare YES after a preview promotes it through the same path", async () => {
@@ -364,6 +410,9 @@ describe("proposeTree", () => {
 
     const pending = await run(storage.get<Pending>("pending"));
     expect(pending).toEqual({ kind: "approve_tree", graph: businessOnly });
+    expect((await run(makeThread(storage).snapshot())).pendingGraph).toEqual(
+      businessOnly,
+    );
   });
 
   test("counts an addition once the active tree is narrower than the proposal", async () => {
@@ -388,6 +437,45 @@ describe("proposeTree", () => {
     expect(proposal.reply).not.toContain(`v${narrowed.version}`);
   });
 
+  test("keeps large approval previews below the SMS limit and preserves the action", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const candidates = [
+      property({
+        propertyKey: "norfolk_county_va|business",
+        address: "22 Commerce Way",
+        owner: "ACME HOLDINGS LLC",
+        measured: ["use_code", "owed", "assessed", "violations", "sources"],
+        signals: { use_code: 2 },
+      }),
+      ...Array.from({ length: 150 }, (_, index) =>
+        property({
+          propertyKey: `norfolk_county_va|person-${index}`,
+          address: `${index + 1} Residential Ave`,
+          owner: `OWNER ${index}`,
+          measured: ["use_code", "owed", "assessed", "violations", "sources"],
+          signals: { use_code: 1 },
+        }),
+      ),
+    ];
+    await run(thread.handleMessage({ text: "review", candidates }));
+
+    const proposal = await run(
+      thread.proposeTree({
+        userText: "only businesses",
+        lead: "Switching to business-only criteria.",
+        graph: businessOnly,
+        candidates,
+      }),
+    );
+
+    expect(proposal.reply).toContain("1 remain qualified");
+    expect(proposal.reply).toContain("150 removed");
+    expect(proposal.reply).not.toContain("Residential Ave");
+    expect(proposal.reply).toEndWith("Approve this search, reject it, or tell me what to change.");
+    expect(proposal.reply.length).toBeLessThan(1_000);
+  });
+
   test("withholds previews when required source coverage is missing", async () => {
     const storage = memoryStorage();
     const thread = makeThread(storage);
@@ -406,7 +494,7 @@ describe("proposeTree", () => {
         candidates: partial,
       }),
     );
-    expect(proposal.reply).toContain("still verifying amount owed");
+    expect(proposal.reply).toContain("Still verifying amount owed");
     expect(proposal.reply).toContain("no valid lead count yet");
     expect(proposal.reply).not.toContain("0 remain qualified");
 
@@ -455,7 +543,7 @@ describe("approve_tree pending", () => {
     );
 
     expect(outcome.tree).toBeUndefined();
-    expect(outcome.reply).toContain("Your saved search is unchanged");
+    expect(outcome.reply).toContain("your saved search is unchanged");
     expect(outcome.reply).not.toContain(`v${baseline.version}`);
 
     const after = await storedTree(storage);
@@ -489,12 +577,71 @@ describe("approve_tree pending", () => {
   });
 });
 
+describe("outreach draft corrections", () => {
+  test("revises a pending draft without losing its property or approval gate", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const original = "Hi Jane, would you discuss an offer for 10 Elm St?";
+    await run(
+      thread.attachDraft({
+        userText: "show property 1",
+        match: RESIDENTIAL,
+        explanation: "10 Elm St matches the saved search.",
+        draft: original,
+        requiresApproval: true,
+      }),
+    );
+
+    expect(await run(thread.pendingOutreach())).toEqual({
+      match: RESIDENTIAL,
+      draft: original,
+    });
+
+    const revisedDraft =
+      "Hi Jane, would you be open to a brief conversation about 10 Elm St?";
+    const outcome = await run(
+      thread.replaceDraft({
+        userText: "Make it warmer",
+        propertyKey: RESIDENTIAL.propertyKey,
+        draft: revisedDraft,
+      }),
+    );
+
+    expect(outcome.reply).toContain(revisedDraft);
+    expect(outcome.reply).toContain("revise it again");
+    expect(await run(thread.pendingOutreach())).toEqual({
+      match: RESIDENTIAL,
+      draft: revisedDraft,
+    });
+    expect((await run(thread.snapshot())).pending).toBe("approve_outreach");
+  });
+});
+
+describe("remaining match review", () => {
+  test("omits properties that already have scheduled outreach", async () => {
+    const thread = makeThread(memoryStorage());
+    const outcome = await run(
+      thread.handleMessage({
+        text: "review",
+        candidates: CANDIDATES,
+        excludePropertyKeys: [RESIDENTIAL.propertyKey],
+        coverage: { ready: true, missing: [], partial: false },
+      }),
+    );
+
+    expect(outcome.reply).toContain(BUSINESS.address);
+    expect(outcome.reply).not.toContain(RESIDENTIAL.address);
+    expect(outcome.reply).toContain("1 verified property matches");
+  });
+});
+
 describe("guided onboarding", () => {
   const answer = (
     thread: ReturnType<typeof makeThread>,
     text: string,
     onboardingUpdate?: ProfileUpdate,
     onboardingLead?: string,
+    onboardingCompleteWithDefaults = false,
   ) =>
     run(
       thread.handleMessage({
@@ -503,8 +650,172 @@ describe("guided onboarding", () => {
         codexAccount: "buyer@example.com",
         ...(onboardingUpdate === undefined ? {} : { onboardingUpdate }),
         ...(onboardingLead === undefined ? {} : { onboardingLead }),
+        ...(onboardingCompleteWithDefaults
+          ? { onboardingCompleteWithDefaults: true }
+          : {}),
       }),
     );
+
+  test("turns a complete natural request into one confirmation without re-asking", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const proposal = await answer(
+      thread,
+      "I'm looking for distressed properties in Norfolk, VA with at least $10,000 owed and evidence from multiple county sources.",
+      {
+        county: "Norfolk, VA",
+        minOwed: 10_000,
+        evidence: "multiple_sources",
+      },
+      "I captured the market, debt floor, and evidence requirement.",
+      true,
+    );
+
+    expect(proposal.reply).toContain("Norfolk, VA search");
+    expect(proposal.reply).toContain("$10,000+ owed");
+    expect(proposal.reply).toContain("no assessed floor");
+    expect(proposal.reply).toContain("2+ independent sources");
+    expect(proposal.reply).toContain("any event age");
+    expect(proposal.reply).toContain("you approve outreach");
+    expect(proposal.reply).toContain("Approve this search");
+    expect(proposal.reply).not.toContain("What minimum");
+    expect(proposal.reply.length).toBeLessThanOrEqual(320);
+
+    expect((await run(thread.snapshot())).profile).toEqual({
+      county: "Norfolk, VA",
+      markets: ["Norfolk, VA"],
+      minOwed: 10_000,
+      minAssessed: 0,
+      evidence: "multiple_sources",
+      recencyAnswered: true,
+      requireApproval: true,
+    });
+  });
+
+  test("keeps two markets together and diversifies the ranked result", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const candidates = [
+      property({
+        propertyKey: "city_of_norfolk_va|1",
+        address: "555 E Liberty Street",
+        violations: 2,
+      }),
+      property({
+        propertyKey: "city_of_cincinnati_oh|1",
+        address: "123 Vine Street",
+        owed: 0,
+        assessed: 0,
+        violations: 1,
+        sources: 1,
+      }),
+    ];
+    const proposal = await run(
+      thread.handleMessage({
+        text: "Use both markets with open violations and ask before outreach.",
+        candidates,
+        codexAccount: "buyer@example.com",
+        onboardingUpdate: {
+          markets: ["Norfolk, VA", "Cincinnati, OH"],
+          minOwed: 0,
+          minAssessed: 0,
+          evidence: "open_violation",
+          anyEventAge: true,
+          requireApproval: true,
+        },
+      }),
+    );
+
+    expect(proposal.reply).toContain("Norfolk, VA + Cincinnati, OH search");
+    expect((await run(thread.snapshot())).markets).toEqual([
+      "Norfolk, VA",
+      "Cincinnati, OH",
+    ]);
+
+    await run(
+      thread.handleMessage({
+        text: "approve",
+        candidates,
+        codexAccount: "",
+      }),
+    );
+    const review = await run(
+      thread.handleMessage({
+        text: "review",
+        candidates,
+        codexAccount: "",
+      }),
+    );
+
+    expect(review.reply).toContain("Norfolk, VA: 1");
+    expect(review.reply).toContain("Cincinnati, OH: 1");
+    expect(review.reply).toContain("[Norfolk, VA] 555 E Liberty Street");
+    expect(review.reply).toContain("[Cincinnati, OH] 123 Vine Street");
+  });
+
+  test("revises a completed proposal in one step without restarting onboarding", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    await answer(
+      thread,
+      "Norfolk, VA, at least $10,000 owed",
+      { county: "Norfolk, VA", minOwed: 10_000 },
+      "I captured your Norfolk search.",
+      true,
+    );
+
+    const revised = await answer(
+      thread,
+      "No, make the minimum $20,000",
+      { minOwed: 20_000 },
+      "Changed the minimum owed to $20,000.",
+    );
+
+    expect(revised.reply).toContain("$20,000+ owed");
+    expect(revised.reply).not.toContain("$10,000+ owed");
+    expect(revised.reply).toContain("Approve this search");
+    expect((await run(thread.snapshot())).profile?.minOwed).toBe(20_000);
+  });
+
+  test("rejecting a first search keeps its details available for correction", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    await answer(
+      thread,
+      "Norfolk, VA, at least $10,000 owed",
+      { county: "Norfolk, VA", minOwed: 10_000 },
+      "I captured your Norfolk search.",
+      true,
+    );
+
+    const rejected = await answer(thread, "reject");
+    const snapshot = await run(thread.snapshot());
+
+    expect(rejected.reply).toContain("without starting over");
+    expect(snapshot.profile?.county).toBe("Norfolk, VA");
+    expect(snapshot.profile?.minOwed).toBe(10_000);
+    expect(snapshot.pending).toBe("idle");
+  });
+
+  test("stores several supplied preferences while asking once for an ambiguous market", async () => {
+    const storage = memoryStorage();
+    const thread = makeThread(storage);
+    const reply =
+      "I captured the $10,000 debt floor and multi-source evidence.\n\n" +
+      "Which state is Norfolk in, and should I use safe defaults for everything else?";
+    const outcome = await answer(
+      thread,
+      "Norfolk, at least $10,000 owed, multiple sources",
+      { minOwed: 10_000, evidence: "multiple_sources" },
+      reply,
+    );
+
+    expect(outcome.reply).toBe(reply);
+    expect((await run(thread.snapshot())).profile).toEqual({
+      minOwed: 10_000,
+      evidence: "multiple_sources",
+    });
+  });
 
   test("uses the model-authored onboarding message without appending canned copy", async () => {
     const storage = memoryStorage();
@@ -585,11 +896,11 @@ describe("guided onboarding", () => {
       "You will approve every owner contact.",
     );
 
-    expect(proposal.reply).toContain("private lead rule for Norfolk, VA");
-    expect(proposal.reply).toContain("owed ≥ $25,000");
-    expect(proposal.reply).toContain("assessed ≥ $150,000");
+    expect(proposal.reply).toContain("Norfolk, VA search");
+    expect(proposal.reply).toContain("$25,000+ owed");
+    expect(proposal.reply).toContain("$150,000+ assessed");
     expect(proposal.reply).toContain("2+ independent sources");
-    expect(proposal.reply).toContain("Reply APPROVE to save this search");
+    expect(proposal.reply).toContain("Approve this search");
     expect((await storedTree(storage)).version).toBe(1);
 
     const pending = await run(storage.get<Pending>("pending"));
@@ -687,10 +998,7 @@ describe("guided onboarding", () => {
     expect(recency.reply).toContain(
       "Should every owner contact require your approval?",
     );
-    expect(proposal.reply).toContain("your approval before outreach");
-    expect(proposal.reply).toContain(
-      "nothing should contact an owner without your say-so",
-    );
+    expect(proposal.reply).toContain("you approve outreach");
 
     const pending = await run(storage.get<Pending>("pending"));
     if (pending?.kind !== "approve_tree") throw new Error("tree proposal not stored");
@@ -745,6 +1053,7 @@ describe("guided onboarding", () => {
 
     expect(before.profile).toEqual({
       county: "Dallas, TX",
+      markets: ["Dallas, TX"],
       minOwed: 20_000,
       minAssessed: 80_000,
     });
