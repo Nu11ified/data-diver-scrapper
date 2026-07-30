@@ -88,6 +88,17 @@ export const compactOutputStream = (sse: string): string => {
       })}\n\ndata: [DONE]\n\n`;
 };
 
+export const requestUsesTools = (body: Uint8Array): boolean => {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as {
+      readonly tools?: unknown;
+    };
+    return Array.isArray(parsed.tools) && parsed.tools.length > 0;
+  } catch {
+    return true;
+  }
+};
+
 export interface CodexCall {
   readonly accessToken: string;
   readonly accountId: string;

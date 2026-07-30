@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
-import { compactOutputStream } from "./client.ts";
+import { compactOutputStream, requestUsesTools } from "./client.ts";
 import { CodexEgressContainer } from "./egress-container.ts";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -29,10 +29,11 @@ export default CodexEgressContainer.make(
     CodexEgressContainer.of({
       request: (request) =>
         Effect.promise(async () => {
+          const requestBody = decodeBase64(request.bodyBase64);
           const response = await fetch(CODEX_URL, {
             method: "POST",
             headers: request.headers,
-            body: decodeBase64(request.bodyBase64),
+            body: requestBody,
             signal: AbortSignal.timeout(45_000),
           });
           const headers = Object.fromEntries(
@@ -40,10 +41,11 @@ export default CodexEgressContainer.make(
               RESPONSE_HEADERS.has(name.toLowerCase()),
             ),
           );
+          const body = await response.text();
           return {
             status: response.status,
             headers,
-            body: compactOutputStream(await response.text()),
+            body: requestUsesTools(requestBody) ? body : compactOutputStream(body),
           };
         }),
       fetch: Effect.succeed(HttpServerResponse.text("ok")),
