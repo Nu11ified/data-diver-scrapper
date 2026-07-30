@@ -129,6 +129,7 @@ interface WarmNotificationPayload {
   readonly instanceId?: string;
   readonly ok?: boolean;
   readonly error?: string;
+  readonly fromNumber?: string;
 }
 
 interface CountyRecord {
@@ -399,6 +400,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       candidates: readonly PropertyMatch[],
       snap: ThreadSnapshot,
       onDecision: (decision: ScoutDecision) => void,
+      notifyFrom = "",
       dryRun = false,
     ) =>
       Effect.gen(function* () {
@@ -483,6 +485,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             tenantId,
             discoverableMissing,
             snap.configured,
+            notifyFrom,
           );
         }
         const asInternal =
@@ -528,6 +531,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               decision.update.county,
               tenantId,
               DEFAULT_SOURCE_COVERAGE,
+              false,
+              notifyFrom,
             );
           }
           return outcome;
@@ -544,6 +549,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             tenantId,
             DEFAULT_SOURCE_COVERAGE,
             true,
+            notifyFrom,
           );
           return yield* thread.applyScout({
             userText: text,
@@ -1251,6 +1257,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           readonly tenantId?: string;
           readonly requiredCoverage?: readonly string[];
           readonly notifyTenant?: boolean;
+          readonly notifyFrom?: string;
         }) {
           const canonical = yield* resolveJurisdiction(input.county);
           const initialStamp = yield* countyStamp(input.county);
@@ -1293,6 +1300,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                           instanceId: event.instanceId,
                           ok,
                           ...(error === undefined ? {} : { error }),
+                          ...(input.notifyFrom === undefined
+                            ? {}
+                            : { fromNumber: input.notifyFrom }),
                         }),
                       });
                       const body = await response.text();
@@ -1522,6 +1532,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       tenantId?: string,
       requiredCoverage: readonly string[] = [],
       notifyTenant = false,
+      notifyFrom = "",
     ) =>
       Effect.gen(function* () {
         const canonical = yield* resolveJurisdiction(county);
@@ -1595,6 +1606,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             ...(tenantId === undefined ? {} : { tenantId }),
             ...(requiredCoverage.length === 0 ? {} : { requiredCoverage }),
             ...(notifyTenant ? { notifyTenant: true } : {}),
+            ...(notifyFrom === "" ? {} : { notifyFrom }),
           },
         }).pipe(
           Effect.catchCause((cause) => {
@@ -2058,7 +2070,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             try: async () => {
               await sender.send({
                 to: tenant.phone,
-                from: "",
+                from: parsed.fromNumber ?? "",
                 body: outcome.reply,
               });
               const prisma = db();
@@ -2509,6 +2521,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               [],
               resetSnapshot,
               () => {},
+              ourNumber,
             ).pipe(
               Effect.map((outcome): HandleOutcome | undefined => outcome),
               Effect.catch(() => Effect.succeed(undefined)),
@@ -2615,6 +2628,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 scoutProfileUpdate = decision.update;
               }
             },
+            ourNumber,
             probe,
           ).pipe(
             Effect.map((o): HandleOutcome | undefined => o),
