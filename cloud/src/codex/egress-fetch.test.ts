@@ -27,6 +27,7 @@ describe("Codex container transport", () => {
         authorization: "Bearer tenant-token",
         "chatgpt-account-id": "tenant-account",
         "content-type": "application/json",
+        session_id: "tenant-session",
       },
       body: '{"stream":true}',
     });
@@ -36,6 +37,7 @@ describe("Codex container transport", () => {
     expect(await response.text()).toBe("data: [DONE]\n\n");
     expect(sent?.headers.authorization).toBe("Bearer tenant-token");
     expect(sent?.headers["chatgpt-account-id"]).toBe("tenant-account");
+    expect(sent?.headers.session_id).toBe("tenant-session");
     expect(atob(sent?.bodyBase64 ?? "")).toBe('{"stream":true}');
   });
 

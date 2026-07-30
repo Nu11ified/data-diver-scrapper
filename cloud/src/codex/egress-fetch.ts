@@ -13,6 +13,7 @@ const REQUEST_HEADERS = new Set([
   "openai-beta",
   "originator",
   "session-id",
+  "session_id",
   "user-agent",
   "x-client-request-id",
 ]);
