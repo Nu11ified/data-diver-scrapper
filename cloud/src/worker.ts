@@ -82,6 +82,7 @@ import {
   CountyWarmStatus,
   FAILED_WARM_RETRY_MS,
   countyWorkflowId,
+  shouldNotifyWarm,
   shouldReuseWarm,
   warmRetryKey,
   type CountyWarmStatus as CountyWarmStatusValue,
@@ -559,7 +560,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             userText: text,
             reply:
               status.state === "error"
-                ? `I could not start the county record scan: ${status.error ?? "the workflow was unavailable"}. Nothing was changed.`
+                ? `I could not start the ${jurisdiction} source check. Your ` +
+                  `search was not changed. Please try again in a few minutes.`
                 : `${decision.text}\n\nThe county record scan is ${status.state}. ` +
                   `I will only report matches after the required official sources are verified.`,
             ...(status.state === "error" ? {} : { county: jurisdiction }),
@@ -2006,6 +2008,14 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             `notifications/county/${instanceId}.json`;
           if ((yield* bucket.get(notificationKey)) !== null) {
             return json({ ok: true, duplicate: true });
+          }
+          const currentWarm = yield* readWarmStatus(canonical);
+          if (!shouldNotifyWarm(currentWarm, instanceId)) {
+            yield* bucket.put(
+              notificationKey,
+              JSON.stringify({ skipped: "superseded workflow" }),
+            );
+            return json({ ok: true, skipped: true });
           }
           const tenant = yield* Effect.promise(() =>
             db().tenant.findUnique({

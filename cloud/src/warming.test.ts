@@ -4,6 +4,7 @@ import {
   ACTIVE_WARM_MS,
   FAILED_WARM_RETRY_MS,
   countyWorkflowId,
+  shouldNotifyWarm,
   shouldReuseWarm,
   warmRetryKey,
   type CountyWarmStatus,
@@ -55,6 +56,14 @@ describe("shouldReuseWarm", () => {
         Date.parse("2026-07-29T20:05:00.000Z"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("shouldNotifyWarm", () => {
+  test("only the current workflow may text a terminal result", () => {
+    expect(shouldNotifyWarm(status({ instanceId: "new" }), "old")).toBe(false);
+    expect(shouldNotifyWarm(status({ instanceId: "new" }), "new")).toBe(true);
+    expect(shouldNotifyWarm(undefined, "first")).toBe(true);
   });
 });
 

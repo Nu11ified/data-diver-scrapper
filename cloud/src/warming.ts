@@ -26,6 +26,11 @@ export const shouldReuseWarm = (
   (status.state === "queued" || status.state === "running") &&
   now - Date.parse(status.updatedAt) < ACTIVE_WARM_MS;
 
+export const shouldNotifyWarm = (
+  status: CountyWarmStatus | undefined,
+  instanceId: string,
+): boolean => status === undefined || status.instanceId === instanceId;
+
 export const warmRetryKey = (
   status: CountyWarmStatus | undefined,
   runtime: string | undefined,
