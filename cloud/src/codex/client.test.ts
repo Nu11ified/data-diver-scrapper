@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import {
   compactOutputStream,
   extractOutputText,
-  requestUsesTools,
 } from "./client.ts";
 
 describe("compactOutputStream", () => {
@@ -21,27 +20,5 @@ describe("compactOutputStream", () => {
 
   test("caps an unrecognized response before it crosses the container RPC", () => {
     expect(compactOutputStream("x".repeat(100_000))).toHaveLength(64 * 1024);
-  });
-});
-
-describe("requestUsesTools", () => {
-  test("preserves the full tool-call protocol for Pi", () => {
-    expect(
-      requestUsesTools(
-        new TextEncoder().encode(
-          JSON.stringify({ tools: [{ type: "function", name: "reply" }] }),
-        ),
-      ),
-    ).toBe(true);
-  });
-
-  test("allows plain research responses to be compacted", () => {
-    expect(
-      requestUsesTools(new TextEncoder().encode(JSON.stringify({ input: [] }))),
-    ).toBe(false);
-  });
-
-  test("preserves an unknown request shape", () => {
-    expect(requestUsesTools(new TextEncoder().encode("not json"))).toBe(true);
   });
 });

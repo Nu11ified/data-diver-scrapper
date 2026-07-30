@@ -4,6 +4,7 @@ import type * as Effect from "effect/Effect";
 export interface CodexEgressRequest {
   readonly headers: Record<string, string>;
   readonly bodyBase64: string;
+  readonly compactOutput?: boolean;
 }
 
 export interface CodexEgressResponse {

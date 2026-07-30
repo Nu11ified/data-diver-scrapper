@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
-import { compactOutputStream, requestUsesTools } from "./client.ts";
+import { compactOutputStream } from "./client.ts";
 import { CodexEgressContainer } from "./egress-container.ts";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -45,7 +45,7 @@ export default CodexEgressContainer.make(
           return {
             status: response.status,
             headers,
-            body: requestUsesTools(requestBody) ? body : compactOutputStream(body),
+            body: request.compactOutput === true ? compactOutputStream(body) : body,
           };
         }),
       fetch: Effect.succeed(HttpServerResponse.text("ok")),

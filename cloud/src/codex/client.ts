@@ -88,17 +88,6 @@ export const compactOutputStream = (sse: string): string => {
       })}\n\ndata: [DONE]\n\n`;
 };
 
-export const requestUsesTools = (body: Uint8Array): boolean => {
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(body)) as {
-      readonly tools?: unknown;
-    };
-    return Array.isArray(parsed.tools) && parsed.tools.length > 0;
-  } catch {
-    return true;
-  }
-};
-
 export interface CodexCall {
   readonly accessToken: string;
   readonly accountId: string;
@@ -123,6 +112,7 @@ export const complete = (
           session_id: crypto.randomUUID(),
           "content-type": "application/json",
           accept: "text/event-stream",
+          "x-datadiver-compact-output": "1",
         },
         body: JSON.stringify({
           model: call.model ?? DEFAULT_CODEX_MODEL,

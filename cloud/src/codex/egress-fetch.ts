@@ -4,6 +4,7 @@ import type {
 } from "./egress-container.ts";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
+const COMPACT_OUTPUT_HEADER = "x-datadiver-compact-output";
 const REQUEST_HEADERS = new Set([
   "accept",
   "authorization",
@@ -16,6 +17,7 @@ const REQUEST_HEADERS = new Set([
   "session_id",
   "user-agent",
   "x-client-request-id",
+  COMPACT_OUTPUT_HEADER,
 ]);
 
 export type CodexEgressSend = (
@@ -65,10 +67,15 @@ export const makeCodexFetch =
     }
 
     const headers: Record<string, string> = {};
+    let compactOutput = false;
     for (const [name, value] of request.headers) {
       const normalized = name.toLowerCase();
       if (!REQUEST_HEADERS.has(normalized)) {
         throw new Error(`Codex egress rejected header ${normalized}`);
+      }
+      if (normalized === COMPACT_OUTPUT_HEADER) {
+        compactOutput = value === "1";
+        continue;
       }
       headers[normalized] = value;
     }
@@ -82,6 +89,7 @@ export const makeCodexFetch =
     const response = await send({
       headers,
       bodyBase64: encodeBase64(await request.arrayBuffer()),
+      ...(compactOutput ? { compactOutput: true } : {}),
     }).catch((cause: unknown) => {
       throw new Error(`Codex egress failed: ${describeFailure(cause)}`);
     });

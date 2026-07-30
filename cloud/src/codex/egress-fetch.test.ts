@@ -10,6 +10,7 @@ describe("Codex container transport", () => {
       | {
           headers: Record<string, string>;
           bodyBase64: string;
+          compactOutput?: boolean;
         }
       | undefined;
     const codexFetch = makeCodexFetch(async (request) => {
@@ -28,6 +29,7 @@ describe("Codex container transport", () => {
         "chatgpt-account-id": "tenant-account",
         "content-type": "application/json",
         session_id: "tenant-session",
+        "x-datadiver-compact-output": "1",
       },
       body: '{"stream":true}',
     });
@@ -38,6 +40,8 @@ describe("Codex container transport", () => {
     expect(sent?.headers.authorization).toBe("Bearer tenant-token");
     expect(sent?.headers["chatgpt-account-id"]).toBe("tenant-account");
     expect(sent?.headers.session_id).toBe("tenant-session");
+    expect(sent?.headers["x-datadiver-compact-output"]).toBeUndefined();
+    expect(sent?.compactOutput).toBe(true);
     expect(atob(sent?.bodyBase64 ?? "")).toBe('{"stream":true}');
   });
 
