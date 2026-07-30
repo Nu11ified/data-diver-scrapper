@@ -1,0 +1,51 @@
+import * as Effect from "effect/Effect";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+
+import { CodexEgressContainer } from "./egress-container.ts";
+
+const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
+const RESPONSE_HEADERS = new Set([
+  "content-type",
+  "openai-request-id",
+  "request-id",
+  "retry-after",
+  "retry-after-ms",
+  "x-request-id",
+]);
+
+const decodeBase64 = (value: string): Uint8Array => {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+};
+
+export default CodexEgressContainer.make(
+  {
+    main: import.meta.url,
+    instanceType: "lite",
+    maxInstances: 1,
+  },
+  Effect.succeed(
+    CodexEgressContainer.of({
+      request: (request) =>
+        Effect.promise(async () => {
+          const response = await fetch(CODEX_URL, {
+            method: "POST",
+            headers: request.headers,
+            body: decodeBase64(request.bodyBase64),
+            signal: AbortSignal.timeout(150_000),
+          });
+          const headers = Object.fromEntries(
+            [...response.headers].filter(([name]) =>
+              RESPONSE_HEADERS.has(name.toLowerCase()),
+            ),
+          );
+          return {
+            status: response.status,
+            headers,
+            body: await response.text(),
+          };
+        }),
+      fetch: Effect.succeed(HttpServerResponse.text("ok")),
+    }),
+  ),
+);

@@ -3,6 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import type { HttpFetch } from "./egress-fetch.ts";
+
 export class CodexError extends Data.TaggedError("CodexError")<{
   readonly message: string;
   readonly status: number;
@@ -84,10 +86,13 @@ export interface CodexCall {
   readonly model?: string;
 }
 
-export const complete = (call: CodexCall): Effect.Effect<string, CodexError> =>
+export const complete = (
+  call: CodexCall,
+  requestFetch: HttpFetch = globalThis.fetch,
+): Effect.Effect<string, CodexError> =>
   Effect.tryPromise({
     try: async () => {
-      const response = await fetch(CODEX_URL, {
+      const response = await requestFetch(CODEX_URL, {
         method: "POST",
         headers: {
           authorization: `Bearer ${call.accessToken}`,

@@ -12,6 +12,7 @@ import { streamSimple as streamOpenAICodex } from "@earendil-works/pi-ai/api/ope
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 
 import { CHAT_MODEL } from "../codex/client.ts";
+import type { HttpFetch } from "../codex/egress-fetch.ts";
 import type { Graph } from "../decision/graph.ts";
 import type { ProfileUpdate } from "./profile.ts";
 import type { ScoutDecision, ScoutContext } from "./scout.ts";
@@ -58,6 +59,7 @@ export interface PiScoutCall {
   readonly sessionId: string;
   readonly userText: string;
   readonly context: ScoutContext;
+  readonly fetch?: HttpFetch;
 }
 
 export interface PiScoutResult {
@@ -70,7 +72,9 @@ export interface PiScoutRuntime {
   readonly streamFn: ConstructorParameters<typeof Agent>[0]["streamFn"];
 }
 
-const productionRuntime = (): PiScoutRuntime => {
+const productionRuntime = (
+  requestFetch: HttpFetch = globalThis.fetch,
+): PiScoutRuntime => {
   const provider = openaiCodexProvider();
   const model = provider.getModels().find((candidate) => candidate.id === CHAT_MODEL);
   if (model === undefined) {
@@ -79,7 +83,10 @@ const productionRuntime = (): PiScoutRuntime => {
   return {
     model,
     streamFn: (selected, context, options) =>
-      streamOpenAICodex(selected as typeof model, context, options),
+      streamOpenAICodex(selected as typeof model, context, {
+        ...options,
+        fetch: requestFetch as typeof globalThis.fetch,
+      }),
   };
 };
 
@@ -156,7 +163,7 @@ const defineTool = <TParameters extends TSchema>(
 
 export const runPiScout = async (
   call: PiScoutCall,
-  runtime: PiScoutRuntime = productionRuntime(),
+  runtime: PiScoutRuntime = productionRuntime(call.fetch),
 ): Promise<PiScoutResult> => {
   let decision: ScoutDecision | undefined;
   const choose = <T extends ScoutDecision>(next: T) => {

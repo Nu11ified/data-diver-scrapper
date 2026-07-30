@@ -38,6 +38,8 @@ import { runPiScout } from "./conversation/pi.ts";
 import { legacyProfileText } from "./conversation/profile.ts";
 import { SIGNAL_CATALOG, evaluate, validateGraph } from "./decision/graph.ts";
 import { CodexError, complete } from "./codex/client.ts";
+import { CodexEgressHost, CodexEgressHostLive } from "./codex/egress-host.ts";
+import { makeCodexFetch } from "./codex/egress-fetch.ts";
 import { importMasterKey, open, seal } from "./codex/envelope.ts";
 import {
   CredentialPayload,
@@ -160,6 +162,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
   },
   Effect.gen(function* () {
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
+    const codexEgress = yield* CodexEgressHost;
+    const codexFetch = makeCodexFetch((request) =>
+      Effect.runPromise(codexEgress.getByName("codex").request(request)),
+    );
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
     const db = (): Db => makeClient(Redacted.value(databaseUrl));
     const threadFor = (tenantId: string) => {
@@ -354,6 +360,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 sessionId: tenantId,
                 userText: text,
                 context,
+                fetch: codexFetch,
               }),
             catch: (cause): CodexError =>
               new CodexError({
@@ -613,12 +620,15 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           `hardship of any kind. 2 to 4 sentences. Output the message as plain`,
           `text only: no placeholders, no signature block, no quotes, no JSON.`,
         ].join("\n");
-        const raw = yield* complete({
-          accessToken: credential.accessToken,
-          accountId: credential.accountId,
-          instructions,
-          userText: facts,
-        });
+        const raw = yield* complete(
+          {
+            accessToken: credential.accessToken,
+            accountId: credential.accountId,
+            instructions,
+            userText: facts,
+          },
+          codexFetch,
+        );
         return raw.trim();
       });
 
@@ -1998,6 +2008,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       ),
     };
   }).pipe(
+    Effect.provide(CodexEgressHostLive),
     Effect.provide(Cloudflare.Workers.CronEventSourceLive),
     Effect.provide(Cloudflare.R2.ReadWriteBucketBinding),
   ),

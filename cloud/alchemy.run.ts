@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 
 import Scraper from "./src/worker.ts";
+import CodexEgressContainerLive from "./src/codex/egress-container.runtime.ts";
 import { Bucket } from "./src/resources.ts";
 
 export default Alchemy.Stack(
@@ -18,5 +19,5 @@ export default Alchemy.Stack(
       bucketName: bucket.bucketName,
       workerUrl: worker.url,
     };
-  }),
+  }).pipe(Effect.provide(CodexEgressContainerLive)),
 );
