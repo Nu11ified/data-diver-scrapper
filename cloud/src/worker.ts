@@ -1035,8 +1035,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const persist = (jurisdiction: string, records: readonly CountyRecord[]) =>
       Effect.promise(async () => {
-        for (let offset = 0; offset < records.length; offset += 100) {
-          const rows = records.slice(offset, offset + 100).flatMap((record) => {
+        for (let offset = 0; offset < records.length; offset += 50) {
+          const rows = records.slice(offset, offset + 50).flatMap((record) => {
             const sourceIds = new Set(record.events.map((e) => e.source));
             const key = record.keys[0];
             if (key === undefined) return [];
