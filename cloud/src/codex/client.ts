@@ -78,6 +78,16 @@ export const extractOutputText = (sse: string): string => {
   return completed !== "" ? completed : deltas.join("");
 };
 
+export const compactOutputStream = (sse: string): string => {
+  const text = extractOutputText(sse);
+  return text === ""
+    ? sse.slice(0, 64 * 1024)
+    : `data: ${JSON.stringify({
+        type: "response.output_text.delta",
+        delta: text,
+      })}\n\ndata: [DONE]\n\n`;
+};
+
 export interface CodexCall {
   readonly accessToken: string;
   readonly accountId: string;
