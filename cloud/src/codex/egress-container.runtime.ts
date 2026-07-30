@@ -22,7 +22,7 @@ export default CodexEgressContainer.make(
   {
     main: import.meta.url,
     instanceType: "lite",
-    maxInstances: 1,
+    maxInstances: 3,
   },
   Effect.succeed(
     CodexEgressContainer.of({
@@ -32,7 +32,7 @@ export default CodexEgressContainer.make(
             method: "POST",
             headers: request.headers,
             body: decodeBase64(request.bodyBase64),
-            signal: AbortSignal.timeout(150_000),
+            signal: AbortSignal.timeout(45_000),
           });
           const headers = Object.fromEntries(
             [...response.headers].filter(([name]) =>

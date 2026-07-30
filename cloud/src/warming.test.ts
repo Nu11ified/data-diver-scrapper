@@ -4,6 +4,7 @@ import {
   ACTIVE_WARM_MS,
   countyWorkflowId,
   shouldReuseWarm,
+  warmRetryKey,
   type CountyWarmStatus,
 } from "./warming.ts";
 
@@ -53,6 +54,29 @@ describe("shouldReuseWarm", () => {
         Date.parse("2026-07-29T20:05:00.000Z"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("warmRetryKey", () => {
+  test("retries a workflow whose runtime errored even when its stored state is stale", () => {
+    const failed = status({ state: "running" });
+    expect(
+      warmRetryKey(
+        failed,
+        "errored",
+        Date.parse("2026-07-29T20:05:00.000Z"),
+      ),
+    ).toBe(failed.updatedAt);
+  });
+
+  test("does not replace a live workflow", () => {
+    expect(
+      warmRetryKey(
+        status(),
+        "running",
+        Date.parse("2026-07-29T20:05:00.000Z"),
+      ),
+    ).toBe("");
   });
 });
 

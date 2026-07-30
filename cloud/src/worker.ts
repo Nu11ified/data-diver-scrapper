@@ -83,6 +83,7 @@ import {
   FAILED_WARM_RETRY_MS,
   countyWorkflowId,
   shouldReuseWarm,
+  warmRetryKey,
   type CountyWarmStatus as CountyWarmStatusValue,
 } from "./warming.ts";
 import {
@@ -118,6 +119,15 @@ interface SmsPayload {
   readonly number?: string;
   readonly content?: string;
   readonly message_handle?: string;
+}
+
+interface WarmNotificationPayload {
+  readonly tenantId?: string;
+  readonly county?: string;
+  readonly canonical?: string;
+  readonly instanceId?: string;
+  readonly ok?: boolean;
+  readonly error?: string;
 }
 
 interface CountyRecord {
@@ -224,7 +234,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(Bucket);
     const codexEgress = yield* CodexEgressHost;
     const codexFetch = makeCodexFetch((request) =>
-      Effect.runPromise(codexEgress.getByName("codex").request(request)),
+      Effect.runPromise(
+        codexEgress
+          .getByName("codex")
+          .request(request)
+          .pipe(Effect.timeout("60 seconds")),
+      ),
     );
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
     const db = (): Db => makeClient(Redacted.value(databaseUrl));
@@ -405,9 +420,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const discoverableMissing = coverage.missing.filter(
           (item) => item !== "complete county pagination",
         );
-        if (!dryRun && discoverableMissing.length > 0 && snap.county !== "") {
-          yield* ensureCountyWarm(snap.county, tenantId, discoverableMissing);
-        }
         const context = {
           tree: snap.tree,
           configured: snap.configured,
@@ -458,6 +470,19 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             reply: decision.text,
             evaluations: [],
           } satisfies HandleOutcome;
+        }
+        if (
+          discoverableMissing.length > 0 &&
+          snap.county !== "" &&
+          decision.kind !== "discover" &&
+          !(decision.kind === "update_profile" && decision.update.county !== undefined)
+        ) {
+          yield* ensureCountyWarm(
+            snap.county,
+            tenantId,
+            discoverableMissing,
+            snap.configured,
+          );
         }
         const asInternal =
           decision.kind === "show_matches"
@@ -512,6 +537,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             jurisdiction,
             tenantId,
             DEFAULT_SOURCE_COVERAGE,
+            true,
           );
           return yield* thread.applyScout({
             userText: text,
@@ -1206,6 +1232,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           readonly county: string;
           readonly tenantId?: string;
           readonly requiredCoverage?: readonly string[];
+          readonly notifyTenant?: boolean;
         }) {
           const canonical = yield* resolveJurisdiction(input.county);
           const initialStamp = yield* countyStamp(input.county);
@@ -1213,6 +1240,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const requestedAt =
             (yield* readWarmStatus(canonical))?.requestedAt ??
             event.timestamp.toISOString();
+          const coverageKey = [...new Set(input.requiredCoverage ?? [])]
+            .sort()
+            .join(",");
           const running: CountyWarmStatusValue = {
             county: input.county,
             canonical,
@@ -1221,8 +1251,51 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             instanceId: event.instanceId,
             requestedAt,
             updatedAt: new Date().toISOString(),
+            coverageKey,
+            ...(input.notifyTenant === true ? { notifyTenant: true } : {}),
           };
           yield* writeWarmStatus(running);
+          const notify = (ok: boolean, error?: string) =>
+            input.tenantId === undefined || input.notifyTenant !== true
+              ? Effect.void
+              : Cloudflare.Workflows.task(
+                  "notify-tenant",
+                  Effect.tryPromise({
+                    try: async () => {
+                      const response = await fetch(`${publicOrigin}/warm/complete`, {
+                        method: "POST",
+                        headers: {
+                          "content-type": "application/json",
+                          "x-datadiver-internal": Redacted.value(sendblueSecret),
+                        },
+                        body: JSON.stringify({
+                          tenantId: input.tenantId,
+                          county: input.county,
+                          canonical,
+                          instanceId: event.instanceId,
+                          ok,
+                          ...(error === undefined ? {} : { error }),
+                        }),
+                      });
+                      const body = await response.text();
+                      if (!response.ok) {
+                        throw new Error(
+                          `county notification returned ${response.status}: ${body.slice(0, 400)}`,
+                        );
+                      }
+                    },
+                    catch: (cause): Error =>
+                      cause instanceof Error ? cause : new Error(String(cause)),
+                  }).pipe(Effect.orDie),
+                  {
+                    retries: {
+                      limit: 3,
+                      delay: "15 seconds",
+                      backoff: "exponential",
+                    },
+                    timeout: "2 minutes",
+                  },
+                );
 
           let admittedSources = 0;
           if (initialStamp === "0:none" && input.tenantId === undefined) {
@@ -1233,6 +1306,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               updatedAt: new Date().toISOString(),
               error,
             });
+            yield* notify(false, error);
             return { ok: false, county: input.county, error };
           }
           const requiredCoverage = input.requiredCoverage ?? [];
@@ -1240,44 +1314,75 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             input.tenantId !== undefined &&
             (initialStamp === "0:none" || requiredCoverage.length > 0)
           ) {
-            const discovery = yield* Cloudflare.Workflows.task(
-              "discover-county-sources",
-              discoverCountySources(
-                input.tenantId,
-                input.county,
-                requiredCoverage,
-              ).pipe(Effect.orDie),
-              {
-                retries: {
-                  limit: 2,
-                  delay: "15 seconds",
-                  backoff: "exponential",
+            const discovered = yield* Effect.exit(
+              Cloudflare.Workflows.task(
+                "discover-county-sources",
+                discoverCountySources(
+                  input.tenantId,
+                  input.county,
+                  requiredCoverage,
+                ).pipe(Effect.orDie),
+                {
+                  retries: {
+                    limit: 2,
+                    delay: "15 seconds",
+                    backoff: "exponential",
+                  },
+                  timeout: "5 minutes",
                 },
-                timeout: "5 minutes",
-              },
-            );
-            const admission = yield* Cloudflare.Workflows.task(
-              "validate-county-sources",
-              validateSourceCandidates(
-                discovery.jurisdiction,
-                discovery.candidates,
-              ).pipe(
-                Effect.map((result) => ({
-                  tested: result.probes.length,
-                  admitted: result.admitted.length,
-                  admissionError: result.admissionError,
-                })),
-                Effect.orDie,
               ),
-              {
-                retries: {
-                  limit: 2,
-                  delay: "20 seconds",
-                  backoff: "exponential",
-                },
-                timeout: "10 minutes",
-              },
             );
+            if (Exit.isFailure(discovered)) {
+              const error =
+                Cause.pretty(discovered.cause).slice(0, 400) ||
+                `county source discovery failed`;
+              yield* writeWarmStatus({
+                ...running,
+                state: "error",
+                updatedAt: new Date().toISOString(),
+                error,
+              });
+              yield* notify(false, error);
+              return { ok: false, county: input.county, error };
+            }
+            const admitted = yield* Effect.exit(
+              Cloudflare.Workflows.task(
+                "validate-county-sources",
+                validateSourceCandidates(
+                  discovered.value.jurisdiction,
+                  discovered.value.candidates,
+                ).pipe(
+                  Effect.map((result) => ({
+                    tested: result.probes.length,
+                    admitted: result.admitted.length,
+                    admissionError: result.admissionError,
+                  })),
+                  Effect.orDie,
+                ),
+                {
+                  retries: {
+                    limit: 2,
+                    delay: "20 seconds",
+                    backoff: "exponential",
+                  },
+                  timeout: "10 minutes",
+                },
+              ),
+            );
+            if (Exit.isFailure(admitted)) {
+              const error =
+                Cause.pretty(admitted.cause).slice(0, 400) ||
+                `county source validation failed`;
+              yield* writeWarmStatus({
+                ...running,
+                state: "error",
+                updatedAt: new Date().toISOString(),
+                error,
+              });
+              yield* notify(false, error);
+              return { ok: false, county: input.county, error };
+            }
+            const admission = admitted.value;
             if (
               initialStamp === "0:none" &&
               (admission.admissionError !== undefined || admission.admitted === 0)
@@ -1291,6 +1396,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                 updatedAt: new Date().toISOString(),
                 error,
               });
+              yield* notify(false, error);
               return { ok: false, county: input.county, error };
             }
             admittedSources = admission.admitted;
@@ -1351,6 +1457,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
               updatedAt: new Date().toISOString(),
               error,
             });
+            yield* notify(false, error);
             return { ok: false, county: input.county, error };
           }
 
@@ -1361,6 +1468,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             updatedAt: new Date().toISOString(),
             properties,
           });
+          yield* notify(true);
           return {
             ok: true,
             county: input.county,
@@ -1395,6 +1503,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       county: string,
       tenantId?: string,
       requiredCoverage: readonly string[] = [],
+      notifyTenant = false,
     ) =>
       Effect.gen(function* () {
         const canonical = yield* resolveJurisdiction(county);
@@ -1407,16 +1516,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           existing === undefined
             ? Number.POSITIVE_INFINITY
             : nowMs - Date.parse(existing.updatedAt);
-        if (existing !== undefined && existingAge < ACTIVE_WARM_MS) {
-          const runtime =
-            existing.instanceId === ""
-              ? undefined
-              : yield* workflowStatus(existing.instanceId);
-          if (workflowIsActive(runtime)) {
+        const existingRuntime =
+          existing === undefined || existing.instanceId === ""
+            ? undefined
+            : yield* workflowStatus(existing.instanceId);
+        const existingCoverageKey = existing?.coverageKey ?? "";
+        const existingSatisfiesRequest =
+          existingCoverageKey === coverageKey &&
+          (!notifyTenant || existing?.notifyTenant === true);
+        if (
+          existing !== undefined &&
+          existingAge < ACTIVE_WARM_MS &&
+          existingSatisfiesRequest
+        ) {
+          if (workflowIsActive(existingRuntime)) {
             if (existing.state === "error") {
               const reconciled: CountyWarmStatusValue = {
                 ...existing,
-                state: runtime === "queued" ? "queued" : "running",
+                state: existingRuntime === "queued" ? "queued" : "running",
                 updatedAt: new Date().toISOString(),
                 error: undefined,
               };
@@ -1425,7 +1542,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             }
             return existing;
           }
-          if (runtime === undefined && shouldReuseWarm(existing, nowMs)) {
+          if (existingRuntime === undefined && shouldReuseWarm(existing, nowMs)) {
             return existing;
           }
         }
@@ -1441,12 +1558,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         ) {
           return existing;
         }
-        const retry =
-          existing !== undefined &&
-          existing.state === "error" &&
-          existingAge >= FAILED_WARM_RETRY_MS
-            ? existing.updatedAt
-            : "";
+        const retry = warmRetryKey(existing, existingRuntime, nowMs);
         const instanceId =
           retry === ""
             ? baseInstanceId
@@ -1463,6 +1575,8 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           instanceId: "",
           requestedAt: now,
           updatedAt: now,
+          coverageKey,
+          ...(notifyTenant ? { notifyTenant: true } : {}),
         };
         let createError = "";
         const instance = yield* countyWarmWorkflow.create({
@@ -1471,6 +1585,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
             county,
             ...(tenantId === undefined ? {} : { tenantId }),
             ...(requiredCoverage.length === 0 ? {} : { requiredCoverage }),
+            ...(notifyTenant ? { notifyTenant: true } : {}),
           },
         }).pipe(
           Effect.catchCause((cause) => {
@@ -1834,6 +1949,151 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const url = new URL(request.url, "http://worker");
         const origin = requestOrigin(request.url, request.headers, publicOrigin);
+
+        if (url.pathname === "/warm/complete" && request.method === "POST") {
+          if (
+            request.headers["x-datadiver-internal"] !==
+            Redacted.value(sendblueSecret)
+          ) {
+            return json({ ok: false, error: "not found" }, 404);
+          }
+          const bodyText = yield* request.text;
+          const parsed = yield* Effect.try({
+            try: () => JSON.parse(bodyText) as WarmNotificationPayload,
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (
+            parsed instanceof Error ||
+            parsed.tenantId === undefined ||
+            parsed.county === undefined ||
+            parsed.canonical === undefined ||
+            parsed.instanceId === undefined ||
+            parsed.ok === undefined
+          ) {
+            return json({ ok: false, error: "invalid county notification" }, 400);
+          }
+          const tenantId = parsed.tenantId;
+          const county = parsed.county;
+          const canonical = parsed.canonical;
+          const instanceId = parsed.instanceId;
+          const notificationKey =
+            `notifications/county/${instanceId}.json`;
+          if ((yield* bucket.get(notificationKey)) !== null) {
+            return json({ ok: true, duplicate: true });
+          }
+          const tenant = yield* Effect.promise(() =>
+            db().tenant.findUnique({
+              where: { id: tenantId },
+              select: { phone: true },
+            }),
+          );
+          if (tenant === null) {
+            yield* bucket.put(
+              notificationKey,
+              JSON.stringify({ skipped: "tenant removed" }),
+            );
+            return json({ ok: true, skipped: true });
+          }
+          const thread = threadFor(tenantId);
+          const snapshot = yield* thread.snapshot();
+          const currentCanonical =
+            snapshot.county === ""
+              ? ""
+              : yield* resolveJurisdiction(snapshot.county);
+          if (
+            currentCanonical !== "" &&
+            currentCanonical !== canonical
+          ) {
+            yield* bucket.put(
+              notificationKey,
+              JSON.stringify({ skipped: "market changed" }),
+            );
+            return json({ ok: true, skipped: true });
+          }
+
+          let outcome: HandleOutcome;
+          if (!parsed.ok) {
+            outcome = yield* thread.applyScout({
+              userText: "county scan failed",
+              reply:
+                `The ${county.replace(/_/g, " ")} source check stopped ` +
+                `before I could verify the records your search needs. I did not ` +
+                `guess or report a false zero. Reply RETRY to run the source check again.`,
+            });
+          } else {
+            const candidates = yield* countyMatches(county);
+            const coverage = coverageFor(snapshot.tree.graph, candidates);
+            if (!coverage.ready) {
+              const missing = coverage.missing.join(", ");
+              outcome = yield* thread.applyScout({
+                  userText: "county scan completed",
+                  reply:
+                  `The ${county.replace(/_/g, " ")} pass loaded ` +
+                  `${candidates.length} real propert${candidates.length === 1 ? "y" : "ies"}, ` +
+                  `but the official feeds still lack ${missing}. I cannot rank ` +
+                  `them as leads without guessing. Reply RETRY to look for another official source.`,
+              });
+            } else {
+              outcome = yield* thread.handleMessage({
+                text: "review",
+                candidates,
+                codexAccount: "",
+                coverage,
+              });
+            }
+          }
+
+          const delivered = yield* Effect.tryPromise({
+            try: async () => {
+              await sender.send({
+                to: tenant.phone,
+                from: "",
+                body: outcome.reply,
+              });
+              const prisma = db();
+              await prisma.message.create({
+                data: {
+                  tenantId,
+                  role: "scout",
+                  body: outcome.reply,
+                },
+              });
+              const first = outcome.evaluations[0];
+              if (first !== undefined) {
+                const treeRow = await prisma.decisionTree.findUnique({
+                  where: {
+                    tenantId_name_version: {
+                      tenantId,
+                      name: first.treeName,
+                      version: first.treeVersion,
+                    },
+                  },
+                });
+                await prisma.evaluation.createMany({
+                  data: outcome.evaluations.map((evaluation) => ({
+                    tenantId,
+                    propertyKey: evaluation.propertyKey,
+                    decisionTreeId: treeRow?.id ?? null,
+                    treeVersion: evaluation.treeVersion,
+                    outcome: evaluation.outcome,
+                    trace: JSON.parse(JSON.stringify(evaluation.trace)) as object,
+                  })),
+                });
+              }
+            },
+            catch: (cause): Error =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          }).pipe(Effect.catch((cause: Error) => Effect.succeed(cause)));
+          if (delivered instanceof Error) {
+            return json({ ok: false, error: delivered.message }, 502);
+          }
+          yield* bucket.put(
+            notificationKey,
+            JSON.stringify({ deliveredAt: new Date().toISOString() }),
+          );
+          return json({ ok: true, notified: true });
+        }
 
         if (url.pathname === "/health") {
           const version = yield* Effect.tryPromise({
@@ -2287,30 +2547,6 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           const thread = threadFor(preflight.tenantId);
           const snapshot = yield* thread.snapshot();
           const county = snapshot.county;
-          if (snapshot.configured && !(yield* countyIsWarm(county))) {
-            const warming = yield* ensureCountyWarm(county, preflight.tenantId);
-            const reply =
-              warming.state === "error"
-                ? `I could not verify usable official records for ` +
-                  `${county.replace(/_/g, " ")} yet, so I do not have a real lead ` +
-                  `count to give you. Nothing was guessed.`
-                : `I am still collecting ${county.replace(/_/g, " ")} records and ` +
-                  `building the property signals. I will only show a lead count after ` +
-                  `the records are ready.`;
-            if (!probe) {
-              yield* Effect.tryPromise({
-                try: () => sender.send({ to: phone, from: ourNumber, body: reply }),
-                catch: (cause): Error =>
-                  cause instanceof Error ? cause : new Error(String(cause)),
-              }).pipe(Effect.catch(() => Effect.void));
-            }
-            return json({
-              ok: warming.state !== "error",
-              phone,
-              reply,
-              warming: warming.state,
-            });
-          }
           const market = snapshot.profile?.county ?? (snapshot.configured ? county : "");
           const candidates =
             market !== "" && (yield* countyIsWarm(market))

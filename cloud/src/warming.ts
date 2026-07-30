@@ -10,6 +10,8 @@ export const CountyWarmStatus = Schema.Struct({
   updatedAt: Schema.String,
   properties: Schema.optional(Schema.Number),
   error: Schema.optional(Schema.String),
+  coverageKey: Schema.optional(Schema.String),
+  notifyTenant: Schema.optional(Schema.Boolean),
 });
 export type CountyWarmStatus = (typeof CountyWarmStatus)["Type"];
 
@@ -23,6 +25,24 @@ export const shouldReuseWarm = (
   status !== undefined &&
   (status.state === "queued" || status.state === "running") &&
   now - Date.parse(status.updatedAt) < ACTIVE_WARM_MS;
+
+export const warmRetryKey = (
+  status: CountyWarmStatus | undefined,
+  runtime: string | undefined,
+  now: number,
+): string => {
+  if (status === undefined) return "";
+  if (runtime === "errored" || runtime === "terminated") {
+    return status.updatedAt;
+  }
+  if (
+    status.state === "error" &&
+    now - Date.parse(status.updatedAt) >= FAILED_WARM_RETRY_MS
+  ) {
+    return status.updatedAt;
+  }
+  return "";
+};
 
 export const countyWorkflowId = async (
   canonical: string,
