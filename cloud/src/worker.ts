@@ -1012,7 +1012,10 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         // segment before the pipe keeps jurisdictions apart.
         const rows = await db().event.findMany({
           where: countyWhere(county),
-          orderBy: { eventDate: "asc" },
+          orderBy: [
+            { eventDate: { sort: "desc", nulls: "last" } },
+            { recordedAt: "desc" },
+          ],
           take: EVENT_LIMIT,
         });
         return rows.map((row) => ({
@@ -1725,7 +1728,9 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         for (const run of runs) {
           if (!latest.has(run.sourceId)) latest.set(run.sourceId, run.truncated);
         }
+        const eventCount = Number((yield* countyStamp(county)).split(":")[0] ?? 0);
         const dataComplete =
+          eventCount <= EVENT_LIMIT &&
           sourceIds.length > 0 &&
           sourceIds.every((sourceId) => latest.get(sourceId) === false);
         return compiled.records
