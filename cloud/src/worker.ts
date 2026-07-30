@@ -792,7 +792,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
       return rows.map(configFromRow);
     });
 
-    const EVENT_LIMIT = 20_000;
+    const EVENT_LIMIT = 10_000;
 
     const countySlug = (county: string): string =>
       county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -1308,7 +1308,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
                     delay: "15 seconds",
                     backoff: "exponential",
                   },
-                  timeout: "10 minutes",
+                  timeout: "20 minutes",
                 },
               ),
             );
