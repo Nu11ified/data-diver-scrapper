@@ -64,7 +64,7 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
 
 std::vector<Property> county_from_events(
     const schema::Registry& registry,
-    const std::map<std::string, std::vector<events::PropertyEvent>>& events_by_key,
+    std::map<std::string, std::vector<events::PropertyEvent>> events_by_key,
     const std::map<std::string, std::map<std::string, double>>& trust,
     const std::string& county);
 

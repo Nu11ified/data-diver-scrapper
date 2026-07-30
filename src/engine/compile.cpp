@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <set>
 
 namespace dd::compile {
@@ -213,12 +214,13 @@ std::vector<Property> county(store::Store& store, const schema::Registry& regist
     for (const std::string& key : store.property_keys()) {
         events_by_key[key] = store.events_for(key);
     }
-    return county_from_events(registry, events_by_key, source_trust(store), county);
+    return county_from_events(
+        registry, std::move(events_by_key), source_trust(store), county);
 }
 
 std::vector<Property> county_from_events(
     const schema::Registry& registry,
-    const std::map<std::string, std::vector<events::PropertyEvent>>& all_events,
+    std::map<std::string, std::vector<events::PropertyEvent>> all_events,
     const std::map<std::string, std::map<std::string, double>>& trust,
     const std::string& county) {
     const std::string wanted = str::slug(county);
@@ -227,10 +229,10 @@ std::vector<Property> county_from_events(
     std::map<std::string, std::vector<std::string>> groups;
     std::map<std::string, std::vector<events::PropertyEvent>> events_by_key;
     std::map<std::string, entity::Address> address_by_key;
-    for (const auto& [key, all_evs] : all_events) {
+    for (auto& [key, all_evs] : all_events) {
         const std::string slug = key.substr(0, key.find('|'));
         if (slug != wanted && !str::contains(slug, wanted)) continue;
-        std::vector<events::PropertyEvent> evs = all_evs;
+        std::vector<events::PropertyEvent> evs = std::move(all_evs);
         const entity::Address address = entity::parse_address(first_address(evs));
         const std::string join = entity::address_join_key(address);
         groups[join.empty() ? key : slug + "|a:" + join].push_back(key);
@@ -295,7 +297,10 @@ std::vector<Property> county_from_events(
         property.keys = keys;
         for (const std::string& key : keys) {
             std::vector<events::PropertyEvent>& evs = events_by_key[key];
-            property.events.insert(property.events.end(), evs.begin(), evs.end());
+            property.events.insert(
+                property.events.end(),
+                std::make_move_iterator(evs.begin()),
+                std::make_move_iterator(evs.end()));
         }
         sort_events(&property.events);
         property.state = events::reduce(property.events).state;

@@ -132,12 +132,13 @@ char* dd_compile_county(const char* schema_json, const char* events_json,
     try {
         const dd::schema::Registry registry =
             dd::schema::Registry::from_json(require(schema_json, "schema_json"));
-        const std::vector<dd::events::PropertyEvent> events =
+        std::vector<dd::events::PropertyEvent> events =
             read_events(require(events_json, "events_json"));
 
         std::map<std::string, std::vector<dd::events::PropertyEvent>> by_key;
-        for (const dd::events::PropertyEvent& e : events) {
-            by_key[e.property_key].push_back(e);
+        for (dd::events::PropertyEvent& e : events) {
+            const std::string key = e.property_key;
+            by_key[key].push_back(std::move(e));
         }
 
         std::map<std::string, std::map<std::string, double>> trust;
@@ -149,7 +150,7 @@ char* dd_compile_county(const char* schema_json, const char* events_json,
         }
 
         const std::vector<dd::compile::Property> properties =
-            dd::compile::county_from_events(registry, by_key, trust,
+            dd::compile::county_from_events(registry, std::move(by_key), trust,
                                             require(county, "county"));
         return to_c(dd::compile::render_county_json(county, properties));
     } catch (const std::exception& e) {
