@@ -33,6 +33,26 @@ export interface SeedPlan {
 export const slugId = (raw: string): string =>
   raw.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "");
 
+export const marketFromJurisdiction = (raw: string): string => {
+  const existing = /^(.+?),\s*([a-z]{2})$/i.exec(raw.trim());
+  if (existing !== null) {
+    return `${existing[1]?.trim() ?? ""}, ${(existing[2] ?? "").toUpperCase()}`;
+  }
+  const words = slugId(raw).split("_").filter((word) => word !== "");
+  const state = words.at(-1);
+  if (state?.length === 2) words.pop();
+  const place = words
+    .map((word, index) =>
+      word === "of" && index > 0
+        ? word
+        : `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`,
+    )
+    .join(" ");
+  return state?.length === 2 && place !== ""
+    ? `${place}, ${state.toUpperCase()}`
+    : place;
+};
+
 const stringHeaders = (value: unknown): Readonly<Record<string, string>> | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const out: Record<string, string> = {};

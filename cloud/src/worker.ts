@@ -88,6 +88,7 @@ import {
 } from "./warming.ts";
 import {
   configFromRow,
+  marketFromJurisdiction,
   parseSeed,
   planSeed,
   slugId,
@@ -532,9 +533,12 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
           return outcome;
         }
         if (decision.kind === "discover") {
+          const savedCounty = marketFromJurisdiction(snap.county);
           const jurisdiction =
             snap.profile?.county ??
-            (snap.configured ? snap.county : decision.jurisdiction);
+            (snap.configured
+              ? savedCounty
+              : marketFromJurisdiction(decision.jurisdiction));
           const status = yield* ensureCountyWarm(
             jurisdiction,
             tenantId,
@@ -1011,12 +1015,24 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
 
     const countyWhere = (county: string) => {
       const slug = countySlug(county);
+      const aliases = [
+        ...new Set([
+          slug,
+          slug.replace(/^city_of_/, ""),
+          slug.replace(/_(?:county|city)(?=_[a-z]{2}$)/, ""),
+        ]),
+      ].filter((alias) => alias !== "");
       return {
-        OR: [
-          { propertyKey: { startsWith: `${slug}|` } },
-          { propertyKey: { contains: `_${slug}|` } },
-          { propertyKey: { contains: `${slug}_`, mode: "insensitive" as const } },
-        ],
+        OR: aliases.flatMap((alias) => [
+          { propertyKey: { startsWith: `${alias}|` } },
+          { propertyKey: { contains: `_${alias}|` } },
+          {
+            propertyKey: {
+              contains: `${alias}_`,
+              mode: "insensitive" as const,
+            },
+          },
+        ]),
       };
     };
 

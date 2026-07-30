@@ -1,7 +1,29 @@
 import { describe, expect, test } from "bun:test";
 
 import { bundledSeed } from "./seed.ts";
-import { configFromRow, parseSeed, planSeed, slugId } from "./sources.ts";
+import {
+  configFromRow,
+  marketFromJurisdiction,
+  parseSeed,
+  planSeed,
+  slugId,
+} from "./sources.ts";
+
+describe("marketFromJurisdiction", () => {
+  test("turns a model jurisdiction into a county market", () => {
+    expect(marketFromJurisdiction("denton_county_tx")).toBe("Denton County, TX");
+  });
+
+  test("keeps a human market and normalizes its state", () => {
+    expect(marketFromJurisdiction("Denton, tx")).toBe("Denton, TX");
+  });
+
+  test("renders city-of jurisdictions without exposing a slug", () => {
+    expect(marketFromJurisdiction("city_of_norfolk_va")).toBe(
+      "City of Norfolk, VA",
+    );
+  });
+});
 
 describe("configFromRow", () => {
   const row = {
