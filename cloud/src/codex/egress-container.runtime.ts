@@ -34,7 +34,9 @@ export default CodexEgressContainer.make(
             method: "POST",
             headers: request.headers,
             body: requestBody,
-            signal: AbortSignal.timeout(45_000),
+            signal: AbortSignal.timeout(
+              request.compactOutput === true ? 120_000 : 45_000,
+            ),
           });
           const headers = Object.fromEntries(
             [...response.headers].filter(([name]) =>

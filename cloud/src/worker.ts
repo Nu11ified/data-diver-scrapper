@@ -240,7 +240,7 @@ export default class Scraper extends Cloudflare.Worker<Scraper>()(
         codexEgress
           .getByName("codex")
           .request(request)
-          .pipe(Effect.timeout("60 seconds")),
+          .pipe(Effect.timeout("135 seconds")),
       ),
     );
     const databaseUrl = yield* Config.redacted("DATABASE_URL");
