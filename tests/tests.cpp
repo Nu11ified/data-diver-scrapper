@@ -612,6 +612,25 @@ TEST(document_json_single_object) {
     CHECK_EQ(m.records[0].cells.size(), std::size_t{2});
 }
 
+TEST(document_json_arcgis_feature_attributes) {
+    const std::string body = R"({
+      "fields": [
+        {"name": "pid", "type": "esriFieldTypeInteger"},
+        {"name": "name", "type": "esriFieldTypeString"}
+      ],
+      "features": [
+        {"attributes": {"pid": 11, "name": "Jane Smith", "situs_full_address": "1 Main St"}},
+        {"attributes": {"pid": 12, "name": "Bob Ray", "situs_full_address": "2 Main St"}}
+      ]
+    })";
+    const dd::doc::Model m = dd::doc::build_auto("application/json", body);
+    CHECK_EQ(m.records.size(), std::size_t{2});
+    CHECK(m.records[0].find("pid") != nullptr);
+    CHECK(m.records[0].find("name") != nullptr);
+    CHECK(m.records[0].find("situs_full_address") != nullptr);
+    CHECK(m.records[0].find("attributes.pid") == nullptr);
+}
+
 TEST(document_csv_records) {
     const dd::doc::Model m = dd::doc::build_auto(
         "text/csv", "Account,Taxpayer,Balance\nA1,Jane,100.5\nA2,Bob,7\n");

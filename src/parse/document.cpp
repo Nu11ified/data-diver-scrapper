@@ -336,7 +336,12 @@ void extract_json(Model& model, std::string_view body) {
     model.text = str::collapse_ws(text);
 
     JsonArrayCandidate best;
-    find_record_arrays(root, "", best);
+    const json::Value* features = root.find("features");
+    if (features != nullptr && features->is_array()) {
+        best = JsonArrayCandidate{features, "/features", features->items().size()};
+    } else {
+        find_record_arrays(root, "", best);
+    }
     if (best.array == nullptr) {
         if (root.is_object()) {
             RawRecord record;
@@ -351,8 +356,11 @@ void extract_json(Model& model, std::string_view body) {
     model.container_signature = "array" + (best.path.empty() ? std::string{"/"} : best.path);
     for (std::size_t i = 0; i < best.array->items().size(); ++i) {
         const json::Value& item = best.array->items()[i];
+        const json::Value* attributes = item.find("attributes");
+        const json::Value& row =
+            attributes != nullptr && attributes->is_object() ? *attributes : item;
         RawRecord record;
-        flatten_object(item, "", best.path + "/" + std::to_string(i), record);
+        flatten_object(row, "", best.path + "/" + std::to_string(i), record);
         if (!record.cells.empty()) model.records.push_back(std::move(record));
     }
 }
